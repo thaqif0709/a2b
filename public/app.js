@@ -23,6 +23,7 @@ import { welcome, hideSplash } from './welcome.js';
 import { watchUpdates, updateCheckpoint } from './update.js';
 import { prefetchRouteTiles } from './offline.js';
 import { matchesWordStarts } from './text.js';
+import { fuelCost, fuelLabel, DEFAULT_FUEL, DEFAULT_SIZE } from './trip-cost.js';
 
 // Which map look to use for day or night (see map-themes.js). 'mapTheme' in local storage overrides it.
 function mapThemeId(t = themeNow) {
@@ -1283,6 +1284,7 @@ async function openPreview(place) {
   }
   const asked = travel;
   try {
+    loadFuelPrices();
     const found = await requestRoutes(from ?? map.getCenter().toArray(), [place.lng, place.lat]);
     // Gone, or switched to Walk or Train while these were on their way: they mustn't come back (or start a drive).
     if (mode !== 'preview' || dest !== place || travel !== asked) return;
@@ -1476,9 +1478,27 @@ function collapsibleSheet(sheet, list, settled) {
 function renderPeekSummary() {
   const r = routes[selected];
   $('peek-summary').textContent = r
-    ? [formatDuration(r.duration), formatDistance(r.distance, state.settings.units), r.tolls?.length ? tollSummary(r.tolls) : r.toll ? 'Toll' : ''].filter(Boolean).join(' · ')
+    ? [formatDuration(r.duration), formatDistance(r.distance, state.settings.units), r.tolls?.length ? tollSummary(r.tolls) : r.toll ? 'Toll' : '', routeFuel(r)].filter(Boolean).join(' · ')
     : '';
 }
+
+// ---------- Fuel on each route ----------
+// "~RM 3.40 petrol" beside the tolls, from this week's pump prices (asked for once a session) and the car set in
+// Settings (kept on this phone). See trip-cost.js.
+let fuelPrices = null, fuelAsked = null;
+function loadFuelPrices() {
+  fuelAsked ??= api('/api/fuel')
+    .then((r) => {
+      fuelPrices = r.prices;
+      if (fuelPrices && mode === 'preview' && routes.length) {
+        renderRouteOptions();
+        renderPeekSummary();
+      }
+    })
+    .catch(() => (fuelAsked = null)); // asked again with the next routes
+}
+const carFuel = () => ({ fuel: local.get('fuel', DEFAULT_FUEL), size: local.get('carSize', DEFAULT_SIZE) });
+const routeFuel = (r) => (travel === 'drive' ? fuelLabel(fuelCost(r.distance, carFuel(), fuelPrices, r.coords?.[0]), carFuel().fuel) : ''); // not on foot
 
 function fitRoutes() {
   const b = new maplibregl.LngLatBounds();
@@ -1512,6 +1532,8 @@ function renderRouteOptions() {
     if (r.duration === fastest && routes.length > 1) badges.push('<span class="badge best">Fastest</span>');
     if (r.tolls?.length) badges.push(`<span class="badge warn">${esc(tollSummary(r.tolls))}</span>`);
     else if (r.toll) badges.push('<span class="badge warn">Toll</span>');
+    const fuel = routeFuel(r);
+    if (fuel) badges.push(`<span class="badge">${esc(fuel)}</span>`);
     if (r.ferry) badges.push('<span class="badge warn">Ferry</span>');
     const reps = (r.reports ?? []).length;
     if (reps) badges.push(`<span class="badge">${reps} report${reps > 1 ? 's' : ''}</span>`);

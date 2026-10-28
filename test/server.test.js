@@ -83,6 +83,9 @@ globalThis.fetch = async (url, init = {}) => {
       + '<tag k="charge" v="2.10 MYR/motorcar;1.10 MYR/taxi"/><tag k="payment:touchngo" v="yes"/><tag k="payment:touchngo_smarttag" v="yes"/><tag k="payment:touchngo_rfid" v="yes"/></node>'
       + `<node id="2" lat="${s}" lon="${w}"><tag k="barrier" v="toll_booth"/><tag k="name" v="Far booth"/></node></osm>`);
   }
+  if (u.startsWith('https://api.data.gov.my/data-catalogue?id=fuelprice')) {
+    return Response.json([{ date: '2026-10-22', series_type: 'level', ron95: 4.32, ron95_budi95: 1.99, ron97: 4.8, diesel: 5.07, diesel_eastmsia: 2.15 }]);
+  }
   if (u.includes('/reverse') && u.includes('osm_tag=amenity')) {
     return Response.json({ features: [
       { geometry: { coordinates: [13.4012, 52.5021] }, properties: { osm_type: 'W', osm_id: 11, name: 'Far Garage', street: 'Test Street' } },
@@ -153,7 +156,7 @@ function client(device) {
 // open even when A2B is full). Everything else (accounts, places, reports, trips) doesn't.
 function needsSpot(method, path) {
   if (path === '/api/presence') return false;
-  if (method === 'GET' && (path.startsWith('/api/search') || path.startsWith('/api/reverse') || path.startsWith('/api/parking'))) return true;
+  if (method === 'GET' && (path.startsWith('/api/search') || path.startsWith('/api/reverse') || path.startsWith('/api/parking') || path.startsWith('/api/fuel'))) return true;
   return method === 'POST' && (path === '/api/route' || path === '/api/transit');
 }
 
@@ -927,6 +930,12 @@ test('presence check-ins admit new devices without a per-network throttle', asyn
   } finally {
     await env.DB.prepare('DELETE FROM presence').run();
   }
+});
+
+test('this week’s pump prices, for the fuel cost on routes', async () => {
+  const r = await client()('GET', '/api/fuel');
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.prices, { date: '2026-10-22', ron95: 4.32, ron95_budi95: 1.99, ron97: 4.8, diesel: 5.07, diesel_eastmsia: 2.15 });
 });
 
 test('trips by train need a spot, a start and a destination', async () => {

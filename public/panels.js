@@ -8,6 +8,7 @@ import { stopSharing } from './probe.js';
 import { pickVoice } from './voice.js';
 import { appVersion } from './update.js';
 import { VEHICLES, COLORS, DEFAULT_COLOR } from './vehicle3d.js';
+import { FUELS, SIZES, DEFAULT_FUEL, DEFAULT_SIZE } from './trip-cost.js';
 import { onlineLine } from './presence.js';
 import { tileCount, clearOfflineTiles, originUsage } from './offline.js';
 
@@ -340,6 +341,14 @@ export function openSettings() {
         .map(([c, l]) => `<button data-c="${c}" aria-label="${l}" title="${l}" class="${local.get('vehicleColor', DEFAULT_COLOR) === c ? 'on' : ''}" style="--c:${c}"></button>`)
         .join('')}</div></div>
     </div>
+    <div class="set-group"><h3>Fuel</h3>
+      <div class="set-row"><span>Your car takes<small>For the fuel cost on each route, at this week's pump price</small></span><div class="choice wrap" id="s-fuel">${FUELS
+        .map(([v, l]) => `<button data-v="${v}" class="${local.get('fuel', DEFAULT_FUEL) === v ? 'on' : ''}">${l}</button>`)
+        .join('')}</div></div>
+      <div class="set-row"><span>Car size<small>Small 6, medium 7.5, SUV or MPV 10 litres per 100 km</small></span><div class="choice" id="s-car-size">${SIZES
+        .map(([v, l]) => `<button data-v="${v}" class="${local.get('carSize', DEFAULT_SIZE) === v ? 'on' : ''}">${l}</button>`)
+        .join('')}</div></div>
+    </div>
     <div class="set-group"><h3>Offline maps</h3>
       <label class="set-row"><span>Save maps for drives<small>Keep the map along your route on this phone, for tunnels and dead spots</small></span><input type="checkbox" class="switch" id="s-offline" ${local.get('offlineMaps', true) ? 'checked' : ''}></label>
       <div class="set-row"><span>Saved on this phone<small id="s-offline-size">…</small></span><div class="choice"><button id="s-offline-clear">Clear</button></div></div>
@@ -413,6 +422,15 @@ export function openSettings() {
     local.set('vehicleColor', b.dataset.c);
     ctx.setupVehicle();
   };
+  // Kept on this device too, like the vehicle: they only change the fuel estimate.
+  for (const [id, key] of [['s-fuel', 'fuel'], ['s-car-size', 'carSize']]) {
+    $(id).onclick = (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      $(id).querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+      local.set(key, b.dataset.v);
+    };
+  }
   if (state.tester) {
     $('s-sim').onchange = (e) => {
       state.simulate = e.target.checked;
@@ -655,6 +673,7 @@ function openAbout() {
        Map tiles by <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>.
        Routing by <a href="https://valhalla.github.io/valhalla/" target="_blank" rel="noopener">Valhalla</a>, search by <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a>, live traffic by <a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a>,
        train timetables from Prasarana and KTMB via <a href="https://data.gov.my" target="_blank" rel="noopener">data.gov.my</a>.
+       Pump prices from <a href="https://data.gov.my/data-catalogue/fuelprice" target="_blank" rel="noopener">data.gov.my</a>.
        Shops and places also from <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps Foundation</a> (Meta, Microsoft, Foursquare, AllThePlaces and others; <a href="/places/NOTICE.txt" target="_blank">licences</a>).</p>
     <p>A2B is free and open source. <a href="https://github.com/thaqif0709/a2b" target="_blank" rel="noopener">Source code</a>, ideas and bug reports welcome, or send feedback from Settings.</p>
     <p class="about-credit">© 2026 Thaqif Syarafuddin bin Roslan and the A2B contributors.

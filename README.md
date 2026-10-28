@@ -54,6 +54,7 @@ Keep the screen on while you drive (A2B keeps it awake). Only use it when it's s
 | 🚗 **Your car** | A 3D chevron or car in the colour you like, a speedometer that turns red over the limit, and the road you've driven greyed out. |
 | 🌙 **Day and night** | Map themes that switch automatically in the evening. |
 | 🗺️ **Offline maps** | The map along your route is saved when a drive starts, so tunnels and dead spots show map, not blank. Rerouting still needs signal. |
+| 🅿️ **Where did I park?** | When a drive ends, where you left the car is kept on your phone, with a note if you add one ("B2, pillar C4"). Tap its blue pin, or "Your car" in search, for a walking route back. |
 | 📍 **Share your drive** | A link that shows your car, route and ETA live in any browser, no app or account needed. |
 | ⭐ **Accounts** | Home, Work and saved places on every device, points for helpful reports, and a top drivers board. Browsing and driving work without one. |
 

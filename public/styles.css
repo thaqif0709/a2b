@@ -216,6 +216,13 @@ textarea.field { height: auto; padding: 12px 14px; resize: vertical; font: inher
 .place-row:active { background: var(--bg-2); }
 .p-ic { width: 36px; height: 36px; border-radius: 50%; background: var(--bg-2); flex: none; display: grid; place-items: center; color: var(--muted); }
 .p-ic svg { width: 20px; height: 20px; }
+/* Where did I park? (app.js): the car's pin, its row on the search screen, "Got my car". */
+.parked-pin { padding: 0; border: 0; background: none; cursor: pointer; }
+.parked-pin svg, .dest-pin.parked svg { width: 34px; height: 44px; filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.3)); }
+.p-ic.parked { background: none; }
+.p-ic.parked svg { width: 26px; height: 34px; }
+.parked-list { margin-bottom: 6px; }
+.got-car { margin-top: 8px; }
 .p-text { flex: 1; min-width: 0; }
 .p-text b { display: block; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .p-text small { display: block; color: var(--muted); font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

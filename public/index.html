@@ -57,6 +57,7 @@
     </header>
     <div id="search-target" class="search-target hidden"></div>
     <div id="search-home">
+      <ul id="parked-list" class="place-list parked-list hidden"></ul>
       <div class="quick">
         <button class="quick-tile" id="tile-home"><span class="q-ic home"></span><span><b>Home</b><small id="home-sub">Set location</small></span></button>
         <button class="quick-tile" id="tile-work"><span class="q-ic work"></span><span><b>Work</b><small id="work-sub">Set location</small></span></button>
@@ -91,6 +92,7 @@
       <button id="btn-go" class="btn primary" disabled>Go now</button>
       <button id="btn-transit-maps" class="btn primary transit-only">Live times in Google Maps</button>
     </div>
+    <button id="btn-got-car" class="btn ghost wide got-car hidden">Got my car</button>
   </section>
 
   <!-- ===== Leave later ===== -->
@@ -159,6 +161,7 @@
       <h2>You have arrived</h2>
       <p id="arrived-name"></p>
       <p id="arrived-stats" class="hint"></p>
+      <button id="btn-parked-note" class="btn ghost wide hidden">Add a note about where you parked</button>
       <button id="btn-arrived-done" class="btn primary wide">Done</button>
     </div>
   </section>

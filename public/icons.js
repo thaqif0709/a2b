@@ -84,6 +84,9 @@ export const DEST_PIN = `<svg viewBox="0 0 36 46"><path d="M18 44s15-15.4 15-26A
 
 export const DROP_PIN = `<svg viewBox="0 0 36 46"><path d="M18 44s15-15.4 15-26A15 15 0 0 0 3 18c0 10.6 15 26 15 26Z" fill="#a8306d" stroke="#fff" stroke-width="2.5"/><circle cx="18" cy="18" r="5.5" fill="#fff"/></svg>`;
 
+// Where the car was parked: a blue pin with a car in it.
+export const PARKED_PIN = `<svg viewBox="0 0 36 46"><path d="M18 44s15-15.4 15-26A15 15 0 0 0 3 18c0 10.6 15 26 15 26Z" fill="#1c7ed6" stroke="#fff" stroke-width="2.5"/><path d="M10 22.5v-5l2.4-4.8h11.2l2.4 4.8v5Z" fill="#fff"/><path d="M13.2 17.2l1.4-2.8h6.8l1.4 2.8Z" fill="#1c7ed6"/><circle cx="13.5" cy="23" r="2" fill="#fff"/><circle cx="22.5" cy="23" r="2" fill="#fff"/></svg>`;
+
 export const PLACE_ICONS = {
   parking: '<svg viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M6 3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Zm3 4v10h2.2v-3.2h2.3a3.4 3.4 0 0 0 0-6.8Zm2.2 2h2.2a1.4 1.4 0 0 1 0 2.8h-2.2Z"/></svg>',
   pin: '<svg viewBox="0 0 24 24"><path d="M12 22s7-7.2 7-12.5a7 7 0 0 0-14 0C5 14.8 12 22 12 22Z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="9.5" r="2.5" fill="currentColor"/></svg>',

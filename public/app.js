@@ -10,7 +10,7 @@ import { Follow, shouldSend, nextPollDelay } from './follow.js';
 import { sheetGesture, settle, rubberBand } from './sheet-drag.js';
 import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES } from './places.js';
 import { start as startVehicle, DEFAULT_COLOR } from './vehicle3d.js';
-import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PLACE_ICONS, soundIcon } from './icons.js';
+import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PARKED_PIN, PLACE_ICONS, soundIcon } from './icons.js';
 import {
   $, state, api, local, toast, esc, timeAgo, speak, loadLocalSettings, saveSettings, loadPlaces, addPlace, removePlace,
   isSaved, setHomeWork, armBack,
@@ -23,6 +23,7 @@ import { welcome, hideSplash } from './welcome.js';
 import { watchUpdates, updateCheckpoint } from './update.js';
 import { prefetchRouteTiles } from './offline.js';
 import { matchesWordStarts } from './text.js';
+import { shouldSave as shouldSaveParking, parkedCar, parkedLabel, pickedUp } from './parked.js';
 
 // Which map look to use for day or night (see map-themes.js). 'mapTheme' in local storage overrides it.
 function mapThemeId(t = themeNow) {
@@ -61,6 +62,7 @@ let dest = null;
 // How to get there: 'drive' | 'walk' | 'transit'. Not remembered: every trip starts on Drive, so someone who walked once
 // isn't given footpaths (no cameras, alerts or tolls) next time they're in the car. See resetTravel.
 let travel = 'drive';
+let parkedMarker = null; // where the car was left (see Where did I park?)
 let stops = []; // places to visit on the way, in order, not yet reached
 let routes = [];
 let selected = 0;
@@ -198,6 +200,7 @@ async function boot() {
   setupLongPress();
 
   carMarker = new maplibregl.Marker({ element: el('div', 'car', CAR), rotationAlignment: 'map', pitchAlignment: 'map' });
+  drawParked(); // where the car was left, from an earlier drive
 
   initPanels({ onUserChanged, applyTheme, openSearchFor, openPreview, refreshSound, setupVehicle, drawPois, setSimSpeed: (v) => sim && (sim.speedFactor = v) });
   wireUi();
@@ -977,6 +980,15 @@ function wireUi() {
     $('arrived').classList.add('hidden');
     backToBrowse();
   };
+  $('btn-parked-note').onclick = () => {
+    noteParked();
+    $('btn-parked-note').textContent = getParked()?.note ? `Note: ${getParked().note}` : 'Add a note about where you parked';
+  };
+  $('btn-got-car').onclick = () => {
+    setParked(null);
+    toast('Enjoy the drive.');
+    closeScreen('preview');
+  };
 
   // Reports
   $('btn-report-back').onclick = () => renderReportGrid();
@@ -1068,6 +1080,23 @@ function renderSearchHome() {
   $('search-empty-hint').classList.toggle('hidden', saved.length + recent.length > 0);
   renderPlaceList($('saved-list'), saved, 'star', 'saved');
   renderPlaceList($('recent-list'), recent, 'recent', 'recent');
+  renderParkedRow();
+}
+
+// "Your car · Parked 2 h ago near Pavilion · B2, pillar C4" at the top of the search screen, with its note button.
+function renderParkedRow() {
+  const ul = $('parked-list');
+  const car = getParked();
+  ul.classList.toggle('hidden', !car);
+  ul.innerHTML = '';
+  if (!car) return;
+  const li = el('li');
+  const d = state.pos ? formatDistance(distance(state.pos.lngLat, [car.lng, car.lat]), state.settings.units) : '';
+  li.innerHTML = `<button class="place-row"><span class="p-ic parked">${PARKED_PIN}</span><span class="p-text"><b>Your car</b><small>${esc([parkedLabel(car), car.note].filter(Boolean).join(' · '))}</small></span><span class="p-dist">${d}</span></button>
+    <button class="icon-btn" aria-label="Add a note">${PLACE_ICONS.more}</button>`;
+  li.firstElementChild.onclick = openParkedCar;
+  li.lastElementChild.onclick = noteParked;
+  ul.append(li);
 }
 
 function renderPlaceList(ul, list, icon, kind) {
@@ -1261,9 +1290,13 @@ async function openPreview(place) {
   $('route-list').innerHTML = '<div class="route-opt skeleton" aria-hidden="true"><i></i><i></i></div>'.repeat(2);
   $('btn-go').disabled = true;
   updateSaveStar();
+  // Going back to the parked car: its own pin, "Got my car" to clear it, and no saving it as a place.
+  $('btn-got-car').classList.toggle('hidden', !place.parked);
+  $('btn-save-place').classList.toggle('hidden', Boolean(place.parked));
   destMarker?.remove();
   dropMarker?.remove();
-  destMarker = new maplibregl.Marker({ element: el('div', 'dest-pin', DEST_PIN), anchor: 'bottom' }).setLngLat([place.lng, place.lat]).addTo(map);
+  destMarker = new maplibregl.Marker({ element: el('div', place.parked ? 'dest-pin parked' : 'dest-pin', place.parked ? PARKED_PIN : DEST_PIN), anchor: 'bottom' }).setLngLat([place.lng, place.lat]).addTo(map);
+  drawParked();
   map.easeTo({ center: [place.lng, place.lat], zoom: 15, pitch: 0, bearing: 0, padding: sheetPadding() });
 
   const from = state.pos?.lngLat;
@@ -1600,6 +1633,67 @@ function backToBrowse() {
   $('btn-recenter').classList.add('following');
   map.easeTo({ pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, ...(state.pos ? { center: state.pos.lngLat, zoom: 15.5 } : {}), duration: 700 });
   if (state.pos) carMarker.setLngLat(state.pos.lngLat).setRotation(state.pos.heading ?? 0);
+  drawParked();
+}
+
+// ---------- Where did I park? ----------
+// Where the car was when a drive ended (parked.js), kept on this phone only: a pin on the map and the top of the
+// search screen, a walking route back to it, and a note for the floor and pillar. Driving off from beside it, or
+// "Got my car", clears it; parking again replaces it.
+function getParked() {
+  return local.get('parkedCar', null);
+}
+
+function setParked(car) {
+  local.set('parkedCar', car);
+  drawParked();
+  if (!$('search-home').classList.contains('hidden')) renderSearchHome();
+}
+
+// The pin while browsing or choosing a route; not while driving.
+function drawParked() {
+  const car = getParked();
+  if (!map || !car || mode === 'drive' || (mode === 'preview' && dest?.parked)) { // walking back to it: the destination pin is the car
+    parkedMarker?.remove();
+    parkedMarker = null;
+    return;
+  }
+  if (!parkedMarker) {
+    const pin = el('button', 'parked-pin', PARKED_PIN);
+    pin.setAttribute('aria-label', 'Your car');
+    pin.onclick = (e) => {
+      e.stopPropagation();
+      openParkedCar();
+    };
+    parkedMarker = new maplibregl.Marker({ element: pin, anchor: 'bottom' });
+  }
+  parkedMarker.setLngLat([car.lng, car.lat]).addTo(map);
+}
+
+// A walking route back to the car.
+function openParkedCar() {
+  const car = getParked();
+  if (!car) return;
+  for (const id of ['search', 'arrived']) if (!$(id).classList.contains('hidden')) closeScreen(id);
+  stopFollowing();
+  travel = 'walk';
+  openPreview({ name: 'Your car', address: [parkedLabel(car), car.note].filter(Boolean).join(' · '), lat: car.lat, lng: car.lng, parked: true });
+}
+
+function noteParked() {
+  const car = getParked();
+  if (!car) return;
+  const note = prompt('Where exactly? For example: B2, pillar C4', car.note || '');
+  if (note == null) return;
+  setParked({ ...car, note: note.trim().slice(0, 80) });
+  toast(note.trim() ? 'Note saved with your car.' : 'Note removed.');
+}
+
+// When a drive ends: keep where the car is, if this drive parked it.
+function rememberParking(ended) {
+  if (!shouldSaveParking(ended)) return false;
+  setParked(parkedCar(ended.at, ended.near));
+  return true;
 }
 
 // ================= Leave later =================
@@ -1671,6 +1765,9 @@ function startDrive() {
   if (!route) return;
   mode = 'drive';
   drawPois(); // off the map while driving
+  // Driving off from beside the parked car: it's been picked up.
+  if (travel === 'drive' && pickedUp(getParked(), state.pos?.lngLat, distance)) local.set('parkedCar', null);
+  drawParked();
   trail = [];
   offTrail = [];
   drawTrail();
@@ -2046,6 +2143,12 @@ async function arrive() {
 }
 
 async function endDrive(arrived) {
+  // Where the car is now, if this drive parked it (see parked.js): its last GPS fix, not the destination.
+  const driven = trail.reduce((a, line) => a + (line.length > 1 ? cumulative(line).at(-1) : 0), 0) + (live?.along ?? 0);
+  const parked = rememberParking({ travel, simulated: Boolean(sim), driven, at: state.pos?.lngLat, near: (parkingFor ?? dest)?.name });
+  $('btn-parked-note').classList.toggle('hidden', !parked);
+  $('btn-parked-note').textContent = 'Add a note about where you parked';
+  if (parked && !arrived) toast('Saved where you parked: tap the blue pin, or find it in Where to?', 4000);
   stopSimulation();
   discardProbeBuffer(); // fixes buffered on this drive must not leak into a later batch
   parkingFor = null;
@@ -2080,6 +2183,7 @@ async function endDrive(arrived) {
     document.body.classList.remove('driving', 'walking');
     drawRoutes();
     destMarker?.remove();
+    drawParked();
     map.easeTo({ pitch: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 600 });
   }
   updateCheckpoint(); // an update that came out during the trip

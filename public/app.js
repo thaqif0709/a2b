@@ -23,6 +23,8 @@ import { welcome, hideSplash } from './welcome.js';
 import { watchUpdates, updateCheckpoint } from './update.js';
 import { prefetchRouteTiles } from './offline.js';
 import { matchesWordStarts } from './text.js';
+import { junctionAt } from './junction-view.js';
+import { PITCH as JUNCTION_PITCH, ZOOM as JUNCTION_ZOOM, BAND_M, bandPieces, bandRange, camerasInRange, metresExpr } from './junction-3d.js';
 
 // Which map look to use for day or night (see map-themes.js). 'mapTheme' in local storage overrides it.
 function mapThemeId(t = themeNow) {
@@ -80,6 +82,12 @@ const glide = new Glide(); // slides the car between GPS fixes
 let shown = null; // where the car is drawn this frame
 let frameId = 0, lastFrame = 0;
 let camZoom = null;
+let junction = null; // { key, j, lat } while the junction view is on (see showJunction)
+const fadedLabels = new Map(); // base-map label layers dimmed for the junction view: id -> their own opacities
+const JUNCTION_GREEN = '#2bd27a'; // the band through a junction
+let junctionSkipped = null; // the junction the driver left by touching the map: not shown again
+let junctionForced = false; // testing: held on by window.__junctionTest
+const junctionsSpoken = new Set();
 let userMoving = false;
 let touching = false; // a finger (or mouse button) is down on the map
 let vehicle3d = false; // the car is drawn as a 3D model (vehicle3d.js) rather than the flat arrow
@@ -172,6 +180,11 @@ async function boot() {
   map.on('style.load', () => {
     applyMapTheme(map, MAP_THEMES[mapThemeId()]);
     addMapLayers();
+    fadedLabels.clear(); // the base layers are new: nothing of theirs is faded any more
+    if (junction) {
+      junctionLook(true);
+      drawJunctionBand();
+    }
   });
   map.on('dragstart', (e) => {
     if (!e.originalEvent) return;
@@ -298,6 +311,25 @@ function addMapLayers() {
     // The upcoming turn, drawn on the route as a white arrow, above the map's labels so it's never hidden.
     map.addSource('maneuver', { type: 'geojson', data: emptyFc() });
     if (!map.hasImage('turn-head')) map.addImage('turn-head', arrowHeadImage(), { pixelRatio: 2 });
+    // Junction view (see showJunction): the base map dimmed under our layers, and the way ahead as a wide glowing band
+    // a lane wide, shifted towards the lanes to use, lifted on flyovers, with speed cameras standing up beside it.
+    map.addSource('junction-dim', { type: 'geojson', data: { type: 'Feature', properties: {}, geometry: { type: 'Polygon', coordinates: [[[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]]] } } });
+    map.addLayer({ id: 'junction-dim', type: 'fill', source: 'junction-dim', paint: { 'fill-color': '#0b1020', 'fill-opacity': 0, 'fill-opacity-transition': { duration: 600 } } }, 'routes-alt-casing');
+    map.addSource('junction', { type: 'geojson', data: emptyFc() });
+    map.addSource('junction-cams', { type: 'geojson', data: emptyFc() });
+    if (!map.hasImage('junction-cam')) map.addImage('junction-cam', cameraBillboardImage(), { pixelRatio: 2 });
+    const band = (m) => metresExpr(m, 3.1); // resized for the junction's own latitude when shown (junctionLook)
+    const shift = metresExpr(['get', 'shift'], 3.1);
+    const lineLayout = { 'line-cap': 'round', 'line-join': 'round' };
+    map.addLayer({ id: 'junction-glow', type: 'line', source: 'junction', layout: lineLayout, paint: { 'line-color': JUNCTION_GREEN, 'line-opacity': 0.5, 'line-blur': 14, 'line-width': band(BAND_M * 2.5), 'line-offset': shift } });
+    map.addLayer({ id: 'junction-shadow', type: 'line', source: 'junction', filter: ['get', 'bridge'], layout: lineLayout, paint: { 'line-color': '#000000', 'line-opacity': 0.55, 'line-blur': 6, 'line-width': band(BAND_M * 1.6), 'line-offset': shift, 'line-translate': [0, 5], 'line-translate-anchor': 'viewport' } });
+    map.addLayer({ id: 'junction-band', type: 'line', source: 'junction', filter: ['!', ['get', 'bridge']], layout: lineLayout, paint: { 'line-color': JUNCTION_GREEN, 'line-width': band(BAND_M), 'line-offset': shift } });
+    map.addLayer({ id: 'junction-bridge-edge', type: 'line', source: 'junction', filter: ['get', 'bridge'], layout: lineLayout, paint: { 'line-color': '#e9fff3', 'line-width': band(BAND_M * 1.25), 'line-offset': shift, 'line-translate': [0, -4], 'line-translate-anchor': 'viewport' } });
+    map.addLayer({ id: 'junction-bridge', type: 'line', source: 'junction', filter: ['get', 'bridge'], layout: lineLayout, paint: { 'line-color': JUNCTION_GREEN, 'line-width': band(BAND_M), 'line-offset': shift, 'line-translate': [0, -4], 'line-translate-anchor': 'viewport' } });
+    map.addLayer({
+      id: 'junction-cams', type: 'symbol', source: 'junction-cams',
+      layout: { 'icon-image': 'junction-cam', 'icon-anchor': 'bottom', 'icon-pitch-alignment': 'viewport', 'icon-rotation-alignment': 'viewport', 'icon-offset': [0, -6], 'icon-allow-overlap': true, 'icon-ignore-placement': true },
+    });
     map.addLayer({ id: 'maneuver-casing', type: 'line', source: 'maneuver', filter: ['==', ['geometry-type'], 'LineString'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ROUTE[themeNow].casing, 'line-width': ['interpolate', ['linear'], ['zoom'], 12, 4, 16, 8.5, 19, 17] } });
     map.addLayer({ id: 'maneuver-line', type: 'line', source: 'maneuver', filter: ['==', ['geometry-type'], 'LineString'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': ['interpolate', ['linear'], ['zoom'], 12, 2, 16, 5, 19, 10] } });
     map.addLayer({
@@ -785,7 +817,7 @@ function frame(now) {
   if (vehicle3d) map.triggerRepaint(); // the model is part of the map: redraw even when the camera stays put
   let settling = false;
   if (follow && !userMoving && !touching && !map.isEasing()) {
-    if (mode === 'drive' && live) settling = followDrive(dt);
+    if (mode === 'drive' && live) settling = followDrive(dt); // lower and closer through a junction (see showJunction)
     else if (mode === 'browse') map.jumpTo({ center: shown.pos });
   } else camZoom = null;
   const done = glide.done(now);
@@ -796,9 +828,9 @@ function frame(now) {
 
 // Camera sits behind the car. Zoom drifts towards the speed-based level instead of stepping.
 function followDrive(dt) {
-  const target = driveZoom();
+  const target = junction ? JUNCTION_ZOOM : driveZoom();
   camZoom = camZoom == null ? map.getZoom() : camZoom + (target - camZoom) * (1 - Math.exp(-dt / 700));
-  map.jumpTo({ center: shown.pos, bearing: shown.heading, pitch: 55, zoom: camZoom, padding: drivePadding() });
+  map.jumpTo({ center: shown.pos, bearing: shown.heading, pitch: junction ? JUNCTION_PITCH : 55, zoom: camZoom, padding: drivePadding() });
   return Math.abs(target - camZoom) > 0.01;
 }
 
@@ -815,6 +847,10 @@ function updateSpeedo(speed) {
 
 function stopFollowing() {
   follow = false;
+  if (junction) {
+    junctionSkipped = junction.key; // looking around: this junction stays in the normal view
+    leaveJunction();
+  }
   $('btn-recenter').classList.remove('following');
   if (mode === 'drive') {
     $('btn-recenter-drive').classList.remove('hidden');
@@ -1677,6 +1713,8 @@ function startDrive() {
   tollsSpoken.clear();
   camerasWarned.clear();
   $('toll-chip').classList.add('hidden');
+  junctionSkipped = null;
+  junctionsSpoken.clear();
   nav = new Navigator(route, { units: state.settings.units });
   nav.spoken.add('depart');
   live = null;
@@ -1747,6 +1785,8 @@ function driveTick(fix) {
   live = nav.update({ position: fix.lngLat, heading: fix.heading, speed: fix.speed, accuracy: fix.accuracy });
   const heading = (fix.speed ?? 0) > 1.5 && fix.heading != null ? fix.heading : live.routeBearing;
   moveCar({ pos: live.snapped, heading, along: live.along, path: nav });
+  checkJunction();
+  if (junction) drawJunctionBand();
   renderBanner();
   renderEta();
   if (travel !== 'walk') renderLimit(live.limit, fix.speed);
@@ -1812,6 +1852,137 @@ function renderBanner() {
   $('then').classList.toggle('hidden', !then);
   if (then) $('then-icon').innerHTML = stepIcon(then);
   renderLanes(next, distToNext);
+  if (junction) $('turn-street').textContent = junction.j.text; // the whole junction in one line
+}
+
+// ---------- Junction view ----------
+// Before a tricky interchange (two or more ramps, exits or forks close together; the server marks them, see
+// junction-view.js) the drive view goes lower and closer, the map dims and its labels fade, and the way ahead is a
+// wide glowing band, moved over towards the lanes to use and lifted on flyovers (junction-3d.js). The lanes get
+// bigger and one instruction covers it all. The normal view comes back just after it, or as soon as the map is
+// touched.
+
+function checkJunction() {
+  if (junctionForced || !nav || !live) return;
+  const at = junctionAt(live.along, nav.route.junctions, nav.cum);
+  const key = at?.inView ? `${nav.total}:${at.index}` : null;
+  const want = key && key !== junctionSkipped && follow ? key : null;
+  if (want === (junction?.key ?? null)) return;
+  if (junction) leaveJunction();
+  if (want) showJunction(at.index);
+}
+
+function showJunction(index) {
+  const j = nav.route.junctions[index];
+  const key = `${nav.total}:${index}`;
+  junction = { key, j, lat: nav.coords[j.start][1] };
+  document.body.classList.add('junction-view');
+  junctionLook(true);
+  drawJunctionBand();
+  if (follow && shown) {
+    camZoom = null;
+    map.easeTo({ center: shown.pos, bearing: shown.heading, pitch: JUNCTION_PITCH, zoom: JUNCTION_ZOOM, padding: drivePadding(), duration: 900 });
+  }
+  if (!junctionsSpoken.has(key)) {
+    junctionsSpoken.add(key);
+    speak(`${j.text}.`);
+  }
+  renderBanner();
+}
+
+function leaveJunction() {
+  if (!junction) return;
+  junction = null;
+  junctionForced = false;
+  junctionLook(false);
+  map.getSource('junction')?.setData(emptyFc());
+  map.getSource('junction-cams')?.setData(emptyFc());
+  document.body.classList.remove('junction-view');
+  if (mode === 'drive' && follow) driveCamera();
+  if (live) renderBanner();
+}
+
+// The band from the car to just past the junction, and the speed cameras along it.
+function drawJunctionBand() {
+  if (!junction || !nav || !live) return;
+  const range = bandRange(live.along, junction.j, nav.cum, nav.total);
+  const pieces = bandPieces({ from: range[0], to: range[1], cum: nav.cum, steps: nav.steps, bridges: nav.route.bridges ?? [] });
+  map.getSource('junction')?.setData({
+    type: 'FeatureCollection',
+    features: pieces.map((p) => ({ type: 'Feature', properties: { shift: p.shift, bridge: p.bridge }, geometry: { type: 'LineString', coordinates: sliceAlong(nav.coords, nav.cum, p.a, p.b) } })),
+  });
+  map.getSource('junction-cams')?.setData({
+    type: 'FeatureCollection',
+    features: camerasInRange(nav.route.cameras, nav.cum, range).map((c) => ({ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: nav.coords[c.at] } })),
+  });
+}
+
+// Dim the base map under our layers and fade its labels and icons, or put them back exactly as they were. Run again
+// after a style change, which brings the base layers back fresh.
+function junctionLook(on) {
+  if (!map?.getLayer('junction-dim')) return;
+  map.setPaintProperty('junction-dim', 'fill-opacity', on ? (themeNow === 'night' ? 0.66 : 0.62) : 0);
+  if (on && junction) {
+    // Metres to pixels depend on latitude: size the band for where this junction is.
+    for (const [id, m] of [['junction-glow', BAND_M * 3], ['junction-shadow', BAND_M * 1.6], ['junction-band', BAND_M], ['junction-bridge-edge', BAND_M * 1.35], ['junction-bridge', BAND_M]]) {
+      map.setPaintProperty(id, 'line-width', metresExpr(m, junction.lat));
+      map.setPaintProperty(id, 'line-offset', metresExpr(['get', 'shift'], junction.lat));
+    }
+  }
+  const sources = map.getStyle().sources;
+  for (const l of map.getStyle().layers) {
+    if (l.type !== 'symbol' || sources[l.source]?.type !== 'vector') continue; // the base map's own labels only
+    if (on && !fadedLabels.has(l.id)) {
+      fadedLabels.set(l.id, { text: map.getPaintProperty(l.id, 'text-opacity'), icon: map.getPaintProperty(l.id, 'icon-opacity') });
+      map.setPaintProperty(l.id, 'text-opacity', 0.15);
+      map.setPaintProperty(l.id, 'icon-opacity', 0.1);
+    } else if (!on && fadedLabels.has(l.id)) {
+      const was = fadedLabels.get(l.id);
+      map.setPaintProperty(l.id, 'text-opacity', was.text);
+      map.setPaintProperty(l.id, 'icon-opacity', was.icon);
+    }
+  }
+  if (!on) fadedLabels.clear();
+}
+
+// A speed camera sign on a short pole, standing up beside the band.
+function cameraBillboardImage() {
+  const w = 48, h = 72, c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const g = c.getContext('2d');
+  g.fillStyle = '#d0d6de';
+  g.fillRect(w / 2 - 2, 40, 4, h - 40);
+  g.beginPath();
+  g.arc(w / 2, 22, 20, 0, Math.PI * 2);
+  g.fillStyle = '#ffffff';
+  g.fill();
+  g.lineWidth = 6;
+  g.strokeStyle = '#e03131';
+  g.stroke();
+  g.fillStyle = '#1b1f24';
+  g.fillRect(12, 16, 18, 12);
+  g.beginPath();
+  g.moveTo(30, 19);
+  g.lineTo(37, 15);
+  g.lineTo(37, 29);
+  g.lineTo(30, 25);
+  g.fill();
+  return g.getImageData(0, 0, w, h);
+}
+
+// For testing on a phone against a local server: the junction view on and off at will.
+if (typeof location !== 'undefined' && ['localhost', '127.0.0.1'].includes(location.hostname)) {
+  window.__junctionTest = {
+    state: () => ({ active: junction && { key: junction.key, text: junction.j.text }, next: nav && live ? junctionAt(live.along, nav.route.junctions, nav.cum) : null, junctions: nav?.route.junctions ?? [] }),
+    enter: (i) => {
+      if (junction) leaveJunction();
+      showJunction(i);
+      junctionForced = true;
+    },
+    exit: () => leaveJunction(),
+    camera: () => ({ zoom: map.getZoom(), pitch: map.getPitch(), bearing: map.getBearing(), center: map.getCenter().toArray(), easing: map.isEasing() }),
+  };
 }
 
 // Which lanes to be in, shown as you get close to the turn.
@@ -2047,6 +2218,7 @@ async function arrive() {
 
 async function endDrive(arrived) {
   stopSimulation();
+  leaveJunction();
   discardProbeBuffer(); // fixes buffered on this drive must not leak into a later batch
   parkingFor = null;
   $('parking-label').textContent = 'Parking nearby';

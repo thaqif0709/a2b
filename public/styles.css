@@ -302,6 +302,9 @@ body.walking #speedo, body.walking #limit, body.walking #toll-chip, body.walking
 .lane { width: 48px; height: 46px; display: grid; place-items: center; border-radius: 8px; }
 .lane + .lane { border-left: 2px dashed rgba(255, 255, 255, 0.3); border-radius: 0; }
 .lane svg { width: 38px; height: 38px; }
+/* Junction view (app.js showJunction): bigger lanes, to pick the right one at a glance. */
+body.junction-view .lane { width: 60px; height: 58px; }
+body.junction-view .lane svg { width: 50px; height: 50px; }
 .then { background: var(--banner-2); display: flex; align-items: center; gap: 8px; padding: 6px 16px; font-weight: 600; }
 .then-icon svg { width: 26px; height: 26px; }
 @media (max-width: 360px) {
@@ -385,6 +388,7 @@ body.walking #speedo, body.walking #limit, body.walking #toll-chip, body.walking
 .report-pin .pin-ic svg { width: 19px; height: 19px; }
 .report-pin.mine .pin-ic { outline: 3px solid var(--primary); }
 .cam-pin { cursor: default; }
+body.junction-view .cam-pin { display: none; } /* standing up beside the band instead (junction-cams) */
 .cam-pin .pin-ic { width: 28px; height: 28px; }
 .cam-pin .pin-ic svg { width: 16px; height: 16px; }
 .rc-head { display: flex; gap: 12px; align-items: center; padding: 10px 0; }

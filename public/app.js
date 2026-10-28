@@ -23,6 +23,7 @@ import { welcome, hideSplash } from './welcome.js';
 import { watchUpdates, updateCheckpoint } from './update.js';
 import { prefetchRouteTiles } from './offline.js';
 import { matchesWordStarts } from './text.js';
+import { weatherPoints, weatherQuery, describeTrip, wetAhead, spokenWeather, restReminder, drivesAtNight } from './weather.js';
 
 // Which map look to use for day or night (see map-themes.js). 'mapTheme' in local storage overrides it.
 function mapThemeId(t = themeNow) {
@@ -90,6 +91,9 @@ let trail = []; // lines driven earlier in this drive: parts of routes replaced 
 let offTrail = []; // where the car has been since it left the current route
 const tollsSpoken = new Set(); // toll plazas (route + index) already announced this drive
 const camerasWarned = new Set(); // fixed speed cameras (route + index) already announced this drive
+let weather = null; // { route, points, answer } for the route on screen or being driven (see weather.js)
+const weatherSpoken = new Set(); // wet stretches (route + point) already announced this drive
+let restsSaid = 0; // 2-hour rest reminders spoken this drive
 const cameraPins = [];
 
 // ================= Boot =================
@@ -1254,6 +1258,7 @@ async function openPreview(place) {
   $('browse-ui').classList.add('hidden');
   $('preview').classList.remove('hidden', 'peek');
   $('peek-summary').textContent = '';
+  renderWeather(null);
   $('dest-name').textContent = place.name;
   $('dest-addr').textContent = place.address || '';
   // Placeholder cards the shape of real ones, so the sheet doesn't jump when the routes arrive.
@@ -1292,6 +1297,7 @@ async function openPreview(place) {
     renderPeekSummary();
     drawRoutes();
     fitRoutes();
+    loadWeather(routes[selected]);
     $('btn-go').disabled = false;
     autoGo.restart();
   } catch (e) {
@@ -1383,6 +1389,68 @@ function routeNote(rs) {
   if (rs.closuresIgnored) return "Couldn't find a way around a reported closure, so these routes may pass it.";
   if (rs.constructionAvoided) return 'Avoiding a road that looks to be under construction.';
   return '';
+}
+
+// The weather on the way and on arrival for a route, leaving now, plus rest tips for a long or night drive (see
+// weather.js). The weather is extra: a failure or a full A2B just leaves it out. Each route's answer is kept, so
+// switching between routes doesn't ask again.
+async function loadWeather(route) {
+  if (!route || state.settings.weather === false) return renderWeather(null);
+  if (weather?.route === route) return renderWeather(weather);
+  route.weather ??= (async () => {
+    const points = weatherPoints(route);
+    const answer = points.length ? await api(`/api/weather?${weatherQuery(points)}`).catch(() => null) : null;
+    return { route, points, answer };
+  })();
+  const w = await route.weather;
+  if (routes[selected] === route || nav?.route === route) {
+    weather = w;
+    if (mode === 'preview') renderWeather(w);
+  }
+}
+
+function renderWeather(w) {
+  const box = $('route-weather');
+  const trip = w && describeTrip(w.answer, w.points, { start: Date.now(), seconds: w.route.duration }, {
+    clock: (at) => formatClock(new Date(at)),
+    duration: formatDuration,
+  });
+  box.classList.toggle('hidden', !trip);
+  if (!trip) return (box.innerHTML = '');
+  const credit = trip.sources.map((src) => `<a href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.name)}</a>`).join(' · ');
+  box.dataset.sky = trip.sky;
+  box.innerHTML = `<span class="w-ic" aria-hidden="true">${WEATHER_ICONS[trip.sky] ?? WEATHER_ICONS.clear}</span>
+    <div class="w-text">${trip.lines.map((l, i) => `<p${i ? '' : ' class="w-main"'}>${esc(l)}</p>`).join('')}
+    ${trip.tips.length ? `<ul class="w-tips">${trip.tips.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}${credit ? `<small>${credit}</small>` : ''}</div>`;
+}
+
+const WEATHER_ICONS = {
+  clear: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  cloudy: '<svg viewBox="0 0 24 24"><path d="M7 18a4.5 4.5 0 1 1 .9-8.9A6 6 0 0 1 19.5 11 3.5 3.5 0 0 1 18.5 18Z" fill="currentColor"/></svg>',
+  rain: '<svg viewBox="0 0 24 24"><path d="M7 14a4.5 4.5 0 1 1 .9-8.9A6 6 0 0 1 19.5 7 3.5 3.5 0 0 1 18.5 14Z" fill="currentColor"/><path d="m8 17-1 3M12.5 17l-1 3M17 17l-1 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  storm: '<svg viewBox="0 0 24 24"><path d="M7 13a4.5 4.5 0 1 1 .9-8.9A6 6 0 0 1 19.5 6 3.5 3.5 0 0 1 18.5 13Z" fill="currentColor"/><path d="m12.5 13-3 5h4l-2 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
+WEATHER_ICONS['heavy-rain'] = WEATHER_ICONS.rain;
+WEATHER_ICONS.haze = WEATHER_ICONS.windy = WEATHER_ICONS.cloudy;
+WEATHER_ICONS.rest = '<svg viewBox="0 0 24 24"><path d="M5 9h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5Z" fill="currentColor"/><path d="M16 10.5h1.5a2.5 2.5 0 0 1 0 5H16M8 3.5c-.8 1 .8 2 0 3M12 3.5c-.8 1 .8 2 0 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+
+// While driving: one spoken heads-up a few km before rain or a storm the forecast puts on the way, and a reminder
+// to rest every 2 hours at the wheel. After a reroute, the new route's weather is fetched (from the server's hourly
+// cache, so it's cheap).
+function checkWeather() {
+  if (state.settings.weather === false || !nav || !live) return;
+  const rest = restReminder((Date.now() - driveStarted) / 1000, restsSaid, drivesAtNight(Date.now(), 0));
+  if (rest) {
+    restsSaid++;
+    speak(rest);
+    toast(rest, 8000);
+  }
+  if (weather?.route !== nav.route) return void loadWeather(nav.route);
+  const next = wetAhead(weather.answer, weather.points, live.along);
+  const key = next && `${nav.total}:${next.i}`;
+  if (!next || weatherSpoken.has(key)) return;
+  weatherSpoken.add(key);
+  speak(spokenWeather(next));
 }
 
 async function requestRoutes(from, to, heading, via = []) {
@@ -1572,6 +1640,7 @@ function selectRoute(i) {
   renderPeekSummary();
   drawRoutes();
   drawRouteLabels();
+  loadWeather(routes[selected]);
   autoGo.restart();
 }
 
@@ -1676,6 +1745,8 @@ function startDrive() {
   drawTrail();
   tollsSpoken.clear();
   camerasWarned.clear();
+  weatherSpoken.clear();
+  restsSaid = 0;
   $('toll-chip').classList.add('hidden');
   nav = new Navigator(route, { units: state.settings.units });
   nav.spoken.add('depart');
@@ -1753,10 +1824,11 @@ function driveTick(fix) {
   drawDriveLine();
   drawManeuverArrow();
   if (live.prompt) speak(live.prompt);
-  // Tolls, speed cameras and road reports ahead are for drivers.
+  // Tolls, speed cameras, weather ahead (its tips are a driver's) and road reports ahead are for drivers.
   if (travel !== 'walk') {
     checkTolls();
     checkCameras();
+    checkWeather();
     checkAlerts();
   }
   if (share) pushShare();

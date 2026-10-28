@@ -44,6 +44,9 @@ function fakeTrip(coords, time) {
 
 globalThis.fetch = async (url, init = {}) => {
   const u = String(url);
+  if (u.includes('api.data.gov.my/weather/forecast')) return Response.json([]);
+  if (u.includes('api.data.gov.my/weather/warning')) return Response.json([]);
+  if (u.includes('api.met.no')) return Response.json({ properties: { timeseries: [] } });
   if (u.includes('api.tomtom.com')) {
     tomtomCalls++;
     if (tomtomDown) return Response.json({ error: 'over quota' }, { status: 403 });
@@ -153,7 +156,7 @@ function client(device) {
 // open even when A2B is full). Everything else (accounts, places, reports, trips) doesn't.
 function needsSpot(method, path) {
   if (path === '/api/presence') return false;
-  if (method === 'GET' && (path.startsWith('/api/search') || path.startsWith('/api/reverse') || path.startsWith('/api/parking'))) return true;
+  if (method === 'GET' && ['/api/search', '/api/reverse', '/api/parking', '/api/weather'].some((p) => path.startsWith(p))) return true;
   return method === 'POST' && (path === '/api/route' || path === '/api/transit');
 }
 
@@ -927,6 +930,19 @@ test('presence check-ins admit new devices without a per-network throttle', asyn
   } finally {
     await env.DB.prepare('DELETE FROM presence').run();
   }
+});
+
+test('weather along a route needs a spot and sensible points', async () => {
+  const anon = client('weather-no-spot');
+  assert.equal((await anon('GET', '/api/weather?pts=101.69,3.15,1')).status, 503, 'no spot yet');
+  const c = client();
+  assert.equal((await c('GET', '/api/weather')).status, 400);
+  assert.equal((await c('GET', '/api/weather?pts=101.69,3.15,1')).status, 400, 'a time long past');
+  const at = Math.round(Date.now() / 1000) + 600;
+  const res = await c('GET', `/api/weather?pts=101.69,3.15,${at};999,3.15,${at}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.points.length, 1, 'the impossible point is dropped');
+  assert.deepEqual(res.body.warnings, []);
 });
 
 test('trips by train need a spot, a start and a destination', async () => {

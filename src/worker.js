@@ -16,6 +16,7 @@ import { plazaDetails } from './lib/tolls.js';
 import { reportsRepo } from './lib/reports.js';
 import { presenceRepo, limits, validDevice } from './lib/presence.js';
 import { usageRepo, USAGE_DAYS, dayOf } from './lib/usage.js';
+import { weatherAlong, MAX_POINTS as WEATHER_POINTS } from './lib/weather.js';
 import { planTransit, withRealWalks } from './lib/transit.js';
 
 const MAX_BODY = 64 * 1024;
@@ -24,7 +25,7 @@ const LOGIN_MAX_FAILURES = 8; // per address: wrong passwords for one account st
 // were dropped: behind the Pages proxy every client shares one IP, so they would lock out everyone at once)
 const RECENTS_KEPT = 20;
 const FULL_MESSAGE = 'A2B is full right now. You will be let in when a spot opens.';
-const SETTINGS_KEYS = { voice: 'boolean', speed_warning: 'boolean', units: ['metric', 'imperial'], theme: ['auto', 'day', 'night'], avoid_tolls: 'boolean', avoid_highways: 'boolean', avoid_ferries: 'boolean', alerts: 'boolean', traffic_probe: 'boolean', map_pois: 'boolean' };
+const SETTINGS_KEYS = { voice: 'boolean', speed_warning: 'boolean', units: ['metric', 'imperial'], theme: ['auto', 'day', 'night'], avoid_tolls: 'boolean', avoid_highways: 'boolean', avoid_ferries: 'boolean', alerts: 'boolean', traffic_probe: 'boolean', map_pois: 'boolean', weather: 'boolean' };
 
 export default {
   async fetch(request, env) {
@@ -56,6 +57,7 @@ export default {
       env.DB.prepare('DELETE FROM probe_segments WHERE updated_at < ?').bind(now - PROBE_RETENTION_MS),
       env.DB.prepare('DELETE FROM probe_devices WHERE updated_at < ?').bind(now - PROBE_RETENTION_MS),
       env.DB.prepare('DELETE FROM probe_limits WHERE last_at < ?').bind(now - PROBE_RETENTION_MS),
+      env.DB.prepare('DELETE FROM shared_cache WHERE expires_at < ?').bind(now),
     ]);
   },
 };
@@ -365,6 +367,20 @@ async function route(request, env, url) {
     const res = json(await searchPlaces(env, { q, lat, lng, lang }), 200, { 'cache-control': 'public, max-age=600' });
     if (cache) await cache.put(key, res.clone());
     return res;
+  }
+
+  // The weather at points along a route, each at the time the driver will pass it: pts=lng,lat,unix-seconds;...
+  if (path === '/api/weather' && method === 'GET') {
+    await needSpot();
+    const now = Date.now();
+    const points = String(url.searchParams.get('pts') ?? '')
+      .split(';')
+      .slice(0, WEATHER_POINTS)
+      .map((p) => p.split(',').map(Number))
+      .filter(([lng, lat, at]) => Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && at * 1000 > now - 3600_000 && at * 1000 < now + 7 * 86400_000)
+      .map(([lng, lat, at]) => ({ lng, lat, at: at * 1000 }));
+    if (!points.length) throw httpError('pts is required: lng,lat,time;...', 400);
+    return json(await weatherAlong(env, points, { now }), 200, { 'cache-control': 'private, max-age=600' });
   }
 
   if (path === '/api/parking' && method === 'GET') {

@@ -318,6 +318,7 @@ export function openSettings() {
       ${toggleRow('voice', 'Voice directions')}
       ${toggleRow('alerts', 'Report alerts while driving', 'Police, crashes, hazards and closures ahead')}
       ${toggleRow('speed_warning', 'Speeding warning', 'Speedometer turns red above the posted limit')}
+      ${toggleRow('weather', 'Weather and rest tips', 'Rain on your route, what to bring, and when to rest')}
     </div>
     <div class="set-group"><h3>Voice</h3><div id="voice-list"></div></div>
     <div class="set-group"><h3>Navigation</h3>
@@ -654,6 +655,7 @@ function openAbout() {
     <p>Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>.
        Map tiles by <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>.
        Routing by <a href="https://valhalla.github.io/valhalla/" target="_blank" rel="noopener">Valhalla</a>, search by <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a>, live traffic by <a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a>,
+       weather by <a href="https://www.met.gov.my" target="_blank" rel="noopener">MET Malaysia</a> (data.gov.my), <a href="https://api.met.no" target="_blank" rel="noopener">MET Norway</a> and <a href="https://weatherkit.apple.com/legal-attribution.html" target="_blank" rel="noopener"> Weather</a>,
        train timetables from Prasarana and KTMB via <a href="https://data.gov.my" target="_blank" rel="noopener">data.gov.my</a>.
        Shops and places also from <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps Foundation</a> (Meta, Microsoft, Foursquare, AllThePlaces and others; <a href="/places/NOTICE.txt" target="_blank">licences</a>).</p>
     <p>A2B is free and open source. <a href="https://github.com/thaqif0709/a2b" target="_blank" rel="noopener">Source code</a>, ideas and bug reports welcome, or send feedback from Settings.</p>

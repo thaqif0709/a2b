@@ -41,6 +41,15 @@ export const local = {
 };
 
 // ---------- API ----------
+export let appConfig = null; // server knob (/api/config): whether two-factor login is on
+export async function loadConfig() {
+  try {
+    appConfig = await api('/api/config');
+  } catch {
+    appConfig = { twoFactor: {} };
+  }
+  return appConfig;
+}
 // A random id for this device, so the server can count how many are using the app (see presence.js).
 const deviceId = (() => {
   let id = local.get('deviceId');

@@ -27,3 +27,10 @@ GEOCODER_URL = "https://photon.komoot.io"
 # How many devices can use the app at once, and how many of those spots guests can take (accounts get the rest).
 MAX_ACTIVE = "50"
 MAX_GUESTS = "30"
+
+# ---------- Two-factor logins (optional, off by default) ----------
+# TOTP authenticator apps (no extra service): "off" | "optional" (per-driver opt-in) | "required" (everyone).
+TWO_FACTOR = "off"
+
+# Secrets (never in this file — set with `npx wrangler secret put <NAME>`):
+#   TESTER_EMAILS      — accounts that get the testing tools and the usage dashboard

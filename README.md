@@ -197,7 +197,7 @@ test/                   node --test: the navigation engine and the whole API on 
 
 | Area | Endpoints |
 | --- | --- |
-| Accounts | `POST /api/auth/signup`, `/login`, `/logout` · `GET`, `PATCH`, `DELETE /api/me` |
+| Accounts | `POST /api/auth/signup`, `/login`, `/logout` · `POST /api/auth/2fa/setup`, `/enable`, `/disable`, `/verify` · `GET`, `PATCH`, `DELETE /api/me` · `GET /api/config` |
 | Saved places | `GET`, `POST /api/places` · `PATCH`, `DELETE /api/places/:id` · `POST /api/places/import` |
 | Search and routes | `GET /api/search` · `GET /api/reverse` · `POST /api/route` · `GET /api/parking` |
 | Reports | `GET`, `POST /api/reports` · `POST /api/reports/:id/vote` · `GET /api/leaderboard` |
@@ -212,6 +212,15 @@ test/                   node --test: the navigation engine and the whole API on 
   `public/_headers`.
 - Secrets (the Cloudflare token, tester emails) live in Cloudflare, never in the code.
 - A daily job clears expired sessions, old shared drives and old usage numbers.
+
+### Two-factor logins (optional, off by default)
+
+Drivers can add a TOTP authenticator-app code at login — no extra service needed. Set
+`TWO_FACTOR=off` | `optional` | `required` (in `wrangler.toml`, or `.dev.vars` locally from
+`.dev.vars.example`): `optional` lets drivers switch it on in Settings › Account, `required`
+enrols existing accounts at their next login. A challenge allows a few wrong codes before it
+dies, wrong codes count towards the per-account lockout like wrong passwords, and a used code
+can't be replayed. The sign-in screen reads `GET /api/config` to only show what's on.
 
 </details>
 

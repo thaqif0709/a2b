@@ -1,0 +1,5 @@
+# Local development settings (read by `npx wrangler dev`). Copy to `.dev.vars` and fill in.
+# Production uses the same names as wrangler vars/secrets — see wrangler.toml.
+
+# Two-factor logins (TOTP authenticator apps): off | optional | required. Off by default.
+TWO_FACTOR=off

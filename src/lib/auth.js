@@ -19,6 +19,11 @@ function randomHex(bytes) {
   return toHex(crypto.getRandomValues(new Uint8Array(bytes)));
 }
 
+// Opaque tokens handed to the browser (email links, 2FA challenges). Only their SHA-256 is stored.
+export function randomToken(bytes = 32) {
+  return randomHex(bytes);
+}
+
 export async function hashPassword(password, saltHex = randomHex(16)) {
   const key = await crypto.subtle.importKey('raw', enc.encode(password), 'PBKDF2', false, ['deriveBits']);
   const salt = Uint8Array.from(saltHex.match(/../g), (h) => parseInt(h, 16));
@@ -137,6 +142,7 @@ export function publicUser(u) {
     email: u.email,
     name: u.name,
     points: u.points,
+    totp_enabled: u.totp_enabled === 1,
     home: u.home ? JSON.parse(u.home) : null,
     work: u.work ? JSON.parse(u.work) : null,
     settings: JSON.parse(u.settings || '{}'),

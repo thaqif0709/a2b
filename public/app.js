@@ -13,7 +13,7 @@ import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery
 import { start as startVehicle, DEFAULT_COLOR } from './vehicle3d.js';
 import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PLACE_ICONS, soundIcon } from './icons.js';
 import {
-  $, state, api, local, toast, esc, timeAgo, speak, loadLocalSettings, saveSettings, loadPlaces, addPlace, removePlace, renamePlace,
+  $, state, api, loadConfig, local, toast, esc, timeAgo, speak, loadLocalSettings, saveSettings, loadPlaces, addPlace, removePlace, renamePlace,
   isSaved, setHomeWork, armBack,
 } from './core.js';
 import { MAP_THEMES, BASE_STYLES, applyMapTheme } from './map-themes.js';
@@ -262,6 +262,7 @@ async function boot() {
   startProbeSender(); // opt-in traffic sharing batches; silent unless the driver said yes
 
   await refreshMe();
+  loadConfig(); // in the background: only the sign-in screen and Settings read it, when they open
   await onUserChanged();
 
   // Deep links: /drive/<token> watches a shared drive; /?to=lat,lng&name= opens a destination.

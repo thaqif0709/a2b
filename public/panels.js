@@ -3,7 +3,7 @@
 
 // "My A2B" menu, sign in / sign up, settings, saved places, leaderboard and about.
 
-import { $, state, api, local, toast, esc, initials, saveSettings, setHomeWork, removePlace, renamePlace, armBack, speak } from './core.js';
+import { $, state, api, appConfig, loadConfig, local, toast, esc, initials, saveSettings, setHomeWork, removePlace, renamePlace, armBack, speak } from './core.js';
 import { PLACE_ICONS } from './icons.js';
 import { stopSharing } from './probe.js';
 import { pickVoice } from './voice.js';
@@ -16,6 +16,7 @@ let ctx; // callbacks from app.js
 let authMode = 'signup';
 let authReason = null;
 let installPrompt = null;
+let pendingChallenge = null; // second login step: { id, setup, secret, otpauth_url }
 
 export function initPanels(callbacks) {
   ctx = callbacks;
@@ -107,12 +108,15 @@ export function openAuth(reason = null, mode = 'signup') {
 
 function setAuthMode(mode) {
   authMode = mode;
+  pendingChallenge = null;
   const signup = mode === 'signup';
   $('auth-title').textContent = signup ? 'Sign up' : 'Log in';
   $('auth-submit').textContent = signup ? 'Create account' : 'Log in';
   $('auth-switch').textContent = signup ? 'Already have an account? Log in' : 'New here? Create an account';
   document.querySelector('#auth-form .name-row').classList.toggle('hidden', !signup);
   document.querySelector('#auth-form [name=password]').autocomplete = signup ? 'new-password' : 'current-password';
+  $('auth-2fa-row').classList.add('hidden');
+  $('auth-note').classList.add('hidden');
   $('auth-error').classList.add('hidden');
   const forgot = $('auth-forgot');
   if (forgot) forgot.classList.toggle('hidden', signup);
@@ -121,19 +125,47 @@ function setAuthMode(mode) {
 async function submitAuth(e) {
   e.preventDefault();
   const f = new FormData($('auth-form'));
-  const body = { email: f.get('email'), password: f.get('password') };
-  if (authMode === 'signup') Object.assign(body, { name: f.get('name'), settings: state.settings });
   const btn = $('auth-submit');
-  const label = btn.textContent;
+  const label = pendingChallenge ? 'Verify code' : btn.textContent;
   const fields = $('auth-form').querySelectorAll('input, button');
   // Show progress in the button (and lock the form) so a slow network doesn't look like a frozen screen.
   const busy = (text) => (btn.innerHTML = `<span class="spinner" aria-hidden="true"></span>${esc(text)}`);
   fields.forEach((x) => (x.disabled = true));
   btn.classList.add('busy');
-  busy(authMode === 'signup' ? 'Creating account…' : 'Logging in…');
+  busy(authMode === 'signup' && !pendingChallenge ? 'Creating account…' : pendingChallenge ? 'Checking code…' : 'Logging in…');
   $('auth-error').classList.add('hidden');
   try {
+    // Second login step: the password already passed, now the authenticator code.
+    if (pendingChallenge) {
+      await api('/api/auth/2fa/verify', { method: 'POST', body: { challenge_id: pendingChallenge.id, code: String(f.get('totp') ?? '').trim() } });
+      pendingChallenge = null;
+      await finishAuth('Welcome back');
+      return;
+    }
+    const body = { email: f.get('email'), password: f.get('password') };
+    if (authMode === 'signup') Object.assign(body, { name: f.get('name'), settings: state.settings });
     const res = await api(`/api/auth/${authMode}`, { method: 'POST', body });
+    if (res.two_factor_required || res.two_factor_setup_required) {
+      pendingChallenge = { id: res.challenge_id, setup: Boolean(res.two_factor_setup_required) };
+      $('auth-2fa-row').classList.remove('hidden');
+      document.querySelector('#auth-form .name-row').classList.add('hidden');
+      btn.textContent = 'Verify code';
+      $('auth-switch').textContent = 'Back to log in';
+      const note = $('auth-note');
+      if (res.two_factor_setup_required) {
+        note.innerHTML = `Two-factor is now required: add this secret to your authenticator app, then enter the code.<br><b>${esc(res.secret)}</b>`;
+      } else {
+        note.textContent = 'Enter the 6-digit code from your authenticator app.';
+      }
+      note.classList.remove('hidden');
+      // The auth-switch button doubles as "start over" while a challenge is pending.
+      $('auth-switch').onclick = () => {
+        pendingChallenge = null;
+        $('auth-switch').onclick = () => setAuthMode(authMode === 'signup' ? 'login' : 'signup');
+        setAuthMode('login');
+      };
+      return;
+    }
     await refreshMe();
     let code = null;
     if (authMode === 'signup') {
@@ -159,8 +191,18 @@ async function submitAuth(e) {
   } finally {
     fields.forEach((x) => (x.disabled = false));
     btn.classList.remove('busy');
-    btn.textContent = label;
+    btn.textContent = pendingChallenge ? 'Verify code' : label;
   }
+}
+
+async function finishAuth(greeting) {
+  await refreshMe();
+  $('auth').classList.add('hidden');
+  $('auth-form').reset();
+  await ctx.onUserChanged();
+  ctx.applyTheme();
+  ctx.refreshSound();
+  toast(`${greeting}, ${state.user.name}!`);
 }
 
 // A brand-new account takes over everything the guest kept on this device: Home, Work, saved places and recent
@@ -312,7 +354,8 @@ export function openProbeConsent() {
   };
 }
 
-export function openSettings() {
+export async function openSettings() {
+  await loadConfig(); // the 2FA row below only shows when the server switched it on
   const u = state.user;
   const body = openPanel('Settings', `
     <div class="set-group"><h3>Sound and alerts</h3>
@@ -351,6 +394,7 @@ export function openSettings() {
     </div>
     ${u ? `<div class="set-group"><h3>Account</h3>
       <button class="set-row" id="s-name"><span>Display name<small>${esc(u.name)}</small></span></button>
+      ${appConfig?.twoFactor?.mode && appConfig.twoFactor.mode !== 'off' ? `<button class="set-row" id="s-2fa"><span>Two-factor authentication<small>${u.totp_enabled ? 'On: a code is asked at login' : 'Off: add an extra code at login'}</small></span></button>` : ''}
       <button class="set-row" id="s-pass"><span>Change password</span></button>
       <button class="set-row" id="s-delete" style="color:var(--danger)"><span>Delete account</span></button>
     </div>` : ''}
@@ -440,6 +484,32 @@ export function openSettings() {
       if (!name?.trim()) return;
       try {
         state.user = (await api('/api/me', { method: 'PATCH', body: { name } })).user;
+        renderAvatar();
+        openSettings();
+      } catch (e) {
+        toast(e.message);
+      }
+    };
+    if ($('s-2fa')) $('s-2fa').onclick = async () => {
+      try {
+        if (!state.user.totp_enabled) {
+          const { secret, otpauth_url } = await api('/api/auth/2fa/setup', { method: 'POST', body: {} });
+          const code = prompt(`Add this secret to your authenticator app, then enter the 6-digit code:\n\n${secret}\n\n(or add the account from this link: ${otpauth_url})`);
+          if (!code) return;
+          state.user = (await api('/api/auth/2fa/enable', { method: 'POST', body: { code: code.trim() } })).user;
+          toast('Two-factor is on');
+        } else {
+          const code = prompt('Enter a current 6-digit code (or leave it blank to use your password instead)');
+          let done;
+          if (code?.trim()) done = await api('/api/auth/2fa/disable', { method: 'POST', body: { code: code.trim() } });
+          else {
+            const current = prompt('Current password');
+            if (!current) return;
+            done = await api('/api/auth/2fa/disable', { method: 'POST', body: { current_password: current } });
+          }
+          state.user = done.user;
+          toast('Two-factor is off');
+        }
         renderAvatar();
         openSettings();
       } catch (e) {

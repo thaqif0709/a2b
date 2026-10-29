@@ -318,6 +318,8 @@
       <label class="name-row">Name<input name="name" autocomplete="nickname" maxlength="40" placeholder="What other drivers see"></label>
       <label>Email<input name="email" type="email" autocomplete="email" required></label>
       <label>Password<input name="password" type="password" autocomplete="new-password" minlength="8" required placeholder="At least 8 characters"></label>
+      <label id="auth-2fa-row" class="hidden">Authenticator code<input name="totp" inputmode="numeric" autocomplete="one-time-code" maxlength="8" placeholder="6-digit code"></label>
+      <p id="auth-note" class="hint hidden"></p>
       <p id="auth-error" class="error hidden"></p>
       <button class="btn primary wide" id="auth-submit" type="submit">Create account</button>
       <button class="btn link" id="auth-switch" type="button">Already have an account? Log in</button>

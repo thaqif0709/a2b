@@ -4,8 +4,9 @@
 import { ensureSchema } from './lib/schema.js';
 import {
   hashPassword, verifyPassword, normalizeEmail, validatePassword, cleanName, createSession, createRecoveryCode,
-  consumeRecoveryCode, currentUser, destroySession, sessionCookie, publicUser, sha256, readCookie,
+  consumeRecoveryCode, currentUser, destroySession, sessionCookie, publicUser, randomToken, sha256, readCookie,
 } from './lib/auth.js';
+import { generateSecret, otpauthURL, verifyTOTP, verifyTOTPStep, twoFactorMode } from './lib/twofactor.js';
 import { probesRepo, annotateWithProbes, PROBE_RETENTION_MS } from './lib/probes.js';
 import { searchPlaces, reverseGeocode, fetchRoutes, fetchRouteAttributes, annotateWithReports, httpError, corridorBox, routeReportBox, roadMidpoint, MAX_EXCLUDE } from './lib/providers.js';
 import { constructionTwins } from './lib/construction.js';
@@ -23,6 +24,8 @@ const MAX_BODY = 64 * 1024;
 const LOGIN_WINDOW_MS = 15 * 60_000;
 const LOGIN_MAX_FAILURES = 8; // per address: wrong passwords for one account stop here (per-network throttles
 // were dropped: behind the Pages proxy every client shares one IP, so they would lock out everyone at once)
+const CHALLENGE_TTL_MS = 10 * 60_000; // the second login step lasts ten minutes
+const CHALLENGE_MAX_ATTEMPTS = 5; // wrong codes per challenge, then it dies and the driver logs in again
 const RECENTS_KEPT = 20;
 const FULL_MESSAGE = 'A2B is full right now. You will be let in when a spot opens.';
 const SETTINGS_KEYS = { voice: 'boolean', speed_warning: 'boolean', units: ['metric', 'imperial'], theme: ['auto', 'day', 'night'], avoid_tolls: 'boolean', avoid_highways: 'boolean', avoid_ferries: 'boolean', alerts: 'boolean', traffic_probe: 'boolean', map_pois: 'boolean' };
@@ -51,6 +54,7 @@ export default {
       env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(now),
       env.DB.prepare('DELETE FROM trips WHERE updated_at < ?').bind(now - 2 * 86400_000),
       env.DB.prepare('DELETE FROM login_failures WHERE at < ?').bind(now - LOGIN_WINDOW_MS),
+      env.DB.prepare('DELETE FROM auth_challenges WHERE expires_at < ?').bind(now),
       env.DB.prepare('DELETE FROM presence WHERE last_seen < ?').bind(now - 86400_000),
       env.DB.prepare('DELETE FROM usage_devices WHERE day < ?').bind(dayOf(now - USAGE_DAYS * 86400_000)),
       env.DB.prepare('DELETE FROM usage_daily WHERE day < ?').bind(dayOf(now - USAGE_DAYS * 86400_000)),
@@ -135,6 +139,13 @@ async function route(request, env, url) {
     return json({ ok: true, closed });
   }
 
+  // Public knob the sign-in screen reads: whether two-factor login is on.
+  if (path === '/api/config' && method === 'GET') {
+    return json({
+      twoFactor: { mode: twoFactorMode(env) },
+    });
+  }
+
   // ---------- Accounts ----------
   if (path === '/api/auth/signup' && method === 'POST') {
     if (!validDevice(device)) throw httpError('Missing device id. Update the app to the latest version.', 400);
@@ -174,6 +185,17 @@ async function route(request, env, url) {
       await db.prepare('INSERT INTO login_failures (email, at) VALUES (?, ?)').bind(email, Date.now()).run();
       throw httpError('Wrong email or password.', 401);
     }
+    const tf = twoFactorMode(env);
+    if (tf !== 'off' && row.totp_enabled) {
+      // No session yet: failures stay counted, so wrong codes lock the account like wrong passwords do.
+      return json({ two_factor_required: true, challenge_id: await issueChallenge(db, row.id, 'totp') }, 202);
+    }
+    if (tf === 'required' && !row.totp_enabled) {
+      // This account predates the requirement: set up the authenticator as the second login step.
+      const secret = generateSecret();
+      const challenge_id = await issueChallenge(db, row.id, 'totp_setup', secret);
+      return json({ two_factor_setup_required: true, challenge_id, secret, otpauth_url: otpauthURL(secret, row.email) }, 202);
+    }
     await db.prepare('DELETE FROM login_failures WHERE email = ?').bind(email).run();
     return withSession(request, db, row, 200, { device });
   }
@@ -195,6 +217,94 @@ async function route(request, env, url) {
     ]);
     const me = await db.prepare('SELECT * FROM users WHERE id = ?').bind(row.id).first();
     return withSession(request, db, me, 200, { device });
+  }
+
+  // ---------- Two-factor authentication (TOTP authenticator apps) ----------
+  if (path === '/api/auth/2fa/setup' && method === 'POST') {
+    if (twoFactorMode(env) === 'off') throw httpError('Not found.', 404);
+    const u = needUser();
+    if (u.totp_enabled) throw httpError('Two-factor is already on for this account.', 400);
+    const secret = generateSecret();
+    await db.prepare('UPDATE users SET totp_secret = ?, totp_enabled = 0 WHERE id = ?').bind(secret, u.id).run();
+    return json({ secret, otpauth_url: otpauthURL(secret, u.email) });
+  }
+
+  if (path === '/api/auth/2fa/enable' && method === 'POST') {
+    if (twoFactorMode(env) === 'off') throw httpError('Not found.', 404);
+    const u = needUser();
+    const body = await readJson(request);
+    if (u.totp_enabled) throw httpError('Two-factor is already on for this account.', 400);
+    if (!u.totp_secret) throw httpError('Start two-factor setup first.', 400);
+    // The enabling code counts as used: it can't log in within the next minute.
+    const step = await verifyTOTPStep(u.totp_secret, body.code);
+    if (step == null || (u.totp_last_step != null && step <= u.totp_last_step)) {
+      throw Object.assign(httpError('That code is wrong. Check your authenticator app and try again.', 401), { code: 'totp_invalid' });
+    }
+    const row = await db.prepare('UPDATE users SET totp_enabled = 1, totp_last_step = ? WHERE id = ? RETURNING *').bind(step, u.id).first();
+    return json({ ok: true, user: publicUser(row) });
+  }
+
+  if (path === '/api/auth/2fa/disable' && method === 'POST') {
+    if (twoFactorMode(env) === 'off') throw httpError('Not found.', 404);
+    const u = needUser();
+    const body = await readJson(request);
+    if (!u.totp_enabled) throw httpError('Two-factor is already off.', 400);
+    const fails = await db.prepare('SELECT COUNT(*) AS n FROM login_failures WHERE email = ? AND at > ?').bind(u.email, Date.now() - LOGIN_WINDOW_MS).first();
+    if (fails.n >= LOGIN_MAX_FAILURES) throw Object.assign(httpError('Too many wrong codes. Try again in 15 minutes.', 429), { code: 'locked_out' });
+    const okCode = body.code && u.totp_secret && (await verifyTOTP(u.totp_secret, body.code));
+    const okPass = body.current_password && (await verifyPassword(String(body.current_password), u.pass_hash, u.pass_salt));
+    if (!okCode && !okPass) {
+      // Counted like a wrong password: a borrowed session can't guess the password or codes without limit.
+      await db.prepare('INSERT INTO login_failures (email, at) VALUES (?, ?)').bind(u.email, Date.now()).run();
+      throw httpError('Enter a current code or your password to turn it off.', 403);
+    }
+    await db.prepare('DELETE FROM login_failures WHERE email = ?').bind(u.email).run();
+    const row = await db.prepare('UPDATE users SET totp_secret = NULL, totp_enabled = 0, totp_last_step = NULL WHERE id = ? RETURNING *').bind(u.id).first();
+    return json({ ok: true, user: publicUser(row) });
+  }
+
+  // The second login step: a code from the authenticator app, for the challenge login issued.
+  if (path === '/api/auth/2fa/verify' && method === 'POST') {
+    if (twoFactorMode(env) === 'off') throw httpError('Not found.', 404);
+    const body = await readJson(request);
+    const cid = String(body.challenge_id ?? '');
+    if (!/^[0-9a-f]{64}$/.test(cid)) throw httpError('That login step expired. Log in again.', 400);
+    const ch = await db.prepare('SELECT * FROM auth_challenges WHERE token_hash = ?').bind(await sha256(cid)).first();
+    if (!ch || ch.expires_at <= Date.now()) {
+      if (ch) await db.prepare('DELETE FROM auth_challenges WHERE token_hash = ?').bind(ch.token_hash).run();
+      throw httpError('That login step expired. Log in again.', 400);
+    }
+    const row = await db.prepare('SELECT * FROM users WHERE id = ?').bind(ch.user_id).first();
+    if (row) {
+      // Wrong codes count towards the same per-account lockout as wrong passwords — checked here too,
+      // so guessing can't continue across challenges once the count is reached.
+      const fails = await db.prepare('SELECT COUNT(*) AS n FROM login_failures WHERE email = ? AND at > ?').bind(row.email, Date.now() - LOGIN_WINDOW_MS).first();
+      if (fails.n >= LOGIN_MAX_FAILURES) throw Object.assign(httpError('Too many wrong codes. Try again in 15 minutes.', 429), { code: 'locked_out' });
+    }
+    const secret = ch.purpose === 'totp_setup' ? ch.secret : row?.totp_secret;
+    // verifyTOTPStep returns the matched 30 s step (or null), so a code can't be replayed in a later challenge.
+    const step = secret ? await verifyTOTPStep(secret, body.code) : null;
+    if (!row || !secret || step == null || (row.totp_last_step != null && step <= row.totp_last_step)) {
+      // A wrong code counts like a wrong password: after a few, the account locks for a while,
+      // and the challenge dies after a few wrong codes, so it can't be guessed one code at a time.
+      await db.prepare('INSERT INTO login_failures (email, at) VALUES (?, ?)').bind(row?.email ?? '', Date.now()).run();
+      const attempts = (ch.attempts ?? 0) + 1;
+      if (attempts >= CHALLENGE_MAX_ATTEMPTS) {
+        await db.prepare('DELETE FROM auth_challenges WHERE token_hash = ?').bind(ch.token_hash).run();
+        throw Object.assign(httpError('Too many wrong codes. Log in again.', 429), { code: 'totp_attempts' });
+      }
+      await db.prepare('UPDATE auth_challenges SET attempts = ? WHERE token_hash = ?').bind(attempts, ch.token_hash).run();
+      throw Object.assign(httpError('That code is wrong. Check your authenticator app and try again.', 401), { code: 'totp_invalid' });
+    }
+    await db.prepare('DELETE FROM auth_challenges WHERE token_hash = ?').bind(ch.token_hash).run();
+    let user = row;
+    if (ch.purpose === 'totp_setup' && !row.totp_enabled) {
+      user = await db.prepare('UPDATE users SET totp_secret = ?, totp_enabled = 1, totp_last_step = ? WHERE id = ? RETURNING *').bind(secret, step, row.id).first();
+    } else {
+      user = await db.prepare('UPDATE users SET totp_last_step = ? WHERE id = ? RETURNING *').bind(step, row.id).first();
+    }
+    await db.prepare('DELETE FROM login_failures WHERE email = ?').bind(row.email).run();
+    return withSession(request, db, user, 200, { device });
   }
 
   if (path === '/api/auth/logout' && method === 'POST') {
@@ -255,8 +365,9 @@ async function route(request, env, url) {
       db.prepare('DELETE FROM trips WHERE user_id = ?').bind(u.id),
       db.prepare('DELETE FROM votes WHERE user_id = ?').bind(u.id),
       db.prepare('DELETE FROM feedback WHERE user_id = ?').bind(u.id),
+      db.prepare('DELETE FROM auth_challenges WHERE user_id = ?').bind(u.id),
       db.prepare('UPDATE reports SET removed = 1 WHERE user_id = ?').bind(u.id),
-      db.prepare("UPDATE users SET email = 'deleted-' || id || '@invalid', name = 'Former driver', pass_hash = '', pass_salt = '', home = NULL, work = NULL WHERE id = ?").bind(u.id),
+      db.prepare("UPDATE users SET email = 'deleted-' || id || '@invalid', name = 'Former driver', pass_hash = '', pass_salt = '', home = NULL, work = NULL, totp_secret = NULL, totp_enabled = 0, totp_last_step = NULL WHERE id = ?").bind(u.id),
     ]);
     return json({ ok: true }, 200, { 'set-cookie': sessionCookie(request, null) });
   }
@@ -597,6 +708,17 @@ async function withSession(request, db, row, status, { device = null, recovery =
   const body = { user: publicUser(row) };
   if (recovery) body.recovery_code = recovery; // shown once: there is no other way to see it again
   return json(body, status, { 'set-cookie': sessionCookie(request, token, expires) });
+}
+
+// The first half of a two-factor login: the app answers with the code for this challenge id.
+async function issueChallenge(db, userId, purpose, secret = null) {
+  const token = randomToken(32);
+  const now = Date.now();
+  await db
+    .prepare('INSERT INTO auth_challenges (token_hash, user_id, purpose, secret, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(await sha256(token), userId, purpose, secret, now, now + CHALLENGE_TTL_MS)
+    .run();
+  return token;
 }
 
 // The driver's last shared-drive position, when it's fresh: what "around you" means for a report.

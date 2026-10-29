@@ -20,6 +20,7 @@
     "predeploy": "node scripts/check-places.mjs && node scripts/app-version.mjs",
     "construction": "python3 scripts/build-construction.py",
     "cameras": "node scripts/build-cameras.mjs",
+    "parking-entrances": "node scripts/build-parking-entrances.mjs",
     "transit": "python3 scripts/build-transit.py"
   },
   "devDependencies": {

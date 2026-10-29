@@ -66,6 +66,9 @@ let themeNow = null;
 
 // Preview / drive state
 let dest = null;
+// The car park entrance the routes end at, for this destination (see src/lib/entrances.js): { name, street, lat,
+// lng, for } or null. Reroutes keep going to it, so the drive doesn't switch entrances on the way.
+let entrance = null;
 // How to get there: 'drive' | 'walk' | 'transit'. Not remembered: every trip starts on Drive, so someone who walked once
 // isn't given footpaths (no cameras, alerts or tolls) next time they're in the car. See resetTravel.
 let travel = 'drive';
@@ -958,7 +961,7 @@ function setupLongPress() {
 
 async function showContextMenu(lngLat, point) {
   const box = $('ctx');
-  const p = { name: 'Dropped pin', address: `${lngLat.lat.toFixed(5)}, ${lngLat.lng.toFixed(5)}`, lat: lngLat.lat, lng: lngLat.lng };
+  const p = { name: 'Dropped pin', address: `${lngLat.lat.toFixed(5)}, ${lngLat.lng.toFixed(5)}`, lat: lngLat.lat, lng: lngLat.lng, exact: true };
   dropMarker?.remove();
   dropMarker = new maplibregl.Marker({ element: el('div', 'drop-pin', DROP_PIN), anchor: 'bottom' }).setLngLat(lngLat).addTo(map);
   box.innerHTML = `
@@ -970,7 +973,7 @@ async function showContextMenu(lngLat, point) {
   box.style.top = `${Math.min(point.y + 8, innerHeight - 220)}px`;
   box.classList.remove('hidden');
   if (navigator.vibrate) navigator.vibrate(15);
-  const named = api(`/api/reverse?lat=${lngLat.lat}&lng=${lngLat.lng}`).then((r) => ({ ...r.place, lat: lngLat.lat, lng: lngLat.lng })).catch(() => p);
+  const named = api(`/api/reverse?lat=${lngLat.lat}&lng=${lngLat.lng}`).then((r) => ({ ...r.place, lat: lngLat.lat, lng: lngLat.lng, exact: true })).catch(() => p);
   box.onclick = async (e) => {
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (!act) return;
@@ -1303,7 +1306,7 @@ async function runSearch(q, enter = false) {
     }
     // Two searches at once: the server's (OpenStreetMap) and this phone's own (Overture shops and places).
     const [server, local] = pasted
-      ? [{ places: [{ name: 'Coordinates', address: q, lat, lng }] }, []]
+      ? [{ places: [{ name: 'Coordinates', address: q, lat, lng, exact: true }] }, []]
       : await Promise.all([
           api(`/api/search?q=${encodeURIComponent(q)}&lat=${near[1]}&lng=${near[0]}&lang=${(navigator.language || 'en').slice(0, 2)}`),
           searchNearby(q, near).catch(() => []),
@@ -1471,7 +1474,7 @@ function updateSaveStar() {
 }
 
 // ================= Preview: destination + route options =================
-async function openPreview(place) {
+async function openPreview(place, { toPlace = false } = {}) {
   armBack();
   hideContextMenu();
   mode = 'preview';
@@ -1505,6 +1508,7 @@ async function openPreview(place) {
       : 'Waiting for your location… routes start from the middle of the map for now.'
     : 'Finding the best routes…';
   $('route-status').innerHTML = `<span class="spinner" aria-hidden="true"></span>${status}`;
+  entrance = null;
   transit = null;
   drawTransit();
   if (travel === 'transit') {
@@ -1515,12 +1519,21 @@ async function openPreview(place) {
   }
   const asked = travel;
   try {
-    const found = await requestRoutes(from ?? map.getCenter().toArray(), [place.lng, place.lat]);
+    const found = await requestRoutes(from ?? map.getCenter().toArray(), [place.lng, place.lat], undefined, [], { entrances: travel === 'drive' && !toPlace && wantsEntrance(place) });
     // Gone, or switched to Walk or Train while these were on their way: they mustn't come back (or start a drive).
     if (mode !== 'preview' || dest !== place || travel !== asked) return;
     routes = found;
+    entrance = routes.entrance ? { ...routes.entrance, for: place } : null;
     $('route-status').textContent = [from ? '' : status, routeNote(routes)].filter(Boolean).join(' ');
     if (origin) $('route-status').textContent = `From ${origin.name}. Leave later puts the trip in your calendar.`;
+    if (entrance) {
+      const where = entrance.street ? ` on ${entrance.street}` : '';
+      const line = el('span', 'entrance-note', `${esc(entrance.name ? `Ends at ${entrance.name}` : 'Ends at the car park entrance')}${esc(where)}. `);
+      const back = el('button', 'link-btn', 'Go to the place itself');
+      back.onclick = () => openPreview(place, { toPlace: true });
+      line.append(back);
+      $('route-status').prepend(line);
+    }
     renderRouteOptions();
     renderPeekSummary();
     drawRoutes();
@@ -1581,6 +1594,19 @@ async function showTransit(place, from, status) {
     $('route-list').innerHTML = '';
     $('route-status').textContent = e.message;
   }
+}
+
+// A car park entrance makes sense for a place you drive to and park at (a mall, an office, a hospital), not for a
+// spot picked on the map, typed coordinates, a car park already, or Home.
+// Only big places with their own car parks: around a shop or an office, the nearest entrance can be another
+// building's (a shop in Bukit Bintang would end at Pavilion's car park).
+const ENTRANCE_PLACES = new Set([
+  'mall', 'shopping_centre', 'shopping_center', 'shopping_mall', 'department_store', 'hospital', 'specialty_hospital',
+  'stadium', 'university', 'college', 'conference_centre', 'convention_centre', 'convention_center', 'exhibition_centre',
+  'aerodrome', 'airport', 'theme_park', 'zoo',
+]);
+function wantsEntrance(place) {
+  return !place.exact && ENTRANCE_PLACES.has(place.category);
 }
 
 // Speed and heading when moving at train speed, so a trip planned on a train starts on it (src/lib/transit.js).
@@ -2039,12 +2065,12 @@ function routeNote(rs) {
   return '';
 }
 
-async function requestRoutes(from, to, heading, via = []) {
+async function requestRoutes(from, to, heading, via = [], { entrances = false } = {}) {
   const s = state.settings;
-  const { routes: rs, closures_ignored: closuresIgnored, construction_avoided: constructionAvoided } = await api('/api/route', {
+  const { routes: rs, closures_ignored: closuresIgnored, construction_avoided: constructionAvoided, entrance: ent } = await api('/api/route', {
     method: 'POST',
     body: {
-      from, to, heading, travel,
+      from, to, heading, travel, entrances,
       via: via.map((p) => [p.lng, p.lat]),
       units: s.units,
       lang: navigator.language || 'en-US',
@@ -2052,7 +2078,7 @@ async function requestRoutes(from, to, heading, via = []) {
     },
   });
   for (const r of rs) r.cum = cumulative(r.coords);
-  return Object.assign(rs, { closuresIgnored, constructionAvoided });
+  return Object.assign(rs, { closuresIgnored, constructionAvoided, entrance: ent ?? null });
 }
 
 // Room the map leaves for the route sheet: its real height on a phone, so a collapsed sheet shows more map.
@@ -2651,7 +2677,8 @@ async function reroute(fix, { force = false, note } = {}) {
   rerouting = true;
   lastReroute = Date.now();
   try {
-    const rs = await requestRoutes(fix.lngLat, [dest.lng, dest.lat], fix.heading ?? undefined, stops);
+    const to = entrance?.for === dest ? [entrance.lng, entrance.lat] : [dest.lng, dest.lat];
+    const rs = await requestRoutes(fix.lngLat, to, fix.heading ?? undefined, stops);
     if (mode !== 'drive') return;
     keepTrail(fix.lngLat);
     nav = new Navigator(rs[0], { units: state.settings.units });

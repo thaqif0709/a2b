@@ -193,6 +193,9 @@ body.driving .maplibregl-ctrl-bottom-right { bottom: calc(92px + var(--trip-keep
 .sheet-actions .btn.primary { flex: 1.6; }
 .hint { color: var(--muted); font-size: 14px; line-height: 1.4; padding: 8px 2px; }
 small.hint { display: block; padding: 4px 0 0; }
+/* "Ends at the car park entrance on Jalan Raja Chulan. Go to the place itself" under the route options. */
+.entrance-note { display: block; color: var(--text); }
+.link-btn { padding: 0; border: 0; background: none; color: var(--accent-text); font: inherit; font-weight: 600; text-decoration: underline; cursor: pointer; }
 .error { color: var(--danger); font-size: 14px; }
 .field { width: 100%; box-sizing: border-box; height: 48px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-2); padding: 0 14px; margin-top: 12px; }
 /* iPhones give the date and time box a width of its own: keep it inside the sheet. */

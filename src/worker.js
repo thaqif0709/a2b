@@ -13,6 +13,7 @@ import { liveTraffic, applyTraffic } from './lib/traffic.js';
 import { loadCameras, camerasAlong } from './lib/cameras.js';
 import { parkingNear, parkingQuery, parkingResults } from './lib/parking.js';
 import { plazaDetails } from './lib/tolls.js';
+import { entrancesNear, pickEntrance, arrivalStreet } from './lib/entrances.js';
 import { refreshChargers, allChargers } from './lib/chargers.js';
 import { reportsRepo } from './lib/reports.js';
 import { suggestionsRepo } from './lib/suggestions.js';
@@ -451,9 +452,15 @@ async function route(request, env, url) {
     const walk = body.travel === 'walk';
     const via = (Array.isArray(body.via) ? body.via : []).slice(0, 3).map(lngLat).filter(Boolean);
     const area = corridorBox([from, ...via, to]);
-    const exclude = walk || body.avoid_closures === false ? [] : await reports.closuresNear(area);
+    // A car park entrance at the destination (src/lib/entrances.js), only when the app asks for one: it does for a
+    // drive to a big place, not for reroutes (they keep the entrance already picked) or anything else, as the pick
+    // costs a routing request. A failing lookup just routes to the place.
+    const [exclude, entrance] = await Promise.all([
+      walk || body.avoid_closures === false ? [] : reports.closuresNear(area),
+      walk || body.entrances !== true ? null : entrancesNear(env, to).then((list) => pickEntrance(env, from, list)).catch(() => null),
+    ]);
     const opts = {
-      from, to, via, exclude,
+      from, to: entrance ? [entrance.lng, entrance.lat] : to, via, exclude,
       avoid: body.avoid ?? {},
       units: body.units === 'imperial' ? 'imperial' : 'metric',
       lang: typeof body.lang === 'string' && /^[a-z]{2}(-[A-Z]{2})?$/.test(body.lang) ? body.lang : 'en-US',
@@ -521,7 +528,10 @@ async function route(request, env, url) {
     annotateWithProbes(routes, probeSegs, routeArea);
     routes.sort((a, b) => a.duration - b.duration);
     await count('routes');
-    return json({ routes, closures_avoided: closuresIgnored ? 0 : exclude.length, closures_ignored: closuresIgnored, construction_avoided: constructionAvoided });
+    return json({
+      routes, closures_avoided: closuresIgnored ? 0 : exclude.length, closures_ignored: closuresIgnored, construction_avoided: constructionAvoided,
+      entrance: entrance && { name: entrance.name, street: arrivalStreet(routes[0]), lat: entrance.lat, lng: entrance.lng },
+    });
   }
 
   // ---------- Reports ----------

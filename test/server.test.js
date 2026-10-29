@@ -11,6 +11,7 @@ import { buildRouteRequest, photonToPlace, lanes, searchPlaces, corridorBox, rou
 import { applyTraffic } from '../src/lib/traffic.js';
 import { camerasAlong } from '../src/lib/cameras.js';
 import { parkingQuery } from '../src/lib/parking.js';
+import { inMalaysia } from '../public/geo.js';
 import { cameraBearing } from '../scripts/build-cameras.mjs';
 import { REPORT_TYPES } from '../public/report-types.js';
 import { encodePolyline as encode, decodePolyline } from '../public/geo.js';
@@ -109,14 +110,14 @@ globalThis.fetch = async (url, init = {}) => {
   if (u.includes('/api/')) {
     // A few Malaysian places for the nearby-search tests; any other query gets the default answer below.
     const params = new URL(u).searchParams;
-    const feat = (name, lng, lat, osm_value = 'restaurant', extra = {}) => ({ geometry: { coordinates: [lng, lat] }, properties: { name, osm_value, country: 'Malaysia', ...extra } });
+    const feat = (name, lng, lat, osm_value = 'restaurant', extra = {}) => ({ geometry: { coordinates: [lng, lat] }, properties: { name, osm_value, country: 'Malaysia', countrycode: 'MY', ...extra } });
     const q = params.get('q');
     if (q === 'eco grandeur') return Response.json({ features: [feat('Eco Grandeur', 101.468, 3.224, 'suburb')] });
     if (q === 'nandos' && params.get('lat') === '3.224') return Response.json({ features: [feat("Nando's", 101.469, 3.225, 'restaurant', { street: 'Jalan Eco 1' })] });
-    if (q === 'nandos') return Response.json({ features: [feat("Nando's", 101.518, 3.071), feat("Nando's", -0.12, 51.5, 'restaurant', { country: 'UK' })] });
+    if (q === 'nandos') return Response.json({ features: [feat("Nando's", 101.518, 3.071), feat("Nando's", -0.12, 51.5, 'restaurant', { country: 'UK', countrycode: 'GB' })] });
     if (q === 'nandos eco grandeur') return Response.json({ features: [] });
   }
-  if (u.includes('/api/')) return Response.json({ features: [{ geometry: { coordinates: [13.41, 52.52] }, properties: { name: 'Alexanderplatz', city: 'Berlin', country: 'Germany', osm_value: 'square' } }] });
+  if (u.includes('/api/')) return Response.json({ features: [{ geometry: { coordinates: [13.41, 52.52] }, properties: { name: 'Alexanderplatz', city: 'Berlin', country: 'Germany', countrycode: 'DE', osm_value: 'square' } }] });
   throw new Error(`unexpected fetch ${u}`);
 };
 
@@ -132,7 +133,8 @@ const ASSETS = {
     return new Response('<!doctype html>', { headers: { 'content-type': 'text/html' } });
   },
 };
-const env = { DB: createD1(), ASSETS, ROUTING_URL: 'https://routing.test/route', GEOCODER_URL: 'https://geo.test' };
+// SEARCH_COUNTRY empty: most of these tests search Berlin (see 'search keeps to Malaysia' for the default).
+const env = { DB: createD1(), ASSETS, ROUTING_URL: 'https://routing.test/route', GEOCODER_URL: 'https://geo.test', SEARCH_COUNTRY: '' };
 
 let nextDevice = 0;
 function client(device) {
@@ -157,7 +159,7 @@ function client(device) {
   };
 }
 
-// Search, routing, reverse and parking need a checked-in spot; feedback needs only a valid device id (it stays
+// Search (ours too), routing, reverse and parking need a checked-in spot; feedback needs only a valid device id (it stays
 // open even when A2B is full). Everything else (accounts, places, reports, trips) doesn't.
 function needsSpot(method, path) {
   if (path === '/api/presence') return false;
@@ -1004,5 +1006,77 @@ test('trips by train need a spot, a start and a destination', async () => {
     assert.equal(l.stations.length, l.stops + 1);
     assert.deepEqual([l.stations[0][0], l.stations.at(-1)[0]], [l.from.name, l.to.name]);
     assert.ok(l.stations.every(([name, lat, lng, t], i) => typeof name === 'string' && Math.abs(lat) < 90 && Math.abs(lng) < 180 && (!i || t > l.stations[i - 1][3])));
+  }
+});
+
+test('drivers suggest places; testers approve (with edits) or reject them; approved ones join search', async () => {
+  assert.equal((await client()('POST', '/api/suggestions', { name: 'Warung Pak Abu', lat: 3.07, lng: 101.52 })).status, 401);
+  assert.equal((await alice('POST', '/api/suggestions', { name: 'x', lat: 3.07, lng: 101.52 })).status, 400);
+  assert.equal((await alice('POST', '/api/suggestions', { name: 'Merlion', lat: 1.2868, lng: 103.8545 })).status, 400, 'Singapore: not Malaysia');
+  assert.equal((await alice('POST', '/api/suggestions', { name: 'Wat Arun', lat: 13.7437, lng: 100.4888 })).status, 400, 'nor Bangkok');
+  const before = (await alice('GET', '/api/me')).body.user.points;
+  const sent = await alice('POST', '/api/suggestions', { name: 'Warung Pak Abu', category: 'Restaurant', address: 'Jalan Tepi, Shah Alam', note: 'Opposite the mosque', lat: 3.07, lng: 101.52 });
+  assert.equal(sent.status, 201);
+  assert.equal(sent.body.suggestion.status, 'pending');
+  const other = await alice('POST', '/api/suggestions', { name: 'Kedai Tak Wujud', lat: 3.08, lng: 101.53 });
+  const listed = async () => (await client()('GET', '/api/locations/changes')).body;
+  assert.equal((await listed()).places.length, 0, 'not searchable until approved');
+  assert.equal((await alice('GET', '/api/suggestions')).status, 404, 'the queue is for testers');
+  assert.equal((await alice('POST', `/api/suggestions/${sent.body.suggestion.id}`, { action: 'approve' })).status, 404);
+
+  env.TESTER_EMAILS = 'tess.reviews@test.com';
+  try {
+    const tess = client();
+    await tess('POST', '/api/auth/signup', { email: 'tess.reviews@test.com', password: 'password6', name: 'Tess' });
+    const queue = (await tess('GET', '/api/suggestions')).body.suggestions;
+    assert.deepEqual(queue.map((s) => [s.name, s.by_name, s.note]), [['Warung Pak Abu', 'Alice', 'Opposite the mosque'], ['Kedai Tak Wujud', 'Alice', '']]);
+    const ok = await tess('POST', `/api/suggestions/${sent.body.suggestion.id}`, { action: 'approve', name: 'Warung Pak Abu (Seksyen 7)' });
+    assert.equal(ok.body.status, 'approved');
+    assert.equal((await tess('POST', `/api/suggestions/${sent.body.suggestion.id}`, { action: 'approve' })).status, 404, 'only once');
+    assert.equal((await tess('POST', `/api/suggestions/${other.body.suggestion.id}`, { action: 'reject' })).body.status, 'rejected');
+    assert.equal((await tess('GET', '/api/suggestions')).body.suggestions.length, 0);
+
+    const found = (await listed()).places;
+    assert.deepEqual(found.map(([name, lng, lat, , , , sources, id]) => [name, lng, lat, sources, id]), [['Warung Pak Abu (Seksyen 7)', 101.52, 3.07, 8, ok.body.location_id]],
+      'in the list of changes every phone gets, as a row like the files\' (a driver\'s: sources 8)');
+    const here = await client()('GET', '/api/reverse?lat=3.0701&lng=101.5201');
+    assert.equal(here.body.place.name, 'Warung Pak Abu (Seksyen 7)', 'what is here: a driver\'s place first');
+    assert.equal((await alice('GET', '/api/me')).body.user.points, before + 10, 'points for an approved place');
+    assert.deepEqual((await alice('GET', '/api/suggestions/mine')).body.suggestions.map((s) => s.status), ['rejected', 'approved']);
+
+    // A wrong place comes out of search.
+    assert.equal((await alice('DELETE', `/api/locations/${ok.body.location_id}`)).status, 404, 'testers only');
+    assert.equal((await tess('DELETE', `/api/locations/${ok.body.location_id}`)).status, 200);
+    assert.deepEqual((await listed()).places, [], 'out of search');
+    // One of the files' places (scripts/build-locations.py place_id), taken out of search too.
+    assert.equal((await alice('DELETE', '/api/locations/1f3a9c2b')).status, 404, 'testers only');
+    assert.equal((await tess('DELETE', '/api/locations/1f3a9c2b')).status, 200);
+    assert.deepEqual((await listed()).hidden, ['1f3a9c2b']);
+  } finally {
+    delete env.TESTER_EMAILS;
+  }
+});
+
+test('search keeps to Malaysia: Photon asked inside its box, and its places outside Malaysia dropped', async () => {
+  const asked = [];
+  const real = globalThis.fetch;
+  globalThis.fetch = (u, init) => (asked.push(String(u)), real(u, init));
+  try {
+    const { places } = await searchPlaces({ GEOCODER_URL: 'https://geo.test' }, { q: 'nandos' });
+    assert.deepEqual(places.map((p) => p.address), ['Malaysia'], 'the London one is left out');
+    assert.equal(new URL(asked[0]).searchParams.get('bbox'), '99.6,0.85,119.3,7.4');
+    const anywhere = await searchPlaces({ GEOCODER_URL: 'https://geo.test', SEARCH_COUNTRY: '' }, { q: 'nandos' });
+    assert.equal(anywhere.places.length, 2, 'SEARCH_COUNTRY empty: anywhere');
+  } finally {
+    globalThis.fetch = real;
+  }
+});
+
+test('Malaysia, roughly: the peninsula, Sabah and Sarawak, not Singapore or Bangkok', () => {
+  for (const [lng, lat, name] of [[101.6869, 3.1390, 'Kuala Lumpur'], [103.7618, 1.4655, 'JB Sentral'], [116.0735, 5.9804, 'Kota Kinabalu'], [110.3443, 1.5535, 'Kuching'], [100.3327, 5.4141, 'George Town']]) {
+    assert.ok(inMalaysia([lng, lat]), name);
+  }
+  for (const [lng, lat, name] of [[103.8198, 1.3521, 'Singapore'], [100.5018, 13.7563, 'Bangkok'], [106.8456, -6.2088, 'Jakarta']]) {
+    assert.ok(!inMalaysia([lng, lat]), name);
   }
 });

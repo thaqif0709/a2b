@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Thaqif Syarafuddin bin Roslan. A2B: https://github.com/thaqif0709/a2b (see NOTICE).
 
-// Runs before `npm run deploy`: warns when the Overture place files (public/places/, not kept in git)
-// haven't been built, because search then only has OpenStreetMap's places.
+// Runs before `npm run deploy`: warns when A2B's place files (public/places/, not kept in git) haven't been built,
+// because search then only has the server's geocoder.
 import { existsSync, readFileSync } from 'node:fs';
 
 const index = new URL('../public/places/index.json', import.meta.url);
 if (!existsSync(index)) {
-  console.warn('\n⚠  No place data in public/places/. Search will only use OpenStreetMap.');
-  console.warn('   Build it first: pip install duckdb && npm run places\n');
+  console.warn('\n⚠  No place data in public/places/. Search will only use the geocoder.');
+  console.warn('   Build it first: pip install duckdb && npm run places && npm run locations\n');
 } else {
-  const { release, count, built, areas = [] } = JSON.parse(readFileSync(index, 'utf8'));
-  console.log(`Place data: Overture ${release}, ${count.toLocaleString()} places, built ${built}.`);
+  const { release, count, built, areas = [], source = '' } = JSON.parse(readFileSync(index, 'utf8'));
+  console.log(`Place data: ${source || 'Overture'} ${release}, ${count.toLocaleString()} places, built ${built}.`);
+  if (!source.startsWith('A2B places')) {
+    console.warn('\n⚠  These are Overture\'s places only. For A2B\'s merged places (OpenStreetMap, Overture, Foursquare): npm run locations\n');
+  }
   // Searches like "petrol" or "klinik" and the map's petrol stations, hospitals and clinics need the per-kind files.
   const typed = areas.some((a) => {
     const files = new URL(`../public/places/${a}/files.json`, import.meta.url);

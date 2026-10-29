@@ -48,12 +48,13 @@ const deviceId = (() => {
   return id;
 })();
 
-export async function api(path, { method = 'GET', body } = {}) {
+export async function api(path, { method = 'GET', body, signal } = {}) {
   const res = await fetch(path, {
     method,
     headers: { 'x-a2b-device': deviceId, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body),
     credentials: 'same-origin',
+    signal,
   }).catch(() => {
     throw Object.assign(new Error("Can't reach A2B. Check your connection and try again."), { status: 0 });
   });

@@ -50,7 +50,20 @@ CREATE INDEX IF NOT EXISTS probe_devices_live ON probe_devices (updated_at);
 CREATE TABLE IF NOT EXISTS probe_limits (device_hash TEXT PRIMARY KEY, last_at INTEGER NOT NULL, day TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS recovery_codes (user_id INTEGER PRIMARY KEY, code_hash TEXT NOT NULL, created_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS chargers (id TEXT PRIMARY KEY, source TEXT NOT NULL, name TEXT NOT NULL, lat REAL NOT NULL, lng REAL NOT NULL, details TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL);
-CREATE INDEX IF NOT EXISTS chargers_source ON chargers (source, updated_at)
+CREATE INDEX IF NOT EXISTS chargers_source ON chargers (source, updated_at);
+CREATE TABLE IF NOT EXISTS locations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, address TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
+  kind TEXT NOT NULL DEFAULT 'place', lat REAL NOT NULL, lng REAL NOT NULL, source TEXT NOT NULL DEFAULT 'driver', user_id INTEGER,
+  created_at INTEGER NOT NULL, removed INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS hidden_places (id TEXT PRIMARY KEY, user_id INTEGER, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS place_suggestions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, name TEXT NOT NULL, address TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
+  note TEXT NOT NULL DEFAULT '', lat REAL NOT NULL, lng REAL NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL,
+  reviewed_by INTEGER, reviewed_at INTEGER, location_id INTEGER
+);
+CREATE INDEX IF NOT EXISTS place_suggestions_status ON place_suggestions (status, created_at);
+CREATE INDEX IF NOT EXISTS place_suggestions_user ON place_suggestions (user_id, created_at)
 `;
 
 let ready = null;

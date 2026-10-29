@@ -199,6 +199,7 @@ small.hint { display: block; padding: 4px 0 0; }
 input[type='datetime-local'].field { display: block; min-width: 0; max-width: 100%; -webkit-appearance: none; appearance: none; color: var(--text); line-height: 46px; }
 input[type='datetime-local'].field::-webkit-date-and-time-value { text-align: left; line-height: 46px; }
 textarea.field { height: auto; padding: 12px 14px; resize: vertical; font: inherit; line-height: 1.4; color: var(--text); }
+select.field { font: inherit; color: var(--text); }
 .feedback { padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
 .feedback .btn { width: 100%; }
 .feedback .fb-who { font-size: 13px; }

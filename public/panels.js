@@ -3,6 +3,7 @@
 
 // "My A2B" menu, sign in / sign up, settings, saved places, leaderboard and about.
 
+import { forgetChanges } from './places.js';
 import { $, state, api, local, toast, esc, initials, saveSettings, setHomeWork, removePlace, renamePlace, armBack, speak } from './core.js';
 import { PLACE_ICONS } from './icons.js';
 import { stopSharing } from './probe.js';
@@ -94,6 +95,7 @@ const REASONS = {
   report: 'Sign up to report what you see. Other drivers can thank you, and you earn points.',
   vote: 'Sign up to confirm or dismiss reports from other drivers.',
   share: 'Sign up to share your drive and ETA with friends.',
+  suggest: 'Sign up to suggest places that are missing from the map. You earn points when one is added.',
 };
 
 export function openAuth(reason = null, mode = 'signup') {
@@ -360,6 +362,7 @@ export function openSettings() {
     ${state.tester ? `<div class="set-group"><h3>Testing</h3>
       <button class="set-row" id="s-usage"><span>Usage<small>Who's on A2B now, and the last two weeks</small></span></button>
       <button class="set-row" id="s-inbox"><span>Feedback<small>What drivers sent from Settings</small></span></button>
+      <button class="set-row" id="s-suggestions"><span>Place suggestions<small>Places drivers want added to search</small></span></button>
       <label class="set-row"><span>Demo drive<small>Simulate GPS along the route. Handy for trying A2B at a desk.</small></span><input type="checkbox" class="switch" id="s-sim" ${state.simulate ? 'checked' : ''}></label>
       <div class="set-row${state.simulate ? '' : ' hidden'}" id="s-sim-speed-row"><span>Demo speed<small>How fast the demo car drives</small></span><div class="choice" id="s-sim-speed">${[1, 2, 4, 8]
         .map((v) => `<button data-v="${v}" class="${local.get('simSpeed', 1) === v ? 'on' : ''}">${v}×</button>`)
@@ -422,6 +425,7 @@ export function openSettings() {
     };
     $('s-usage').onclick = openUsage;
     $('s-inbox').onclick = openInbox;
+    $('s-suggestions').onclick = openSuggestionQueue;
     // Testing aid: applies straight away, also to a demo drive already under way.
     $('s-sim-speed').onclick = (e) => {
       const b = e.target.closest('button');
@@ -536,6 +540,83 @@ async function openLeaders() {
           .map((l, i) => `<div class="leader${l.me ? ' me' : ''}"><span class="rank">${i + 1}</span><span class="avatar">${esc(initials(l.name))}</span><span class="name">${esc(l.name)}</span>${l.me ? '<span class="you">You</span>' : ''}<b>${l.points}<small>pts</small></b></div>`)
           .join('')}`
       : '<p class="hint" style="padding:12px 18px">No drivers yet. Be the first to report something!</p>';
+  } catch (e) {
+    body.innerHTML = `<p class="hint" style="padding:12px 18px">${esc(e.message)}</p>`;
+  }
+}
+
+// A place that's missing from search, suggested at a spot on the map (see src/lib/suggestions.js). It joins search
+// once a tester approves it.
+const PLACE_KINDS = ['Restaurant', 'Cafe', 'Shop', 'Petrol station', 'Office', 'School', 'Mosque', 'Clinic', 'Car park', 'Other'];
+export function openSuggestPlace(at, guess = {}) {
+  if (!state.user) return openAuth('suggest');
+  const street = guess.kind === 'street' ? [guess.name, guess.address].filter(Boolean).join(', ') : guess.address ?? '';
+  openPanel('Suggest a missing place', `<div class="feedback add-place">
+    <p class="hint">At ${at.lat.toFixed(5)}, ${at.lng.toFixed(5)}. Once it's checked it appears in search, and you earn points.</p>
+    <input id="sp-name" class="field" maxlength="80" placeholder="Name, e.g. Warung Pak Abu" autocomplete="off">
+    <select id="sp-kind" class="field">${PLACE_KINDS.map((k) => `<option>${k}</option>`).join('')}</select>
+    <input id="sp-addr" class="field" maxlength="120" placeholder="Address (optional)" value="${esc(street)}">
+    <input id="sp-note" class="field" maxlength="300" placeholder="Anything that helps, e.g. opposite the mosque (optional)">
+    <button class="btn primary" id="sp-send" disabled>Send suggestion</button>
+  </div>`);
+  const name = $('sp-name');
+  const send = $('sp-send');
+  name.oninput = () => (send.disabled = name.value.trim().length < 2);
+  send.onclick = async () => {
+    send.disabled = true;
+    try {
+      const kind = $('sp-kind').value;
+      await api('/api/suggestions', {
+        method: 'POST',
+        body: { name: name.value, category: kind === 'Other' ? '' : kind, address: $('sp-addr').value, note: $('sp-note').value, lat: at.lat, lng: at.lng },
+      });
+      history.back(); // closes the panel
+      toast("Thanks! It'll show up in search once it's checked.", 3500);
+    } catch (e) {
+      toast(e.message);
+      send.disabled = false;
+    }
+  };
+  setTimeout(() => name.focus(), 300);
+}
+
+// Testers' review queue (GET /api/suggestions is only answered for tester accounts). The name can be corrected
+// before approving; Show opens the spot on the map.
+async function openSuggestionQueue() {
+  const body = openPanel('Place suggestions', '<p class="hint" style="padding:12px 18px">Loading…</p>');
+  const empty = '<p class="hint" style="padding:12px 18px">Nothing waiting.</p>';
+  try {
+    const { suggestions } = await api('/api/suggestions');
+    const when = (ms) => new Date(ms).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+    body.innerHTML = suggestions.length
+      ? suggestions
+        .map((s) => `<div class="fb-item" data-id="${s.id}" data-lat="${s.lat}" data-lng="${s.lng}">
+          <input class="field" data-name maxlength="80" value="${esc(s.name)}">
+          <p>${esc([s.category, s.address].filter(Boolean).join(' · ') || 'No category or address')}${s.note ? `<br>“${esc(s.note)}”` : ''}</p>
+          <small>${esc(s.by_name ?? 'Someone')} · ${esc(when(s.created_at))} · ${s.lat.toFixed(5)}, ${s.lng.toFixed(5)}</small>
+          <div class="sheet-actions"><button class="btn ghost" data-act="show">Show</button><button class="btn ghost" data-act="reject">Reject</button><button class="btn primary" data-act="approve">Approve</button></div>
+        </div>`)
+        .join('')
+      : empty;
+    body.onclick = async (e) => {
+      const act = e.target.closest('[data-act]')?.dataset.act;
+      const item = e.target.closest('.fb-item');
+      if (!act || !item) return;
+      const name = item.querySelector('[data-name]').value;
+      if (act === 'show') {
+        history.back();
+        return ctx.openPreview({ name, address: '', lat: Number(item.dataset.lat), lng: Number(item.dataset.lng) });
+      }
+      try {
+        await api(`/api/suggestions/${item.dataset.id}`, { method: 'POST', body: { action: act, name } });
+        forgetChanges(); // an approved place is searchable on this phone straight away
+        toast(act === 'approve' ? `${name} is now in search.` : 'Rejected.');
+        item.remove();
+        if (!body.querySelector('.fb-item')) body.innerHTML = empty;
+      } catch (err) {
+        toast(err.message);
+      }
+    };
   } catch (e) {
     body.innerHTML = `<p class="hint" style="padding:12px 18px">${esc(e.message)}</p>`;
   }
@@ -669,7 +750,7 @@ function openAbout() {
        Map tiles by <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>.
        Routing by <a href="https://valhalla.github.io/valhalla/" target="_blank" rel="noopener">Valhalla</a>, search by <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a>, live traffic by <a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a>,
        train timetables from Prasarana and KTMB via <a href="https://data.gov.my" target="_blank" rel="noopener">data.gov.my</a>.
-       Shops and places also from <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps Foundation</a> (Meta, Microsoft, Foursquare, AllThePlaces and others; <a href="/places/NOTICE.txt" target="_blank">licences</a>).
+       Shops and places also from <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps Foundation</a> (Meta, Microsoft, Foursquare, AllThePlaces and others; <a href="/places/NOTICE.txt" target="_blank">licences</a>), and from <a href="https://opensource.foursquare.com/os-places/" target="_blank" rel="noopener">Foursquare Open Source Places</a> (Apache 2.0).
        EV chargers also from <a href="https://openchargemap.org" target="_blank" rel="noopener">Open Charge Map</a> (<a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>).</p>
     <p>A2B is free and open source. <a href="https://github.com/thaqif0709/a2b" target="_blank" rel="noopener">Source code</a>, ideas and bug reports welcome, or send feedback from Settings.</p>
     <p class="about-credit">© 2026 Thaqif Syarafuddin bin Roslan and the A2B contributors.

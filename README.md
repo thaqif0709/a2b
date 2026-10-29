@@ -122,11 +122,11 @@ Everything A2B uses is free and needs no key:
 | --- | --- | --- |
 | Map tiles | [OpenFreeMap](https://openfreemap.org) | Map looks are in `public/map-themes.js`. |
 | Routing, speed limits, toll booths | [Valhalla public server](https://valhalla1.openstreetmap.de) (`ROUTING_URL`) | Community-run, fair use. |
-| Search | [Photon](https://photon.komoot.io) (`GEOCODER_URL`) | Community-run, fair use. |
+| Search | A2B's own places, on the phone, then [Photon](https://photon.komoot.io) (`GEOCODER_URL`) | Shops, landmarks and streets from OpenStreetMap (Geofabrik's extract), Overture Maps and [Foursquare Open Source Places](https://opensource.foursquare.com/os-places/), one row per place, built into small files the phone searches and ranks itself, landmarks first (`npm run places && npm run locations`; Foursquare's part needs `HF_TOKEN`, a Hugging Face token that has accepted the dataset's terms). Served as static files: no database or server work per search. Places drivers suggest join once a tester approves them, through a small list of changes from the database (`/api/locations/changes`). Photon fills the gaps; it's community-run, fair use. Everything is kept to Malaysia (`SEARCH_COUNTRY`, `MY` unless set; empty for anywhere). The place files are a database partly from OpenStreetMap, so they're published under the ODbL (`public/places/NOTICE.txt`). |
 | Live traffic (optional) | [TomTom Routing API](https://developer.tomtom.com) (`TOMTOM_KEY` secret) | Times each route with today's traffic; free up to a monthly quota. Without a key, routes use typical speeds. Answers aren't stored. |
 | Train timetables (LRT, MRT, Monorail, BRT, KTM Komuter) | [data.gov.my GTFS](https://developer.data.gov.my/realtime-api/gtfs-static) (Prasarana, KTMB) | Built with `npm run transit` into `src/lib/transit-data.json`, kept in git. Each feed runs to an end date the build prints; rebuild before then. Walks to and from stations use the routing server's walking routes. |
 | Toll plaza and car park details | [OpenStreetMap API](https://wiki.openstreetmap.org/wiki/API) | Looked up once and cached. |
-| Shops and places | [Overture Maps](https://overturemaps.org) | Built into small files the phone searches (`npm run places`). |
+| Kinds of place | [Overture Maps](https://overturemaps.org) | Petrol stations, hospitals, clinics, police, convenience stores and EV chargers by area, for searches like "petrol" and the map's pins (`npm run places`). |
 | Roads under construction | [Overture Maps](https://overturemaps.org) (OpenStreetMap roads) | Built with `npm run construction`, kept in git. |
 | Fixed speed cameras (AES, AWAS) | OpenStreetMap, found through Photon | Built with `npm run cameras` into `public/cameras.json`, kept in git. |
 | EV chargers | OpenStreetMap ([Overpass API](https://overpass-api.de)), [Open Charge Map](https://openchargemap.org) (`OCM_KEY` secret, optional), Overture Maps | Kept in the database and refreshed weekly by the nightly job (the first list arrives with its first run after deploying). Open Charge Map's openly licensed chargers (CC BY-SA 4.0) are added when a free key is set (`npx wrangler secret put OCM_KEY`). |
@@ -139,7 +139,8 @@ Overture publishes new data monthly ([calendar](https://docs.overturemaps.org/re
 
 ```bash
 pip install duckdb
-npm run places          # shop search data (not kept in git)
+npm run places          # kinds of place (petrol, hospitals…), not kept in git
+npm run locations       # A2B's own places, merged, into public/places/ (after npm run places)
 npm run construction    # roads under construction
 npm run deploy
 ```
@@ -256,7 +257,8 @@ over the internet included, you must offer them its source code under the same l
 - use your own name and icon: the A2B name and logo aren't licensed for other versions
 
 Map data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL). Places and roads under
-construction from the [Overture Maps Foundation](https://overturemaps.org) (see `public/places/NOTICE.txt` once built).
+construction from the [Overture Maps Foundation](https://overturemaps.org) (see `public/places/NOTICE.txt` once built), and
+places from [Foursquare Open Source Places](https://opensource.foursquare.com/os-places/) (Apache 2.0).
 Map tiles by [OpenFreeMap](https://openfreemap.org), routing by [Valhalla](https://github.com/valhalla/valhalla),
 search by [Photon](https://github.com/komoot/photon), live traffic by [TomTom](https://www.tomtom.com). Train
 timetables from Prasarana and KTMB through [data.gov.my](https://data.gov.my) (CC BY 4.0).

@@ -9,7 +9,7 @@ import { TrainGuide, markerFor, walkText } from './train-guide.js';
 import { Glide } from './motion.js';
 import { Follow, shouldSend, nextPollDelay } from './follow.js';
 import { sheetGesture, settle, rubberBand } from './sheet-drag.js';
-import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES, addTypeSource, withoutBaseDuplicates } from './places.js';
+import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES, addTypeSource, withoutBaseDuplicates, loadChanges } from './places.js';
 import { start as startVehicle, DEFAULT_COLOR } from './vehicle3d.js';
 import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PLACE_ICONS, soundIcon } from './icons.js';
 import {
@@ -17,7 +17,7 @@ import {
   isSaved, setHomeWork, armBack,
 } from './core.js';
 import { MAP_THEMES, BASE_STYLES, applyMapTheme } from './map-themes.js';
-import { initPanels, openMenu, openAuth, openSettings, renderAvatar, refreshMe } from './panels.js';
+import { initPanels, openMenu, openAuth, openSettings, openSuggestPlace, renderAvatar, refreshMe } from './panels.js';
 import { startPresence, checkIn } from './presence.js';
 import { noteProbeFix, startProbeSender, discardProbeBuffer } from './probe.js';
 import { welcome, hideSplash } from './welcome.js';
@@ -245,6 +245,7 @@ async function boot() {
   wireUi();
   setupSheetDrag();
   refreshSound();
+  loadChanges(); // what changed in A2B's places since its files were built: ready for the first search
   // A shared-drive link goes straight to the drive; everyone else sees the welcome once, which then asks for location.
   if (/^\/drive\//.test(location.pathname)) startLocation();
   else welcome(startLocation);
@@ -961,9 +962,10 @@ async function showContextMenu(lngLat, point) {
     <button class="menu-row" data-act="go">Drive here</button>
     <button class="menu-row" data-act="save">Save place</button>
     <button class="menu-row" data-act="home">Set as Home</button>
-    <button class="menu-row" data-act="work">Set as Work</button>`;
+    <button class="menu-row" data-act="work">Set as Work</button>
+    <button class="menu-row" data-act="suggest">Suggest a missing place</button>`;
   box.style.left = `${Math.min(point.x, innerWidth - 220)}px`;
-  box.style.top = `${Math.min(point.y + 8, innerHeight - 220)}px`;
+  box.style.top = `${Math.min(point.y + 8, innerHeight - 270)}px`;
   box.classList.remove('hidden');
   if (navigator.vibrate) navigator.vibrate(15);
   const named = api(`/api/reverse?lat=${lngLat.lat}&lng=${lngLat.lng}`).then((r) => ({ ...r.place, lat: lngLat.lat, lng: lngLat.lng })).catch(() => p);
@@ -974,6 +976,7 @@ async function showContextMenu(lngLat, point) {
     const place = await named;
     if (act === 'go') openPreview(place);
     if (act === 'save') saveAsFavourite(place);
+    if (act === 'suggest') openSuggestPlace(lngLat, place.name === 'Dropped pin' ? {} : place);
     if (act === 'home' || act === 'work') {
       await setHomeWork(act, place);
       renderSearchHome();
@@ -1159,6 +1162,29 @@ function onBack() {
 let searchTarget = null; // null = navigate | 'home' | 'work' | 'save'
 let searchSeq = 0;
 
+// The server's search for every caller, asked as little as possible: the location rounded to ~1 km (as the server
+// caches it) and the query in lower case, so a repeat within 10 minutes (a backspace, the same search again) is
+// answered on the phone, and a search still on its way is called off when a newer one starts (newest: true).
+const SEARCH_MEMO_MS = 10 * 60 * 1000;
+const searchMemo = new Map(); // url -> { at, promise }
+let searchAbort = null;
+function searchServer(q, near, { newest = false } = {}) {
+  const lang = (navigator.language || 'en').slice(0, 2);
+  // v: as the server's SEARCH_VERSION, so the browser's copy of an older answer isn't used after an update.
+  const url = `/api/search?v=3&q=${encodeURIComponent(q.trim().toLowerCase())}&lat=${near[1].toFixed(2)}&lng=${near[0].toFixed(2)}&lang=${lang}`;
+  const hit = searchMemo.get(url);
+  if (hit && Date.now() - hit.at < SEARCH_MEMO_MS) return hit.promise;
+  if (newest) {
+    searchAbort?.abort();
+    searchAbort = new AbortController();
+  }
+  const promise = api(url, { signal: newest ? searchAbort.signal : undefined });
+  promise.catch(() => searchMemo.delete(url)); // a failure is asked again
+  searchMemo.set(url, { at: Date.now(), promise });
+  if (searchMemo.size > 60) searchMemo.delete(searchMemo.keys().next().value);
+  return promise;
+}
+
 function openSearchFor(target) {
   armBack();
   searchTarget = target;
@@ -1289,21 +1315,27 @@ async function runSearch(q, enter = false) {
       if (seq !== searchSeq) return;
       return showResults(q, near, typed.places, typed.note, true, enter);
     }
-    // Two searches at once: the server's (OpenStreetMap) and this phone's own (Overture shops and places).
-    const [server, local] = pasted
-      ? [{ places: [{ name: 'Coordinates', address: q, lat, lng }] }, []]
-      : await Promise.all([
-          api(`/api/search?q=${encodeURIComponent(q)}&lat=${near[1]}&lng=${near[0]}&lang=${(navigator.language || 'en').slice(0, 2)}`),
-          searchNearby(q, near).catch(() => []),
-        ]);
-    // A search for parking is answered with the car parks around the place (or you), nearest first: only those.
-    const places = server.parking ? await withOvertureParking(server) : mergeResults(server.places, local, q, near);
+    if (pasted) return showResults(q, near, [{ name: 'Coordinates', address: q, lat, lng }], null, false, enter);
+    // Two searches at once: this phone's own (A2B's places, see public/places.js), shown as soon as it's done, and the
+    // server's (OpenStreetMap's geocoder), whose answer is added when it comes; the public geocoder can take seconds.
+    const serverCall = searchServer(q, near, { newest: true });
+    serverCall.catch(() => {});
+    const local = await searchNearby(q, near).catch(() => []);
+    if (seq !== searchSeq) return;
+    if (local.length) showResults(q, near, local, null, true, false);
+    const server = await serverCall.catch((e) => (local.length ? { places: [] } : Promise.reject(e)));
+    if (seq !== searchSeq) return;
+    // A search for parking is answered with the car parks around the place (or you), nearest first: only those. Else
+    // A2B's places in their order (searchNearby ranked them), and the geocoder's after them.
+    const places = server.parking
+      ? await withOvertureParking(server)
+      : local.length ? mergeResults(local, server.places, q, near, true) : mergeResults(server.places, [], q, near);
     const from = server.parking?.from;
     const note = server.parking
       ? places.length ? `Car parks near ${from ?? 'you'}` : `No car parks mapped near ${from ?? 'you'}.`
-      : local.length ? null : server.note; // "not in the map data" is moot once Overture found it
+      : local.length ? null : server.note; // "not in the map data" is moot once A2B's own places found it
     if (seq !== searchSeq) return;
-    showResults(q, near, places, note, places.some((p) => !server.places.includes(p)), enter);
+    showResults(q, near, places, note, places.some((p) => p.source === 'a2b'), enter);
   } catch (e) {
     if (seq !== searchSeq) return;
     searchMessage(e.message);
@@ -1347,8 +1379,7 @@ async function searchByType(q, near) {
   const mine = (await placesOfType(t.type, near)).filter((p) => matchesWordStarts(`${p.name} ${p.address}`, t.area));
   if (mine.length) return { places: mine, note: `${label} near you matching "${t.area}"` };
 
-  const lang = (navigator.language || 'en').slice(0, 2);
-  const search = (text) => api(`/api/search?q=${encodeURIComponent(text)}&lat=${near[1]}&lng=${near[0]}&lang=${lang}`);
+  const search = (text) => searchServer(text, near);
   const [whole, local, where] = await Promise.all([search(q).catch(() => ({ places: [] })), searchNearby(q, near).catch(() => []), search(t.area)]);
   const named = mergeResults(whole.places ?? [], local, q, near).filter((p) => matchesWordStarts(p.name, q)).slice(0, 3);
   // A mall or venue before a station of the same name, as the usual search ranks them.

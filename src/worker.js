@@ -15,6 +15,9 @@ import { parkingNear, parkingQuery, parkingResults } from './lib/parking.js';
 import { plazaDetails } from './lib/tolls.js';
 import { refreshChargers, allChargers } from './lib/chargers.js';
 import { reportsRepo } from './lib/reports.js';
+import { locationsRepo } from './lib/locations.js';
+import { suggestionsRepo } from './lib/suggestions.js';
+import { distance } from '../public/geo.js';
 import { presenceRepo, limits, validDevice } from './lib/presence.js';
 import { usageRepo, USAGE_DAYS, dayOf } from './lib/usage.js';
 import { planTransit, withRealWalks } from './lib/transit.js';
@@ -69,6 +72,8 @@ async function route(request, env, url) {
   const parts = path.split('/').filter(Boolean); // ['api', ...]
   const user = await currentUser(db, request);
   const reports = reportsRepo(db);
+  const locations = locationsRepo(db);
+  const suggestions = suggestionsRepo(db);
   const needUser = () => {
     if (!user) throw httpError('Sign in first.', 401);
     return user;
@@ -351,6 +356,43 @@ async function route(request, env, url) {
     return json({ ok: true });
   }
 
+  // ---------- A2B's own place search: searched on the phone (public/places.js); here, what changed since its files
+  // were built (src/lib/locations.js). One small list for every phone, fetched when the app opens.
+  if (path === '/api/locations/changes' && method === 'GET') {
+    const cache = globalThis.caches?.default;
+    const key = new Request('https://cache.a2b/locations/changes');
+    const hit = cache && (await cache.match(key));
+    if (hit) return hit;
+    const res = json(await locations.changes(), 200, { 'cache-control': `public, max-age=${CHANGES_MAX_AGE}` });
+    if (cache) await cache.put(key, res.clone());
+    return res;
+  }
+  // ---------- Place suggestions (src/lib/suggestions.js): drivers suggest, testers review ----------
+  if (path === '/api/suggestions' && method === 'POST') {
+    return json({ suggestion: await suggestions.create(needUser(), await readJson(request)) }, 201);
+  }
+  if (path === '/api/suggestions/mine' && method === 'GET') {
+    return json({ suggestions: await suggestions.mine(needUser()) });
+  }
+  if (path === '/api/suggestions' && method === 'GET') {
+    if (!user || !isTester(env, user)) throw httpError('Not found.', 404);
+    return json({ suggestions: await suggestions.pending() });
+  }
+  const reviewing = path.match(/^\/api\/suggestions\/(\d+)$/);
+  if (reviewing && method === 'POST') {
+    if (!user || !isTester(env, user)) throw httpError('Not found.', 404);
+    const done = await suggestions.review(user, Number(reviewing[1]), await readJson(request));
+    await globalThis.caches?.default?.delete(new Request('https://cache.a2b/locations/changes')); // show it soon
+    return json(done);
+  }
+  const wrongPlace = path.match(/^\/api\/locations\/(d\d+|[0-9a-f]{1,8})$/);
+  if (wrongPlace && method === 'DELETE') {
+    if (!user || !isTester(env, user)) throw httpError('Not found.', 404);
+    if (!(await locations.remove(wrongPlace[1], user))) throw httpError('Place not found.', 404);
+    await globalThis.caches?.default?.delete(new Request('https://cache.a2b/locations/changes'));
+    return json({ ok: true });
+  }
+
   // ---------- Search and routing ----------
   if (path === '/api/search' && method === 'GET') {
     await needSpot();
@@ -363,7 +405,7 @@ async function route(request, env, url) {
     const lang = cleanLang(url.searchParams.get('lang'));
     const parking = await searchParking(env, q, num(url, 'lat'), num(url, 'lng'), lang).catch(() => null);
     if (parking) return parking;
-    const key = new Request(`https://cache.a2b/search?q=${encodeURIComponent(q.toLowerCase())}&lat=${lat}&lng=${lng}&lang=${lang}`);
+    const key = new Request(`https://cache.a2b/search?v=${SEARCH_VERSION}&q=${encodeURIComponent(q.toLowerCase())}&lat=${lat}&lng=${lng}&lang=${lang}`);
     const cache = globalThis.caches?.default;
     const hit = cache && (await cache.match(key));
     if (hit) return hit;
@@ -400,7 +442,9 @@ async function route(request, env, url) {
     await needSpot();
     const lat = num(url, 'lat'), lng = num(url, 'lng');
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw httpError('lat and lng are required.', 400);
-    return json({ place: await reverseGeocode(env, { lat, lng }) });
+    // A2B's own streets and places first; the public geocoder only when there's nothing close.
+    const own = await locations.nearest([lng, lat]).catch(() => null);
+    return json({ place: own ?? (await reverseGeocode(env, { lat, lng })) });
   }
 
   // Trips by train (LRT, MRT, Monorail, BRT, KTM Komuter): see src/lib/transit.js.
@@ -645,6 +689,11 @@ async function searchParking(env, q, lat, lng, lang) {
 
 const FEEDBACK_MAX = 2000; // characters
 const FEEDBACK_PER_DAY = 10; // per account, or per device without one
+
+// Part of the cached searches' key: raise it when search answers differently, so nobody gets the old ones.
+const SEARCH_VERSION = 3;
+// How long phones and Cloudflare keep the list of changes (drivers' places, places taken out): a few minutes.
+const CHANGES_MAX_AGE = 300;
 
 function isTester(env, user) {
   const list = String(env.TESTER_EMAILS ?? '').split(',').map((e) => normalizeEmail(e)).filter(Boolean);

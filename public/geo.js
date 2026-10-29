@@ -122,3 +122,13 @@ export function formatDuration(s) {
 export function formatClock(date) {
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 }
+
+// Roughly Malaysia ([lng, lat]): the peninsula, and Sabah and Sarawak, less Singapore island. These boxes also take in
+// Brunei and the edges of southern Thailand and Kalimantan, so a place's own country (Photon's, Google's address) and
+// a tester's review do the rest.
+const MALAYSIA = [[99.6, 1.15, 104.6, 6.75], [109.5, 0.85, 119.3, 7.4]];
+const SINGAPORE = [103.6, 1.15, 104.1, 1.445];
+const inBox = ([lng, lat], [w, s, e, n]) => lng >= w && lng <= e && lat >= s && lat <= n;
+export function inMalaysia(p) {
+  return MALAYSIA.some((b) => inBox(p, b)) && !inBox(p, SINGAPORE);
+}

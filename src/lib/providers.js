@@ -102,7 +102,14 @@ export function boxAround([lng, lat], km) {
   return [lng - dLng, lat - dLat, lng + dLng, lat + dLat].map((v) => v.toFixed(4)).join(',');
 }
 
+// A2B is for Malaysia: Photon is asked inside the country's box, and of its answers only those it places in the
+// country are kept (the box takes in Singapore and Brunei too). SEARCH_COUNTRY is an ISO code; empty for anywhere.
+const COUNTRY_BOXES = { MY: '99.6,0.85,119.3,7.4' };
+export const searchCountry = (env) => String(env.SEARCH_COUNTRY ?? 'MY').toUpperCase();
+
 async function photon(env, { q, lang, near, bbox }) {
+  const country = searchCountry(env);
+  bbox ??= COUNTRY_BOXES[country];
   const base = env.GEOCODER_URL || 'https://photon.komoot.io';
   const u = new URL('/api/', base);
   u.searchParams.set('q', q);
@@ -118,7 +125,7 @@ async function photon(env, { q, lang, near, bbox }) {
     await new Promise((r) => setTimeout(r, 400)); // busy public server: one quick retry
     return getJson(u);
   });
-  return (data.features ?? []).map(photonToPlace);
+  return (data.features ?? []).filter((f) => !country || String(f.properties?.countrycode ?? '').toUpperCase() === country).map(photonToPlace);
 }
 
 export async function reverseGeocode(env, { lat, lng }) {

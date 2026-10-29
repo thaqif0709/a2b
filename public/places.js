@@ -1,18 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Thaqif Syarafuddin bin Roslan. A2B: https://github.com/thaqif0709/a2b (see NOTICE).
 
-// Place search on the phone, from Overture Maps data built by scripts/build-places.py into /places/.
-// Shops and restaurants that OpenStreetMap lacks (e.g. many in Malaysia) are found here. Only the files
-// for the query's words, in the person's area and the areas around it, are downloaded, and the browser
-// keeps them for next time. With no /places/ data deployed, this quietly finds nothing.
+// A2B's own place search, on the phone: OpenStreetMap, Overture Maps and Foursquare's places merged into files
+// (scripts/build-locations.py, into /places/ next to scripts/build-places.py's kinds of place), plus the few changes
+// since they were built (drivers' places, places taken out: /api/locations/changes). Only the files for the query's
+// rarest word, in the person's area and the areas around it, are downloaded, and the browser keeps them for next time,
+// so searching takes no server. With no /places/ data deployed, this quietly finds nothing.
 
 import { distance } from './geo.js';
-import { words, matchesWordStarts } from './text.js';
+import { words, matchesWordStarts, normalizeText } from './text.js';
 
 const BASE = '/places';
-const MAX_RESULTS = 8;
+const MAX_RESULTS = 12;
 const RADIUS_KM = 60; // beyond this a place isn't "nearby" (the other search covers the rest)
 const MAX_FILES_PER_WORD = 8;
+const MAX_LOOKED_AT = 40000; // places one search looks through, at most (~4 MB of files, the first time)
 
 const cache = new Map(); // url -> Promise<json|null>
 function getJson(url, init) {
@@ -52,39 +54,105 @@ function areasAround([lng, lat], size, known) {
   return out.filter((a) => known.has(a));
 }
 
+// Words too common to look a place up by (each in over 15,000 names and addresses; "jalan" is in 330,000): the files
+// don't list places under them (scripts/build-locations.py COMMON), and they only narrow the other words' matches. A
+// search of nothing else ("kuala lumpur") is left to the server's geocoder.
+export const COMMON = new Set([
+  'jalan', 'jln', 'lorong', 'lrg', 'persiaran', 'taman', 'tmn', 'kampung', 'kg', 'bandar', 'pusat', 'kota', 'bukit',
+  'sungai', 'sg', 'batu', 'baru', 'jaya', 'alam', 'indah', 'perdana', 'sri', 'seri', 'kuala', 'lumpur', 'petaling', 'shah',
+  'johor', 'bahru', 'ipoh', 'klang', 'kinabalu', 'kuching', 'miri', 'malaysia', 'lot', 'floor', 'ground', 'centre', 'mall',
+  'restoran', 'restaurant', 'cafe', 'kedai', 'klinik', 'masjid', 'sdn', 'bhd', 'the', 'and',
+]);
+// Which sources list a place, added up in a row's 7th field (scripts/build-locations.py SOURCE_BITS).
+export const SOURCES = { osm: 1, overture: 2, foursquare: 4, driver: 8 };
+// Landmarks people head for: ahead of other landmarks.
+const VENUES = new Set([
+  'shopping_center', 'shopping_mall', 'mall', 'train_station', 'metro_station', 'rail_station', 'station', 'airport', 'aerodrome',
+  'terminal', 'ferry_terminal', 'bus_station', 'hospital', 'university', 'college_university', 'stadium', 'museum', 'zoo',
+  'theme_park', 'convention_center', 'tourist_attraction', 'attraction',
+]);
+const AREAS = new Set(['city', 'town', 'suburb', 'village', 'neighbourhood', 'quarter', 'residential']);
+const STATIONS = new Set(['station', 'train_station', 'metro_station', 'rail_station', 'bus_station', 'ferry_terminal']);
+
+// What changed since the files were built (src/lib/locations.js): fetched when the app opens and kept a few minutes.
+const CHANGES_MS = 5 * 60 * 1000;
+let changes = null; // { at, promise: Promise<{ places, hidden: Set }> }
+let fresh = false; // the browser's copy is out of date too
+export const forgetChanges = () => ((changes = null), (fresh = true)); // after a suggestion is reviewed, and for tests
+export function loadChanges(fetchJson = (u, init) => fetch(u, init).then((r) => (r.ok ? r.json() : null))) {
+  if (!changes || Date.now() - changes.at > CHANGES_MS) {
+    const promise = fetchJson('/api/locations/changes', fresh ? { cache: 'no-cache' } : undefined)
+      .then((d) => ({ places: d?.places ?? [], hidden: new Set(d?.hidden ?? []) }))
+      .catch(() => ({ places: [], hidden: new Set() }));
+    changes = { at: Date.now(), promise };
+    fresh = false;
+  }
+  return changes.promise;
+}
+
+// How well a place answers q (lower is better): how much of the query is in its name and how near the name is to just
+// that, a name starting so or named exactly so, a landmark people head for (more sources listing it count), only
+// Foursquare listing it (the source with the most check-in pages made up on the spot), and distance. "trx" is The
+// Exchange TRX before a "Trx" next to you; "jalan ampang" the road before Ampang Park on it; "kfc" the nearest KFC.
+export function score(p, q, near) {
+  const all = words(q);
+  const nameWords = words(p.name);
+  const inName = all.filter((w) => nameWords.some((t) => t.startsWith(w))).length;
+  const named = inName === all.length;
+  const relevance = -10 * (inName / all.length) - 4 * Math.min(1, all.length / Math.max(1, nameWords.length));
+  const starts = normalizeText(p.name).startsWith(normalizeText(q)) ? -2 : 0;
+  const exact = nameWords.join(' ') === all.join(' ') ? -1.5 : 0;
+  const landmark = p.kind === 'l' && named ? (VENUES.has(p.category) ? -4.5 : -2) : 0;
+  const known = p.kind === 'l' && named ? -2 * (bits(p.sources) - 1) : 0;
+  const unconfirmed = p.sources === SOURCES.foursquare ? 1.5 : 0;
+  return relevance + starts + exact + landmark + known + unconfirmed + Math.log1p(near ? distance(near, [p.lng, p.lat]) / 1000 : 0);
+}
+const bits = (n) => [1, 2, 4, 8].filter((b) => n & b).length;
+
+// A row of the files, or of the changes, as a place. landmark: as the server's photonToPlace says it, for mergeResults.
+function rowPlace([name, lng, lat, address, category, kind, sources, id], near) {
+  const landmark = kind !== 'l' ? undefined : AREAS.has(category) ? 'area' : STATIONS.has(category) ? 'station' : 'place';
+  return { name, address, lat, lng, category: category || 'place', kind, sources: sources || 0, id, ...(landmark ? { landmark } : {}),
+    km: near ? distance(near, [lng, lat]) / 1000 : 0, source: 'a2b' };
+}
+
+// A2B's own places for q around near, best first (see score).
 export async function searchNearby(q, near) {
-  const qWords = words(q).filter((w) => w.length >= 2 || /\d/.test(w));
-  if (!qWords.length || !near) return [];
-  const idx = await loadIndex();
+  const all = words(q);
+  const keyWords = all.filter((w) => (w.length >= 2 || /\d/.test(w)) && !COMMON.has(w) && !/^\d+$/.test(w));
+  if (!keyWords.length || !near) return [];
+  const [idx, changed] = await Promise.all([loadIndex(), loadChanges()]);
   if (!idx) return [];
   const v = encodeURIComponent(idx.release ?? '');
   const areas = areasAround(near, idx.area, idx.areaSet);
   const lists = await Promise.all(areas.map((a) => getJson(`${BASE}/${a}/files.json?v=${v}`)));
 
+  // The files for each word: a place is filed under the words of its name, and any of the query's may be its address's
+  // ("nandos eco grandeur"). The busiest words' files are left out while there's too much to look through, keeping
+  // the quietest word's at least.
+  const listed = (w) => areas.reduce((n, _, i) => n + filesForWord(w, lists[i] ?? {}).reduce((m, f) => m + (lists[i][f] ?? 0), 0), 0);
+  const chosen = keyWords.map((w) => [w, listed(w)]).sort((a, b) => a[1] - b[1]);
+  while (chosen.length > 1 && chosen.reduce((n, [, c]) => n + c, 0) > MAX_LOOKED_AT) chosen.pop();
   const urls = new Set();
-  areas.forEach((area, i) => {
-    const files = lists[i];
-    if (!files) return;
-    for (const w of qWords) for (const p of filesForWord(w, files)) urls.add(`${BASE}/${area}/${p}.json?v=${v}`);
-  });
+  for (const [w] of chosen) areas.forEach((area, i) => lists[i] && filesForWord(w, lists[i]).forEach((f) => urls.add(`${BASE}/${area}/${f}.json?v=${v}`)));
   const shards = await Promise.all([...urls].map((u) => getJson(u)));
 
   const seen = new Set();
   const found = [];
-  for (const shard of shards) {
-    for (const [name, lng, lat, address, category] of shard?.p ?? []) {
-      const key = `${name}|${lng}|${lat}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      if (!matchesWordStarts(`${name} ${address}`, q)) continue;
-      const km = distance(near, [lng, lat]) / 1000;
-      if (km > RADIUS_KM) continue;
-      found.push({ name, address, lat, lng, category: category || 'place', km, inName: matchesWordStarts(name, q), source: 'overture' });
-    }
+  for (const row of [...shards.flatMap((s) => s?.p ?? []), ...changed.places]) {
+    const id = row[7] ?? `${row[0]}|${row[1]}|${row[2]}`;
+    if (seen.has(id) || changed.hidden.has(id)) continue;
+    seen.add(id);
+    if (!matchesWordStarts(`${row[0]} ${row[3]}`, q)) continue;
+    const p = rowPlace(row, near);
+    if (p.km > RADIUS_KM) continue;
+    found.push(p);
   }
-  // Places matching on their name alone first, then nearest.
-  found.sort((a, b) => b.inName - a.inName || a.km - b.km);
-  return found.slice(0, MAX_RESULTS);
+  return found
+    .map((p) => ({ p, s: score(p, q, near) }))
+    .sort((a, b) => a.s - b.s)
+    .slice(0, MAX_RESULTS)
+    .map(({ p }) => p);
 }
 
 // Puts nearby Overture places together with the other search's results, dropping duplicates (same name
@@ -99,7 +167,7 @@ export async function searchNearby(q, near) {
 //   Overture places carrying that landmark's name but pinned more than a kilometre from it (3 km for a town),
 //   or named with the query but 1.5 km from everything OpenStreetMap has by that name, are dropped:
 //   they're mostly check-in pages people made elsewhere ("Petronas Twin Tower" in Kota Kinabalu).
-export function mergeResults(server, local, q, near) {
+export function mergeResults(server, local, q, near, ranked = false) {
   const dup = (a, b) => words(a.name).join(' ') === words(b.name).join(' ') && distance([a.lng, a.lat], [b.lng, b.lat]) < 150;
   const first = words(q)[0] ?? '';
   // A sight or venue before a town of that name, and a town before a station named after it.
@@ -113,19 +181,22 @@ export function mergeResults(server, local, q, near) {
   const misplaced = (l) =>
     (named.length > 0 && named.every((w) => words(l.name).includes(w)) && !within(l, [landmark], reach)) ||
     (anchors.length > 0 && matchesWordStarts(l.name, q) && !within(l, anchors, Math.max(reach, 1500)));
-  const all = [...server, ...local.filter((l) => !server.some((s) => dup(s, l)) && !misplaced(l))];
+  const extra = local.filter((l) => !server.some((s) => dup(s, l)) && !misplaced(l));
+  const all = [...server, ...extra];
+  const exact = words(q).join(' ');
   const tier = (p) => {
     if (p === landmark) return -1;
+    if (words(p.name).join(' ') === exact) return -0.5; // named just what was typed ("jalan ampang": the road itself)
     const full = matchesWordStarts(`${p.name} ${p.address ?? ''}`, q);
     if (full && matchesWordStarts(p.name, first)) return 0;
     return full ? 1 : 2;
   };
   const km = (p) => (near ? distance(near, [p.lng, p.lat]) / 1000 : 0);
-  return all
-    .map((p) => ({ p, t: tier(p), d: km(p) }))
-    .sort((a, b) => a.t - b.t || a.d - b.d)
-    .map(({ p }) => p)
-    .slice(0, 12);
+  const order = (list) => list.map((p) => ({ p, t: tier(p), d: km(p) })).sort((a, b) => a.t - b.t || a.d - b.d).map(({ p }) => p);
+  // The server ranked A2B's own places (src/lib/locations.js) knowing more than this phone does: keep its order,
+  // with the phone's own finds after.
+  if (ranked) return [...server, ...order(extra)].slice(0, 12);
+  return order(all).slice(0, 12);
 }
 
 // ---------- Searching by kind of place ----------
@@ -246,4 +317,4 @@ export function withoutBaseDuplicates(ours, base) {
   });
 }
 
-export const attribution = 'Places: Overture Maps Foundation';
+export const attribution = 'Places: © OpenStreetMap contributors, Overture Maps, Foursquare';

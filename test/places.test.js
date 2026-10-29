@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { filesForWord, searchNearby, mergeResults, typeQuery, placesOfType, placesOfTypesIn, addTypeSource, withoutBaseDuplicates } from '../public/places.js';
+import { filesForWord, searchNearby, mergeResults, typeQuery, placesOfType, placesOfTypesIn, addTypeSource, withoutBaseDuplicates, forgetChanges } from '../public/places.js';
 import { matchesWordStarts, normalizeText } from '../public/text.js';
 
 const ECO = [101.468, 3.224]; // Eco Grandeur, Puncak Alam
@@ -58,7 +58,7 @@ test('finds the Nando\'s in Eco Grandeur, nearest first', async () => {
   assert.ok(both[0].km < 2 && both[1].km > 15);
   const exact = await searchNearby('nandos eco grandeur', ECO);
   assert.equal(exact.length, 1, 'the area words must match too');
-  assert.equal(exact[0].source, 'overture');
+  assert.equal(exact[0].source, 'a2b');
   assert.deepEqual(await searchNearby('starbucks', ECO).then((r) => r.map((p) => p.name)), ['Starbucks']);
   assert.deepEqual(await searchNearby('nandos', [-0.12, 51.5]), [], 'nothing deployed for London');
 });
@@ -176,6 +176,13 @@ test('EV chargers: the server’s list and the files’ together, a charger in b
   assert.deepEqual(shown.filter((p) => p.type === 'ev').map((p) => p.name).sort(), ['ChargEV Eco Grandeur', 'Tesla Puncak Alam'], 'on the map as well');
 });
 
+test('a place named just what was typed comes before nearer ones only starting so', () => {
+  const near = [101.69, 3.14];
+  const p = (name, lng, lat) => ({ name, address: 'Kuala Lumpur', lng, lat });
+  const out = mergeResults([p('Bangunan Ming Jalan Ampang', 101.70, 3.15), p('Jalan Ampang', 101.72, 3.16), p('Wisma BSN Jalan Ampang', 101.71, 3.15)], [], 'jalan ampang', near);
+  assert.equal(out[0].name, 'Jalan Ampang');
+});
+
 test('a pin the base map already draws, one place from two sources, shows once', () => {
   const pin = (name, type, lng, lat) => ({ name, type, lng, lat });
   const ours = [
@@ -194,4 +201,62 @@ test('a pin the base map already draws, one place from two sources, shows once',
   ];
   assert.deepEqual(withoutBaseDuplicates(ours, base).map((p) => p.name), ['Shell', 'Klinik Kesihatan Pandan', 'Klinik', 'Petronas']);
   assert.equal(withoutBaseDuplicates(ours, []).length, ours.length, 'nothing on the base map: all of ours');
+});
+
+// ---------- A2B's own places, ranked on the phone (rows as scripts/build-locations.py writes them) ----------
+// [name, lng, lat, address, category, kind ('l' landmark, 's' street), sources (1 OpenStreetMap, 2 Overture,
+// 4 Foursquare), id]. Around Eco Grandeur, so in the fake area 6_202.
+const AREA_FILES = FILES['/places/6_202/files.json?v=test'];
+function addFile(prefix, rows) {
+  AREA_FILES[prefix] = rows.length;
+  FILES[`/places/6_202/${prefix}.json?v=test`] = { p: rows };
+}
+const asked = [];
+const realFetch = globalThis.fetch;
+globalThis.fetch = (url, init) => (asked.push(url), realFetch(url, init));
+
+test('own places: the place named before shops named after it, and before a check-in page next to you', async () => {
+  addFile('tr', [
+    ['Trx', 101.4685, 3.2245, 'Kuala Lumpur', 'shopping_mall', '', 4, 'f1'], // Foursquare only, 100 m away
+    ['TRX City Police Station', 101.49, 3.25, '', 'police', '', 1, 'f2'],
+    ['TRX City Park', 101.491, 3.251, 'Level 3, The Exchange TRX', 'park', 'l', 5, 'f3'],
+    ['The Exchange TRX', 101.49, 3.25, 'Persiaran TRX, 55188 Kuala Lumpur', 'mall', 'l', 7, 'f4'],
+  ]);
+  assert.equal((await searchNearby('trx', ECO))[0].name, 'The Exchange TRX');
+  addFile('su', [
+    ...Array.from({ length: 150 }, (_, i) => [`Shop ${i} Sunway Pyramid`, 101.47, 3.23, '', 'retail', '', 4, `s${i}`]),
+    ['Sunway Pyramid', 101.48, 3.24, '3, Jalan PJS 11/15, Bandar Sunway, 47500 Petaling Jaya, Selangor', 'mall', 'l', 7, 'f5'],
+  ]);
+  assert.equal((await searchNearby('sunway pyramid', ECO))[0].name, 'Sunway Pyramid', 'its long address no matter');
+});
+
+test('own places: the road named so before a mall on it, and a chain\'s nearest branch', async () => {
+  addFile('am', [
+    ['Ampang Park', 101.47, 3.225, 'Jalan Ampang, Kuala Lumpur', 'mall', 'l', 7, 'g1'],
+    ['Jalan Ampang Hilir', 101.471, 3.226, '', 'street', 's', 1, 'g2'],
+    ['Jalan Ampang', 101.475, 3.23, '', 'street', 's', 1, 'g3'],
+  ]);
+  assert.deepEqual((await searchNearby('jalan ampang', ECO)).map((p) => p.name), ['Jalan Ampang', 'Jalan Ampang Hilir', 'Ampang Park']);
+  addFile('kf', [
+    ['KFC', 101.60, 3.30, '', 'fast_food', '', 7, 'k1'], // listed by all three, 17 km away
+    ['KFC', 101.469, 3.225, 'Eco Grandeur', 'fast_food', '', 1, 'k2'],
+  ]);
+  assert.equal((await searchNearby('kfc', ECO))[0].address, 'Eco Grandeur', 'the nearest KFC');
+});
+
+test('own places: words too common to look up fetch nothing; the others narrow each other', async () => {
+  asked.length = 0;
+  assert.deepEqual(await searchNearby('jalan', ECO), []);
+  assert.ok(!asked.some((u) => /\/(j|ja|jal)\.json/.test(u)), 'no "jalan" files: there are none');
+  assert.deepEqual((await searchNearby('kfc eco', ECO)).map((p) => p.id), ['k2'], '"eco" in its address');
+});
+
+test('own places: what changed since the files were built, from the server', async () => {
+  FILES['/api/locations/changes'] = { places: [['Warung Pak Abu', 101.4682, 3.2241, 'Jalan Eco', 'restaurant', '', 8, 'd1']], hidden: ['f1'] };
+  forgetChanges();
+  const found = await searchNearby('trx', ECO);
+  assert.ok(!found.some((p) => p.id === 'f1'), 'a place taken out of search');
+  assert.deepEqual((await searchNearby('warung', ECO)).map((p) => [p.name, p.id]), [['Warung Pak Abu', 'd1']], 'a driver\'s place');
+  delete FILES['/api/locations/changes'];
+  forgetChanges();
 });

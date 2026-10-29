@@ -17,6 +17,7 @@
     "db:migrate:remote": "wrangler d1 migrations apply a2b --remote",
     "test": "node --no-warnings --test test/*.test.js",
     "places": "python3 scripts/build-places.py",
+    "locations": "python3 scripts/build-locations.py",
     "predeploy": "node scripts/check-places.mjs && node scripts/app-version.mjs",
     "construction": "python3 scripts/build-construction.py",
     "cameras": "node scripts/build-cameras.mjs",

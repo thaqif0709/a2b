@@ -9,6 +9,7 @@
 // MAPS and are never trimmed, so trimming and "Clear offline maps" can't evict the library or the
 // labels. Only versioned vector tiles live in TILES, which is trimmed to MAX_TILES.
 const CACHE = 'a2b-v39';
+const PLACES = 'a2b-places-data-v1'; // persistent place-shard cache (public/places.js)
 const TILES = 'a2b-tiles-v1'; // versioned tiles only; kept across activates; cleared from Settings › Offline maps
 const MAPS = 'a2b-maps-v1'; // library, style, TileJSON, fonts, sprites; never trimmed
 const MAX_TILES = 2000; // bound phone storage; iOS can evict a PWA's whole storage when it gets large
@@ -26,7 +27,7 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
-  e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== TILES && k !== MAPS).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== TILES && k !== MAPS && k !== PLACES).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
 });
 
 // Versioned vector tiles (/planet/<release>/…) are cache-first: a new tile release is new URLs.

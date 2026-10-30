@@ -29,6 +29,9 @@ const MAX_BODY = 64 * 1024;
 const LOGIN_WINDOW_MS = 15 * 60_000;
 const LOGIN_MAX_FAILURES = 8; // per address: wrong passwords for one account stop here (per-network throttles
 // were dropped: behind the Pages proxy every client shares one IP, so they would lock out everyone at once)
+const SIGNUP_WINDOW_MS = 60 * 60_000;
+const SIGNUP_MAX_PER_DEVICE = 5;
+const FEEDBACK_CAP = 1000;
 const RECENTS_KEPT = 20;
 const FULL_MESSAGE = 'A2B is full right now. You will be let in when a spot opens.';
 const UNEXPECTED_MESSAGE = 'Something went wrong on our side. Please try again in a minute.';
@@ -66,6 +69,7 @@ export default {
       env.DB.prepare('DELETE FROM probe_segments WHERE updated_at < ?').bind(now - PROBE_RETENTION_MS),
       env.DB.prepare('DELETE FROM probe_devices WHERE updated_at < ?').bind(now - PROBE_RETENTION_MS),
       env.DB.prepare('DELETE FROM probe_limits WHERE last_at < ?').bind(now - PROBE_RETENTION_MS),
+      env.DB.prepare('DELETE FROM feedback WHERE closed_at IS NOT NULL AND closed_at < ?').bind(now - 60 * 86400_000),
     ]);
     await refreshChargers(env, { now }).catch((e) => console.warn('chargers', e.message)); // weekly, per source
   },
@@ -124,6 +128,9 @@ async function route(request, env, url) {
       .prepare('INSERT INTO feedback (user_id, device, message, app, ua, created_at) VALUES (?, ?, ?, ?, ?, ?)')
       .bind(user?.id ?? null, validDevice(device) ? device : null, message, String(body.app ?? '').slice(0, 20) || null, (request.headers.get('user-agent') ?? '').slice(0, 300) || null, Date.now())
       .run();
+    await db
+      .prepare(`DELETE FROM feedback WHERE id NOT IN (SELECT id FROM feedback ORDER BY id DESC LIMIT ${FEEDBACK_CAP})`)
+      .run();
     return json({ ok: true }, 201);
   }
 
@@ -169,6 +176,8 @@ async function route(request, env, url) {
   // ---------- Accounts ----------
   if (path === '/api/auth/signup' && method === 'POST') {
     if (!validDevice(device)) throw httpError('Missing device id. Update the app to the latest version.', 400);
+    const recentSignups = await db.prepare('SELECT COUNT(*) AS n FROM login_failures WHERE email = ? AND at > ?').bind(`signup:${device}`, Date.now() - SIGNUP_WINDOW_MS).first();
+    if (recentSignups.n >= SIGNUP_MAX_PER_DEVICE) throw httpError('Too many signups from this device. Try again later.', 429);
     const body = await readJson(request);
     const email = normalizeEmail(body.email);
     if (!email) throw httpError('Enter a valid email address.', 400);
@@ -190,6 +199,7 @@ async function route(request, env, url) {
       if (String(e.message).includes('UNIQUE')) throw httpError('This email address is already registered.', 409);
       throw e;
     }
+    await db.prepare('INSERT INTO login_failures (email, at) VALUES (?, ?)').bind(`signup:${device}`, Date.now()).run();
     await count('signups');
     return withSession(request, db, row, 201, { device, recovery: await createRecoveryCode(db, row.id) });
   }
@@ -214,10 +224,17 @@ async function route(request, env, url) {
   if (path === '/api/auth/recover' && method === 'POST') {
     const body = await readJson(request);
     const email = normalizeEmail(body.email);
+    if (!email) throw httpError('Wrong email or recovery code.', 401);
     const bad = validatePassword(body.password);
     if (bad) throw httpError(bad, 400);
-    const row = email ? await db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first() : null;
-    if (!row || !(await consumeRecoveryCode(db, row.id, body.code))) throw httpError('Wrong email or recovery code.', 401);
+    const recent = await db.prepare('SELECT COUNT(*) AS n FROM login_failures WHERE email = ? AND at > ?').bind(email, Date.now() - LOGIN_WINDOW_MS).first();
+    if (recent.n >= LOGIN_MAX_FAILURES) throw httpError('Too many attempts. Try again in 15 minutes.', 429);
+    const row = await db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first();
+    if (!row || !(await consumeRecoveryCode(db, row.id, body.code))) {
+      await db.prepare('INSERT INTO login_failures (email, at) VALUES (?, ?)').bind(email, Date.now()).run();
+      throw httpError('Wrong email or recovery code.', 401);
+    }
+    await db.prepare('DELETE FROM login_failures WHERE email = ?').bind(email).run();
     const { hash, salt } = await hashPassword(body.password);
     await db.batch([
       db.prepare('UPDATE users SET pass_hash = ?, pass_salt = ? WHERE id = ?').bind(hash, salt, row.id),

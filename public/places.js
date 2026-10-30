@@ -14,19 +14,31 @@ const MAX_RESULTS = 8;
 const RADIUS_KM = 60; // beyond this a place isn't "nearby" (the other search covers the rest)
 const MAX_FILES_PER_WORD = 8;
 
-const cache = new Map(); // url -> Promise<json|null>
-function getJson(url, init) {
+const cache = new Map(); // url -> Promise<{ data, unavailable, missing }>
+function getJson(url, init, onUnavailable, optional = false) {
   if (!cache.has(url)) {
-    cache.set(url, fetch(url, init).then((r) => (r.ok ? r.json() : null)).catch(() => null));
+    const request = fetch(url, init).then(async (r) => ({
+      data: r.ok ? await r.json() : null,
+      unavailable: !r.ok && r.status !== 404,
+      missing: r.status === 404,
+    })).catch(() => ({ data: null, unavailable: true }));
+    cache.set(url, request);
   }
-  return cache.get(url);
+  const request = cache.get(url);
+  return request.then(({ data, unavailable, missing }) => {
+    if (unavailable || (missing && !optional)) {
+      if (cache.get(url) === request) cache.delete(url); // retry incomplete files next search
+      onUnavailable?.();
+    }
+    return data;
+  });
 }
 
-let indexPromise = null;
-function loadIndex() {
+async function loadIndex(onUnavailable) {
   // The index names the data release, which versions every other file, so always check it is current.
-  indexPromise ??= getJson(`${BASE}/index.json`, { cache: 'no-cache' }).then((idx) => (idx ? { ...idx, areaSet: new Set(idx.areas) } : null));
-  return indexPromise;
+  // No index means the optional places dataset was not deployed; missing files advertised by it are failures.
+  const idx = await getJson(`${BASE}/index.json`, { cache: 'no-cache' }, onUnavailable, true);
+  return idx ? { ...idx, areaSet: new Set(idx.areas) } : null;
 }
 
 const asciiAlnum = /^[a-z0-9]+$/;
@@ -72,7 +84,7 @@ export function isHidden(p) {
 }
 const driverRow = (r) => [r.name, r.lng, r.lat, r.address ?? '', r.category];
 
-export async function searchNearby(q, near) {
+export async function searchNearby(q, near, { onUnavailable } = {}) {
   const qWords = words(q).filter((w) => w.length >= 2 || /\d/.test(w));
   if (!qWords.length || !near) return [];
   const found = [];
@@ -83,11 +95,11 @@ export async function searchNearby(q, near) {
   }
   // Places matching on their name alone first, then nearest.
   const best = () => found.sort((a, b) => b.inName - a.inName || a.km - b.km).slice(0, MAX_RESULTS);
-  const idx = await loadIndex();
+  const idx = await loadIndex(onUnavailable);
   if (!idx) return best();
   const v = encodeURIComponent(idx.release ?? '');
   const areas = areasAround(near, idx.area, idx.areaSet);
-  const lists = await Promise.all(areas.map((a) => getJson(`${BASE}/${a}/files.json?v=${v}`)));
+  const lists = await Promise.all(areas.map((a) => getJson(`${BASE}/${a}/files.json?v=${v}`, undefined, onUnavailable)));
 
   const urls = new Set();
   areas.forEach((area, i) => {
@@ -95,7 +107,7 @@ export async function searchNearby(q, near) {
     if (!files) return;
     for (const w of qWords) for (const p of filesForWord(w, files)) urls.add(`${BASE}/${area}/${p}.json?v=${v}`);
   });
-  const shards = await Promise.all([...urls].map((u) => getJson(u)));
+  const shards = await Promise.all([...urls].map((u) => getJson(u, undefined, onUnavailable)));
 
   const seen = new Set(found.map((p) => `${p.name}|${p.lng}|${p.lat}`));
   for (const shard of shards) {
@@ -148,11 +160,16 @@ export function mergeResults(server, local, q, near) {
     return full ? 1 : 2;
   };
   const km = (p) => (near ? distance(near, [p.lng, p.lat]) / 1000 : 0);
-  return all
+  const ranked = all
     .map((p) => ({ p, t: tier(p), d: km(p) }))
     .sort((a, b) => a.t - b.t || a.d - b.d)
-    .map(({ p }) => p)
-    .slice(0, 12);
+    .map(({ p }) => p);
+  const unique = [];
+  for (const p of ranked) {
+    if (!unique.some((other) => dup(p, other))) unique.push(p);
+    if (unique.length === 12) break;
+  }
+  return unique;
 }
 
 // ---------- Searching by kind of place ----------
@@ -191,22 +208,24 @@ export function addTypeSource(type, load) {
   sources.set(type, load);
   fetched.delete(type);
 }
-function sourceRows(type) {
+function sourceRows(type, onUnavailable) {
   if (!sources.has(type)) return Promise.resolve([]);
   if (!fetched.has(type)) {
-    fetched.set(type, sources.get(type)().catch(() => {
-      fetched.delete(type);
-      return [];
-    }));
+    fetched.set(type, Promise.resolve().then(sources.get(type)));
   }
-  return fetched.get(type);
+  const request = fetched.get(type);
+  return request.catch(() => {
+    if (fetched.get(type) === request) fetched.delete(type);
+    onUnavailable?.();
+    return [];
+  });
 }
 
 // Every listed place of a kind in the areas around `at`, as [name, lng, lat, address, category] rows: the server's
 // list first where there is one, and a file's place the server also lists (within 50 m) once.
 // Driver places of that kind come first, and a place a driver's fix hides is left out.
-async function typeRows(type, at) {
-  const [server, files] = await Promise.all([sourceRows(type), fileRows(type, at)]);
+async function typeRows(type, at, onUnavailable) {
+  const [server, files] = await Promise.all([sourceRows(type, onUnavailable), fileRows(type, at, onUnavailable)]);
   const shown = ([name, lng, lat]) => !isHidden({ name, lng, lat });
   const listed = [...driverPlaces.filter((r) => r.category === type).map(driverRow), ...server.filter(shown)];
   const rest = files.filter(shown);
@@ -214,13 +233,13 @@ async function typeRows(type, at) {
   return [...listed, ...rest.filter(([, lng, lat]) => !listed.some(([, x, y]) => Math.abs(y - lat) < 0.001 && distance([x, y], [lng, lat]) < 50))];
 }
 
-async function fileRows(type, at) {
-  const idx = await loadIndex();
+async function fileRows(type, at, onUnavailable) {
+  const idx = await loadIndex(onUnavailable);
   if (!idx) return [];
   const v = encodeURIComponent(idx.release ?? '');
   const areas = areasAround(at, idx.area, idx.areaSet);
-  const lists = await Promise.all(areas.map((a) => getJson(`${BASE}/${a}/files.json?v=${v}`)));
-  const shards = await Promise.all(areas.filter((_, i) => lists[i]?.[`@${type}`]).map((a) => getJson(`${BASE}/${a}/@${type}.json?v=${v}`)));
+  const lists = await Promise.all(areas.map((a) => getJson(`${BASE}/${a}/files.json?v=${v}`, undefined, onUnavailable)));
+  const shards = await Promise.all(areas.filter((_, i) => lists[i]?.[`@${type}`]).map((a) => getJson(`${BASE}/${a}/@${type}.json?v=${v}`, undefined, onUnavailable)));
   return shards.flatMap((s) => s?.p ?? []);
 }
 
@@ -228,8 +247,8 @@ const toPlace = ([name, lng, lat, address, category], type, at) =>
   ({ name, address, lat, lng, category: category || type, type, km: distance(at, [lng, lat]) / 1000, source: 'overture' });
 
 // The places of a kind nearest to `at` ([lng, lat]), within TYPE_RADIUS_KM, nearest first.
-export async function placesOfType(type, at) {
-  const found = (await typeRows(type, at)).map((r) => toPlace(r, type, at)).filter((p) => p.km <= TYPE_RADIUS_KM);
+export async function placesOfType(type, at, { onUnavailable } = {}) {
+  const found = (await typeRows(type, at, onUnavailable)).map((r) => toPlace(r, type, at)).filter((p) => p.km <= TYPE_RADIUS_KM);
   // The same place listed twice (two sources a few metres apart) shows once.
   found.sort((a, b) => a.km - b.km);
   const out = [];

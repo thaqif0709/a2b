@@ -1033,28 +1033,9 @@ function wireUi() {
   document.querySelectorAll('[data-close]').forEach((b) => (b.onclick = () => closeScreen(b.dataset.close)));
 
   // Search
-  let t;
-  $('search-input').oninput = () => {
-    clearTimeout(t);
-    const q = $('search-input').value.trim();
-    $('search-clear').classList.toggle('hidden', !q);
-    if (q.length < 2) return showSearchHome();
-    showSearching(); // straight away, not after the pause: your recent places go, the results' placeholders come
-    t = setTimeout(() => runSearch(q), 280);
-  };
-  $('search-input').onkeydown = (e) => {
-    if (e.key === 'Enter') {
-      clearTimeout(t);
-      const q = $('search-input').value.trim();
-      if (q.length >= 2) runSearch(q, true);
-    }
-  };
-  $('search-clear').onclick = () => {
-    $('search-input').value = '';
-    $('search-clear').classList.add('hidden');
-    showSearchHome();
-    $('search-input').focus();
-  };
+  $('search-input').oninput = onSearchInput;
+  $('search-input').onkeydown = onSearchKeydown;
+  $('search-clear').onclick = clearSearch;
   $('tile-home').onclick = () => (state.home ? pickPlace({ ...state.home, name: 'Home' }) : openSearchFor('home'));
   $('tile-work').onclick = () => (state.work ? pickPlace({ ...state.work, name: 'Work' }) : openSearchFor('work'));
 
@@ -1131,6 +1112,7 @@ function refreshSound() {
 }
 
 function closeScreen(id) {
+  if (id === 'search') invalidateSearch();
   $(id).classList.add('hidden');
   if (id === 'parking') closeParking();
   if (id === 'preview') backToBrowse();
@@ -1172,8 +1154,47 @@ function onBack() {
 // ================= Search =================
 let searchTarget = null; // null = navigate | 'home' | 'work' | 'save'
 let searchSeq = 0;
+let searchTimer = null;
+
+// Edits and leaving search invalidate work immediately, including the gap before the next debounced request.
+function invalidateSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = null;
+  return ++searchSeq;
+}
+
+function isCurrentSearch(seq, q, target) {
+  return seq === searchSeq && q === $('search-input').value.trim() && target === searchTarget &&
+    !$('search').classList.contains('hidden');
+}
+
+function onSearchInput() {
+  invalidateSearch();
+  const q = $('search-input').value.trim();
+  $('search-clear').classList.toggle('hidden', !q);
+  if (q.length < 2) return showSearchHome();
+  showSearching();
+  searchTimer = setTimeout(() => runSearch(q), 280);
+}
+
+function onSearchKeydown(e) {
+  if (e.key !== 'Enter' || e.isComposing) return;
+  e.preventDefault();
+  invalidateSearch();
+  const q = $('search-input').value.trim();
+  if (q.length >= 2) runSearch(q, true);
+}
+
+function clearSearch() {
+  invalidateSearch();
+  $('search-input').value = '';
+  $('search-clear').classList.add('hidden');
+  showSearchHome();
+  $('search-input').focus();
+}
 
 function openSearchFor(target) {
+  const seq = invalidateSearch();
   armBack();
   syncDriverPlaces(); // places drivers added lately (public/suggest.js)
   searchTarget = target;
@@ -1188,7 +1209,8 @@ function openSearchFor(target) {
   // Focus now, inside the tap: iPhones only bring the keyboard up for a focus made during the tap itself, and
   // ignored the old delayed one. The delayed one stays as a fallback for browsers that need a frame first.
   $('search-input').focus();
-  setTimeout(() => document.activeElement !== $('search-input') && $('search-input').focus(), 50);
+  setTimeout(() => seq === searchSeq && !$('search').classList.contains('hidden') &&
+    document.activeElement !== $('search-input') && $('search-input').focus(), 50);
 }
 
 function showSearchHome() {
@@ -1290,42 +1312,56 @@ function searchMessage(text) {
 }
 
 async function runSearch(q, enter = false) {
-  const seq = ++searchSeq;
+  if (q !== $('search-input').value.trim() || $('search').classList.contains('hidden')) return;
+  const seq = invalidateSearch(), target = searchTarget;
+  const current = () => isCurrentSearch(seq, q, target);
   showSearching();
   const near = state.pos?.lngLat ?? map.getCenter().toArray();
+  let limited = false;
+  const unavailable = () => { limited = true; };
+  const display = (places, note, overture) => {
+    if (!current()) return;
+    if (limited) note = [places.length ? 'Limited results: some search sources are unavailable.'
+      : 'Some places could not be checked. Try searching again.', note].filter(Boolean).join(' ');
+    showResults(q, near, places, note, overture, enter && !limited);
+  };
   try {
     const coord = q.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
     // Pasted coordinates are only a place when they're on the earth ("999,999" goes to text search instead).
     const lat = Number(coord?.[1]), lng = Number(coord?.[2]);
     const pasted = coord && Math.abs(lat) <= 90 && Math.abs(lng) <= 180;
     // "petrol", "klinik near bangsar": the nearest places of that kind (see searchByType), when there are any.
-    const typed = !pasted && (await searchByType(q, near).catch(() => null));
+    const typed = !pasted && (await searchByType(q, near, unavailable).catch(() => (unavailable(), null)));
+    if (!current()) return;
     if (typed) {
-      if (seq !== searchSeq) return;
-      return showResults(q, near, typed.places, typed.note, true, enter);
+      return display(typed.places, typed.note, true);
     }
+    if (pasted) return display([{ name: 'Coordinates', address: q, lat, lng }], null, false);
     // Two searches at once: the server's (OpenStreetMap) and this phone's own (Overture shops and places).
-    const [server, local] = pasted
-      ? [{ places: [{ name: 'Coordinates', address: q, lat, lng }] }, []]
-      : await Promise.all([
-          api(`/api/search?q=${encodeURIComponent(q)}&lat=${near[1]}&lng=${near[0]}&lang=${(navigator.language || 'en').slice(0, 2)}`),
-          searchNearby(q, near).catch(() => []),
-        ]);
+    const [remote, nearby] = await Promise.allSettled([
+      api(`/api/search?q=${encodeURIComponent(q)}&lat=${near[1]}&lng=${near[0]}&lang=${(navigator.language || 'en').slice(0, 2)}`),
+      searchNearby(q, near, { onUnavailable: unavailable }),
+    ]);
+    if (!current()) return;
+    if (remote.status === 'rejected' || nearby.status === 'rejected') unavailable();
+    const server = remote.status === 'fulfilled' ? remote.value : { places: [] };
+    const local = nearby.status === 'fulfilled' ? nearby.value : [];
     // A search for parking is answered with the car parks around the place (or you), nearest first: only those.
-    const places = server.parking ? await withOvertureParking(server) : mergeResults(server.places, local, q, near);
+    const places = server.parking ? await withOvertureParking(server, unavailable) : mergeResults(server.places, local, q, near);
     const from = server.parking?.from;
     const note = server.parking
       ? places.length ? `Car parks near ${from ?? 'you'}` : `No car parks mapped near ${from ?? 'you'}.`
-      : local.length ? null : server.note; // "not in the map data" is moot once Overture found it
-    if (seq !== searchSeq) return;
-    showResults(q, near, places, note, places.some((p) => !server.places.includes(p)), enter);
+      : local.length ? null : remote.status === 'rejected' ? remote.reason.message : server.note;
+    const detail = limited && !places.length ? remote.status === 'rejected' ? remote.reason.message : null : note;
+    display(places, detail, places.some((p) => !server.places.includes(p)));
   } catch (e) {
-    if (seq !== searchSeq) return;
+    if (!current()) return;
     searchMessage(e.message);
   }
 }
 
 function showResults(q, near, places, note, overture, enter) {
+  const seq = searchSeq, target = searchTarget;
   $('search-home').classList.add('hidden');
   if (!places.length) {
     searchMessage(note || `No results for "${q}".`);
@@ -1343,7 +1379,7 @@ function showResults(q, near, places, note, overture, enter) {
     const li = el('li');
     const d = formatDistance(distance(near, [p.lng, p.lat]), state.settings.units);
     li.innerHTML = `<button class="place-row"><span class="p-ic">${PLACE_ICONS[p.category === 'parking' ? 'parking' : 'pin']}</span><span class="p-text"><b>${esc(p.name)}</b><small>${esc(p.address)}</small></span><span class="p-dist">${d}</span></button>`;
-    li.firstElementChild.onclick = () => pickPlace(p);
+    li.firstElementChild.onclick = () => isCurrentSearch(seq, q, target) && pickPlace(p);
     ul.append(li);
   }
   if (overture) ul.append(el('li', 'search-note', esc(places.some((p) => p.type === 'ev') ? `${placesAttribution} · ${CHARGERS_ATTRIBUTION}` : placesAttribution)));
@@ -1371,26 +1407,30 @@ function addMissingButton(q, label, cls) {
 // "kpj hospital": those places near you) or an area ("petrol near klcc": those places around KLCC, which the
 // server finds). A place actually called what was typed ("Police Museum") still comes first. Returns null to
 // fall back to the usual search (no data for that kind here, or the area isn't found).
-async function searchByType(q, near) {
+async function searchByType(q, near, onUnavailable) {
   const t = typeQuery(q);
   if (!t) return null;
   const label = TYPES[t.type].label;
   if (!t.area) {
-    const places = await placesOfType(t.type, near);
+    const places = await placesOfType(t.type, near, { onUnavailable });
     return places.length ? { places, note: `${label} near you` } : null;
   }
-  const mine = (await placesOfType(t.type, near)).filter((p) => matchesWordStarts(`${p.name} ${p.address}`, t.area));
+  const mine = (await placesOfType(t.type, near, { onUnavailable })).filter((p) => matchesWordStarts(`${p.name} ${p.address}`, t.area));
   if (mine.length) return { places: mine, note: `${label} near you matching "${t.area}"` };
 
   const lang = (navigator.language || 'en').slice(0, 2);
   const search = (text) => api(`/api/search?q=${encodeURIComponent(text)}&lat=${near[1]}&lng=${near[0]}&lang=${lang}`);
-  const [whole, local, where] = await Promise.all([search(q).catch(() => ({ places: [] })), searchNearby(q, near).catch(() => []), search(t.area)]);
+  const [whole, local, where] = await Promise.all([
+    search(q).catch(() => (onUnavailable?.(), { places: [] })),
+    searchNearby(q, near, { onUnavailable }).catch(() => (onUnavailable?.(), [])),
+    search(t.area).catch(() => (onUnavailable?.(), { places: [] })),
+  ]);
   const named = mergeResults(whole.places ?? [], local, q, near).filter((p) => matchesWordStarts(p.name, q)).slice(0, 3);
   // A mall or venue before a station of the same name, as the usual search ranks them.
   const anchor = ['place', 'area'].map((k) => where.places?.find((p) => p.landmark === k)).find(Boolean) ?? where.places?.[0];
-  if (!anchor) return null;
+  if (!anchor) return named.length ? { places: named, note: null } : null;
   const at = [anchor.lng, anchor.lat];
-  const around = (await placesOfType(t.type, at))
+  const around = (await placesOfType(t.type, at, { onUnavailable }))
     .filter((p) => !named.some((n) => distance([n.lng, n.lat], [p.lng, p.lat]) < 80))
     .map((p) => ({ ...p, address: [`${formatDistance(distance(at, [p.lng, p.lat]), state.settings.units)} from ${anchor.name}`, p.address].filter(Boolean).join(' · ') }));
   if (!around.length && !named.length) return null;
@@ -1399,10 +1439,10 @@ async function searchByType(q, near) {
 
 // The car parks the server found (OpenStreetMap) plus the parking in this phone's Overture listings, often a
 // mall's own ("Parking, Entry C"), within 1.5 km of the same spot, nearest first.
-async function withOvertureParking(server) {
+async function withOvertureParking(server, onUnavailable) {
   const at = [server.parking.lng, server.parking.lat];
   const from = server.parking.from;
-  const extra = (await Promise.all(['parking', 'car park'].map((w) => searchNearby(w, at).catch(() => [])))).flat()
+  const extra = (await Promise.all(['parking', 'car park'].map((w) => searchNearby(w, at, { onUnavailable }).catch(() => (onUnavailable?.(), []))))).flat()
     .filter((p) => p.category === 'parking' && distance(at, [p.lng, p.lat]) <= 1500)
     .map((p) => ({ ...p, address: from ? `${formatDistance(distance(at, [p.lng, p.lat]))} from ${from}` : p.address, category: 'parking' }));
   const all = [...server.places];
@@ -1411,37 +1451,32 @@ async function withOvertureParking(server) {
 }
 
 async function pickPlace(p) {
+  const target = searchTarget;
+  invalidateSearch();
+  searchTarget = null;
+  closeScreen('search');
   $('search-input').blur();
-  if (searchTarget === 'home' || searchTarget === 'work') {
-    const which = searchTarget;
+  if (target === 'home' || target === 'work') {
+    const which = target;
     try {
       await setHomeWork(which, p);
       toast(`${which === 'home' ? 'Home' : 'Work'} saved`);
     } catch (e) {
       toast(e.message);
     }
-    searchTarget = null;
     renderSearchHome();
-    closeScreen('search');
     return;
   }
-  if (searchTarget === 'save') {
-    searchTarget = null;
-    closeScreen('search');
+  if (target === 'save') {
     return saveAsFavourite(p);
   }
-  if (searchTarget === 'stop') {
-    searchTarget = null;
-    closeScreen('search');
+  if (target === 'stop') {
     return addStop(p);
   }
-  if (searchTarget === 'from') {
-    searchTarget = null;
-    closeScreen('search');
+  if (target === 'from') {
     origin = p;
     return dest && openPreview(dest);
   }
-  closeScreen('search');
   // Search history: kept on this phone without an account (and on the account with one), so it's there next time.
   addPlace('recent', p).then(renderSearchHome).catch(() => {});
   openPreview(p);

@@ -20,9 +20,11 @@
     "predeploy": "node scripts/check-places.mjs && node scripts/app-version.mjs",
     "construction": "python3 scripts/build-construction.py",
     "cameras": "node scripts/build-cameras.mjs",
-    "transit": "python3 scripts/build-transit.py"
+    "transit": "python3 scripts/build-transit.py",
+    "test:offline-browser": "node scripts/verify-offline-shell-browser.mjs"
   },
   "devDependencies": {
+    "@playwright/test": "1.62.1",
     "wrangler": "4.151.3"
   }
 }

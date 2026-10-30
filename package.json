@@ -20,6 +20,7 @@
     "predeploy": "node scripts/check-places.mjs && node scripts/check-transit.mjs && node scripts/app-version.mjs",
     "construction": "python3 scripts/build-construction.py",
     "cameras": "node scripts/build-cameras.mjs",
+    "rest-stops": "node scripts/build-rest-stops.mjs",
     "schools": "node scripts/build-schools.mjs",
     "transit": "python3 scripts/build-transit.py"
   },

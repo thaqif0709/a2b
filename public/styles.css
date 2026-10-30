@@ -412,6 +412,8 @@ body.walking #speedo, body.walking #limit, body.walking #toll-chip, body.walking
 .toll-chip span { min-width: 0; line-height: 1.25; }
 .toll-chip span, .toll-chip small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .toll-chip small { display: block; color: var(--muted); font-size: 11.5px; font-weight: 500; }
+.rest-chip { margin-top: 6px; border: 0; font: inherit; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
+.rest-chip b { background: #2f9e44; color: #fff; }
 .faster-card {
   display: flex; align-items: center; gap: 8px; width: min(100%, 360px); padding: 8px 8px 8px 14px; border-radius: 16px; background: var(--bg); color: var(--text);
   box-shadow: var(--shadow); font-size: 14px;

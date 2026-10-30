@@ -54,6 +54,7 @@ Keep the screen on while you drive (A2B keeps it awake). Only use it when it's s
 | 🏫 **School zones** | At school times (6:30–7:45, 12:30–2:30, 5:45–6:45 on school days, Sunday to Thursday in Kedah, Kelantan and Terengganu), "School zone ahead. Slow down to 30." about 300 m before each school on the route, with a "30 km/h zone" chip and a pin on the school until you're past. School holidays aren't known, so it still warns on those days. |
 | 📸 **Speed cameras** | Fixed AES and AWAS cameras on your route, with a voice warning and the limit about 800 m before each. |
 | 💰 **Tolls** | Toll plazas along the route, with the car price and ways to pay (Touch 'n Go, RFID, SmartTAG) where mapped. |
+| ☕ **R&R ahead** | On long drives, the next R&R on your side of the road shows about 3 km before it; after two hours without a break, the next one is suggested out loud. Tap to stop there. |
 | 🅿️ **Parking** | Car parks near your destination, paid or free, with type and spaces. Pick one and the drive reroutes there. Or search "parking", "parking klcc" or "letak kereta pavilion". |
 | 🚧 **Roadworks** | Routes avoid roads that look to be still under construction, and roads drivers report as closed. |
 | 🚓 **Reports** | Traffic, police, crashes, hazards, blocked lanes, closures and cameras, with voice alerts ahead and "still there?" checks after. |
@@ -134,6 +135,7 @@ Everything A2B uses is free and needs no key:
 | Places drivers added or fixed | A2B drivers, approved by a tester | Kept in the database; phones download what changed since they last asked. |
 | Roads under construction | [Overture Maps](https://overturemaps.org) (OpenStreetMap roads) | Built with `npm run construction`, kept in git. |
 | Fixed speed cameras (AES, AWAS) | OpenStreetMap, found through Photon | Built with `npm run cameras` into `public/cameras.json`, kept in git. |
+| R&Rs and lay-bys | OpenStreetMap, through the [Overpass API](https://overpass-api.de) | Built with `npm run rest-stops` into `public/rest-stops.json`, kept in git. |
 | Schools | OpenStreetMap, through the [Overpass API](https://overpass-api.de) | Built with `npm run schools` into `public/schools.json` (kindergartens, tuition centres and colleges left out), kept in git. |
 | EV chargers | OpenStreetMap ([Overpass API](https://overpass-api.de)), [Open Charge Map](https://openchargemap.org) (`OCM_KEY` secret, optional), Overture Maps | Kept in the database and refreshed weekly by the nightly job (the first list arrives with its first run after deploying). Open Charge Map's openly licensed chargers (CC BY-SA 4.0) are added when a free key is set (`npx wrangler secret put OCM_KEY`). |
 

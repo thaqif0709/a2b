@@ -27,6 +27,7 @@ import { prefetchRouteTiles } from './offline.js';
 import { isSchoolTime, schoolAhead, schoolLimit } from './school-zones.js';
 import { DeadReckoner, shouldEstimate, nearTunnel, pointAt, BAD_ACCURACY_M } from './dead-reckoning.js';
 import { matchesWordStarts } from './text.js';
+import { restStopsAlong, nextRestStop, BreakClock } from './rest-stops.js';
 import { shouldCheck as shouldCheckFaster, pickFaster, offerText, checkBody, OFFER_FOR_MS, KEEP_FOR_MS } from './faster-route.js';
 import { signPlaces } from './signs.js';
 import { mapPlace } from './map-places.js';
@@ -667,6 +668,46 @@ function checkTolls() {
   if (next.ahead > 0 && next.ahead <= 1000 && !tollsSpoken.has(key)) {
     tollsSpoken.add(key);
     speak(`Toll plaza in ${spokenDistance(next.ahead, units)}.`);
+  }
+}
+
+// While driving a long way: a chip for each R&R coming up on your side of the road, and after two hours without a
+// break, the next one suggested (spoken once). Tap the chip to stop there. See rest-stops.js.
+const LONG_DRIVE_M = 50_000;
+let restRows = null; // rest-stops.json's rows once loaded
+let restAlong = null; // { nav, list }: this route's stops
+let breakClock = null;
+const restSpoken = new Set();
+
+function loadRestStops() {
+  if (restRows) return;
+  fetch('/rest-stops.json')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => (restRows = d?.stops ?? null))
+    .catch(() => {});
+}
+
+function checkRest(fix) {
+  const chip = $('rest-chip');
+  const sinceBreak = breakClock?.update(Date.now(), fix.speed) ?? 0;
+  if (!restRows || !nav || !live) return;
+  if (restAlong?.nav !== nav) restAlong = { nav, list: restStopsAlong(nav.coords, nav.cum, restRows) };
+  const next = !stops.length && nextRestStop(live.along, restAlong.list, { sinceBreak, longDrive: nav.total >= LONG_DRIVE_M });
+  if (!next) return chip.classList.add('hidden');
+  const { stop, ahead, remind } = next;
+  const units = state.settings.units;
+  chip.innerHTML = `<b>${stop.kind === 's' ? 'R&amp;R' : 'REST'}</b><span>${remind ? 'Time for a break? ' : ''}${esc(stop.name === 'R&R' ? 'Rest and service area' : stop.name)}<small>${formatDistance(ahead, units)} ahead · Tap to stop here</small></span>`;
+  chip.onclick = () => {
+    chip.classList.add('hidden');
+    addStop({ name: stop.name, address: stop.kind === 's' ? 'R&R' : 'Lay-by', lat: stop.lat, lng: stop.lng });
+  };
+  chip.classList.remove('hidden');
+  const key = `${breakClock.since}:${stop.name}`;
+  if (remind && !restSpoken.has(key)) {
+    restSpoken.add(key);
+    const hours = Math.floor(sinceBreak / 3600);
+    const which = { 'R&R': 'An R&R', 'Lay-by': 'A lay-by' }[stop.name] ?? stop.name;
+    speak(`You've been driving for ${hours > 1 ? `over ${hours} hours` : 'a while'}. ${which} is ${spokenDistance(ahead, units)} ahead, if you'd like a break.`);
   }
 }
 
@@ -2599,6 +2640,11 @@ function startDrive() {
   camerasWarned.clear();
   schoolsWarned.clear();
   $('toll-chip').classList.add('hidden');
+  $('rest-chip').classList.add('hidden');
+  breakClock = new BreakClock(Date.now());
+  restAlong = null;
+  restSpoken.clear();
+  loadRestStops();
   resetFaster();
   $('school-chip').classList.add('hidden');
   map.getSource('school-pin')?.setData(emptyFc());
@@ -2682,9 +2728,10 @@ function driveTick(fix) {
   drawDriveLine();
   drawManeuverArrow();
   if (live.prompt) speak(live.prompt);
-  // Tolls, speed cameras, school zones, road reports ahead and faster routes in traffic are for drivers.
+  // Tolls, R&Rs, speed cameras, school zones, road reports ahead and faster routes in traffic are for drivers.
   if (travel !== 'walk') {
     checkTolls();
+    checkRest(fix);
     checkCameras();
     checkSchools();
     checkAlerts();
@@ -3152,6 +3199,7 @@ async function endDrive(arrived) {
   drawTrail();
   resetFaster();
   $('toll-chip').classList.add('hidden');
+  $('rest-chip').classList.add('hidden');
   $('school-chip').classList.add('hidden');
   map.getSource('school-pin')?.setData(emptyFc());
   pinnedSchool = null;

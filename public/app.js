@@ -5,6 +5,7 @@ import { REPORT_TYPES, reportLabel, reportIcon, canReportFrom, TRAIN_REPORT_TYPE
 import { distance, bearing, cumulative, formatDistance, formatDuration, formatClock } from './geo.js';
 import { Navigator, Simulator, reportsAlong, sliceAlong, spokenDistance, roundaboutTurn } from './nav.js';
 import { canAutoStartRoute } from './route-preview.js';
+import { RequestScope } from './request-lifecycle.js';
 import { TrainGuide, markerFor, walkText } from './train-guide.js';
 import { Glide } from './motion.js';
 import { Follow, shouldSend, nextPollDelay } from './follow.js';
@@ -53,6 +54,10 @@ const FRAME_MS = 1000 / 30; // smooth enough for a car, and half the work of 60 
 const TRIM_EVERY_MS = 100; // how often the driven part of the line is recoloured
 const TRIM_BEHIND_M = 6; // recolour up to a little behind the car, so the route colour always starts under the car
 const REROUTE_GAP_MS = 8000;
+const ROUTE_REQUEST_MS = 30_000;
+const previewRequests = new RequestScope(), rerouteRequests = new RequestScope();
+const rideRequests = new RequestScope(), laterRequests = new RequestScope();
+let tripId = 0;
 
 let map;
 let carMarker, destMarker, dropMarker, stopMarker;
@@ -79,7 +84,6 @@ let sim = null, simTimer = null;
 let onRoute = []; // reports along the active route
 const alerted = new Map(); // report id -> 'ahead' | 'asked'
 let lastReroute = 0;
-let rerouting = false;
 let driveStarted = 0;
 let wakeLock = null;
 let share = null; // { token, url, last: { at, pos, eta } of the last update sent }
@@ -246,6 +250,10 @@ async function boot() {
   initSuggest({ map, openAuth, setBrowseHidden: (hidden) => $('browse-ui').classList.toggle('hidden', hidden) });
   syncDriverPlaces();
   wireUi();
+  addEventListener('a2b:routing-settings', () => {
+    if (mode === 'preview' && dest) openPreview(dest);
+    else if (mode === 'drive' && state.pos) reroute(state.pos, { force: true });
+  });
   setupSheetDrag();
   refreshSound();
   // A shared-drive link goes straight to the drive; everyone else sees the welcome once, which then asks for location.
@@ -1134,6 +1142,7 @@ function closeScreen(id) {
   $(id).classList.add('hidden');
   if (id === 'parking') closeParking();
   if (id === 'preview') backToBrowse();
+  if (id === 'later') cancelLaterRequests();
   if (id === 'report-sheet') reportDraft = null;
   if (id === 'suggest') closeSuggest();
 }
@@ -1475,6 +1484,14 @@ function updateSaveStar() {
 
 // ================= Preview: destination + route options =================
 async function openPreview(place) {
+  autoGo.stop(); // invalidate the previous countdown before any replacement route is requested
+  cancelLaterRequests();
+  const from = origin ? [origin.lng, origin.lat] : state.pos?.lngLat;
+  const task = previewRequests.start({
+    route: routeRequest(from ?? map.getCenter().toArray(), [place.lng, place.lat]),
+    place, origin, moving: origin ? null : movingNow(),
+  });
+  const input = task.input;
   armBack();
   hideContextMenu();
   mode = 'preview';
@@ -1499,7 +1516,6 @@ async function openPreview(place) {
   map.easeTo({ center: [place.lng, place.lat], zoom: 15, pitch: 0, bearing: 0, padding: sheetPadding() });
 
   renderFrom();
-  const from = origin ? [origin.lng, origin.lat] : state.pos?.lngLat;
   const status = origin
     ? `Finding routes from ${origin.name}… Leave later puts the trip in your calendar.`
     : !from
@@ -1514,27 +1530,28 @@ async function openPreview(place) {
     autoGo.stop();
     routeLabels.splice(0).forEach((m) => m.remove());
     drawRoutes(); // no driving routes under the trip
-    return showTransit(place, from ?? map.getCenter().toArray(), from ? '' : status);
+    return showTransit(task, from ? '' : status);
   }
-  const asked = travel;
   try {
-    const found = await requestRoutes(from ?? map.getCenter().toArray(), [place.lng, place.lat]);
+    const found = await requestRoutes(input.route, task.signal);
     // Gone, or switched to Walk or Train while these were on their way: they mustn't come back (or start a drive).
-    if (mode !== 'preview' || dest !== place || travel !== asked) return;
+    if (!previewRequests.owns(task) || mode !== 'preview') return;
     routes = found;
     $('route-status').textContent = [from ? '' : status, routeNote(routes)].filter(Boolean).join(' ');
-    if (origin) $('route-status').textContent = `From ${origin.name}. Leave later puts the trip in your calendar.`;
+    if (input.origin) $('route-status').textContent = `From ${input.origin.name}. Leave later puts the trip in your calendar.`;
     renderRouteOptions();
     renderPeekSummary();
     drawRoutes();
     fitRoutes();
     $('btn-go').disabled = false;
-    if (resuming && !origin) return resumeStart(); // carrying on with a trip the phone cut off
-    if (!origin) autoGo.restart(); // a drive from somewhere else doesn't start by itself
+    if (resuming && !input.origin && routes.closuresIgnored === false) return resumeStart(); // closure fallback still needs a tap
+    if (!input.origin) autoGo.restart(); // a drive from somewhere else doesn't start by itself
   } catch (e) {
-    if (mode !== 'preview' || dest !== place || travel !== asked) return;
+    if (!previewRequests.owns(task) || mode !== 'preview') return;
     $('route-list').innerHTML = '';
     $('route-status').textContent = e.message;
+  } finally {
+    previewRequests.finish(task);
   }
 }
 
@@ -1559,22 +1576,23 @@ function renderTravel() {
   $('preview').classList.toggle('transit', travel === 'transit');
 }
 
-async function showTransit(place, from, status) {
+async function showTransit(task, status) {
+  const { place, origin: fromPlace, route, moving } = task.input;
   try {
-    const plan = await api('/api/transit', { method: 'POST', body: { from, to: [place.lng, place.lat], moving: origin ? null : movingNow() } });
-    if (mode !== 'preview' || dest !== place || travel !== 'transit') return;
+    const plan = await api('/api/transit', { method: 'POST', body: { from: route.from, to: route.to, moving }, signal: task.signal, timeoutMs: ROUTE_REQUEST_MS });
+    if (!previewRequests.owns(task) || mode !== 'preview') return;
     transit = { place, trips: plan.trips, selected: 0, reports: plan.reports ?? [] };
     const night = plan.night ? `${plan.note} The first trains leave around ${formatClock(new Date(plan.firstTrain))}.` : plan.note;
     const last = plan.trips[0]?.lastTrain ? 'Last train tonight: miss it and there’s no later one this way.' : '';
-    const elsewhere = origin ? `From ${origin.name}. Leave later puts the trip in your calendar.` : '';
+    const elsewhere = fromPlace ? `From ${fromPlace.name}. Leave later puts the trip in your calendar.` : '';
     $('route-status').textContent = [status, elsewhere, last, night, plan.trips.length ? 'Times are estimates from the official timetables.' : ''].filter(Boolean).join(' ');
     renderTransit();
-    if (resuming && !origin && plan.trips.length) return resumeStart();
+    if (resuming && !fromPlace && plan.trips.length) return resumeStart();
     const b = new maplibregl.LngLatBounds();
     for (const l of plan.trips[0]?.legs ?? []) for (const c of l.coords) b.extend(c);
     if (!b.isEmpty()) fitTo(b, { padding: sheetPadding(), duration: 700, maxZoom: 16 });
   } catch (e) {
-    if (mode !== 'preview' || dest !== place) return;
+    if (!previewRequests.owns(task) || mode !== 'preview') return;
     // Carrying on offline: the trip as it was when the phone cut it off.
     if (resuming?.trip && travel === 'transit') {
       transit = { place, trips: [resuming.trip], selected: 0 };
@@ -1583,6 +1601,8 @@ async function showTransit(place, from, status) {
     }
     $('route-list').innerHTML = '';
     $('route-status').textContent = e.message;
+  } finally {
+    previewRequests.finish(task);
   }
 }
 
@@ -1725,6 +1745,9 @@ const rideNow = () => Date.now() + rideTimeShift;
 function startRide() {
   const trip = transit?.trips[transit.selected];
   if (!trip || mode !== 'preview') return;
+  previewRequests.cancel();
+  cancelLaterRequests();
+  resetTripRequests();
   autoGo.stop();
   mode = 'ride';
   drawPois(); // off the map while riding
@@ -1778,16 +1801,17 @@ function sayRide(events, before = null) {
 // Off the trip (another way on foot, off the platform, on another train): plan it again from where you are, as
 // driving reroutes. The marker follows you meanwhile. Needs signal; offline, "I'm already here" still works.
 const REPLAN_MS = 20_000;
-let replanning = false, replanAt = 0, replanNoted = false;
+let replanAt = 0, replanNoted = false;
 async function replanRide() {
-  if (replanning || !state.pos || !dest || Date.now() - replanAt < REPLAN_MS) return;
+  if (mode !== 'ride' || rideRequests.pending || !state.pos || !dest || Date.now() - replanAt < REPLAN_MS) return;
   replanAt = Date.now();
   if (!navigator.onLine) return noteReplan("You're offline, so the trip can't be planned again. Tap “I'm already here” to say where you are.");
-  replanning = true;
-  const place = dest;
+  const task = rideRequests.start({ tripId, place: dest, from: state.pos.lngLat, moving: movingNow() });
+  const { place } = task.input;
+  const current = () => rideRequests.owns(task) && mode === 'ride' && tripId === task.input.tripId;
   try {
-    const plan = await api('/api/transit', { method: 'POST', body: { from: state.pos.lngLat, to: [place.lng, place.lat], moving: movingNow() } });
-    if (mode !== 'ride' || !guide || dest !== place) return;
+    const plan = await api('/api/transit', { method: 'POST', body: { from: task.input.from, to: [place.lng, place.lat], moving: task.input.moving }, signal: task.signal, timeoutMs: ROUTE_REQUEST_MS });
+    if (!current() || !guide) return;
     if (!plan.trips.length) return noteReplan(plan.note || 'No train trip from here. Stay on the highlighted route.');
     transit = { place, trips: plan.trips, selected: 0 };
     drawTransit();
@@ -1795,9 +1819,10 @@ async function replanRide() {
     saveTrip('ride');
     rideTick('Route recalculated.');
   } catch (e) {
+    if (!current()) return;
     noteReplan(!navigator.onLine || e.status === 0 ? "You're offline, so the trip can't be planned again. Tap “I'm already here” to say where you are." : e.message);
   } finally {
-    replanning = false;
+    rideRequests.finish(task);
   }
 }
 // Said once while off, not every try.
@@ -2100,6 +2125,7 @@ function stopCompass() {
 }
 
 function endRide(arrived) {
+  resetTripRequests();
   forgetTrip();
   for (const id of ['here-confirm', 'train-report', 'train-report-vote', 'ride-report-chip']) $(id).classList.add('hidden');
   clearInterval(rideTimer);
@@ -2126,7 +2152,6 @@ function endRide(arrived) {
   mode = 'browse';
   if (vehicleShown?.startsWith('train:')) setupVehicle();
   $('ride-off').classList.add('hidden');
-  replanning = false;
   replanNoted = false;
   // Back to the vehicle from Settings (the chevron, unless the car was picked), where you are now. The 3D model
   // draws where the car's glide says, and fixes didn't move that during the trip: start it afresh from here, or
@@ -2170,17 +2195,20 @@ function routeNote(rs) {
   return '';
 }
 
-async function requestRoutes(from, to, heading, via = []) {
+function routeRequest(from, to, heading, via = []) {
   const s = state.settings;
+  return {
+    from: [...from], to: [...to], heading, travel,
+    via: via.map((p) => [p.lng, p.lat]),
+    units: s.units,
+    lang: navigator.language || 'en-US',
+    avoid: { tolls: s.avoid_tolls, highways: s.avoid_highways, ferries: s.avoid_ferries },
+  };
+}
+
+async function requestRoutes(body, signal) {
   const { routes: rs, closures_ignored: closuresIgnored, construction_avoided: constructionAvoided } = await api('/api/route', {
-    method: 'POST',
-    body: {
-      from, to, heading, travel,
-      via: via.map((p) => [p.lng, p.lat]),
-      units: s.units,
-      lang: navigator.language || 'en-US',
-      avoid: { tolls: s.avoid_tolls, highways: s.avoid_highways, ferries: s.avoid_ferries },
-    },
+    method: 'POST', body, signal, timeoutMs: ROUTE_REQUEST_MS,
   });
   for (const r of rs) r.cum = cumulative(r.coords);
   return Object.assign(rs, { closuresIgnored, constructionAvoided });
@@ -2348,15 +2376,18 @@ const autoGo = (() => {
   const restart = () => {
     stop();
     if (blocked()) return; // warnings need an explicit Go now; without a location the route starts from the map
+    const task = previewRequests.current;
     left = AUTO_GO_S;
     void go().offsetWidth; // restart the fill animation
     go().classList.add('counting');
-    timer = setInterval(() => {
-      if (blocked()) return stop();
+    const running = setInterval(() => {
+      if (timer !== running) return; // an already-queued tick must not stop a newer countdown
+      if (!previewRequests.owns(task) || blocked()) return stop();
       if (--left > 0) return label();
       stop();
       startDrive();
     }, 1000);
+    timer = running;
     label();
   };
   return { restart, stop };
@@ -2379,6 +2410,10 @@ function resetTravel() {
 
 function backToBrowse() {
   autoGo.stop();
+  previewRequests.cancel();
+  cancelLaterRequests();
+  resetTripRequests();
+  resuming = null;
   mode = 'browse';
   resetTravel();
   transit = null;
@@ -2403,9 +2438,16 @@ function backToBrowse() {
 
 // ================= Leave later =================
 let laterMode = 'leave';
+let laterTimer = null;
+
+function cancelLaterRequests() {
+  clearTimeout(laterTimer);
+  laterRequests.cancel();
+}
 
 function openLater() {
   autoGo.stop();
+  cancelLaterRequests();
   if (travel === 'transit' ? !transit?.trips.length : !routes[selected]) return toast(travel === 'transit' ? 'Wait for the trains first.' : 'Wait for the route first.');
   $('later').classList.remove('hidden');
   armBack();
@@ -2420,10 +2462,10 @@ function openLater() {
       updateLater();
     };
   });
-  let t;
   input.oninput = () => {
-    clearTimeout(t);
-    t = setTimeout(updateLater, travel === 'transit' ? 400 : 0); // trains are asked of the server: not on every key
+    cancelLaterRequests(); // invalidate the old result during the debounce, not only after it
+    laterTrip = null;
+    laterTimer = setTimeout(updateLater, travel === 'transit' ? 400 : 0); // trains are asked of the server: not on every key
   };
   $('btn-later-remind').onclick = downloadCalendar;
   laterTrip = null;
@@ -2446,21 +2488,28 @@ function updateLater() {
 
 // By train, the trains that run then (the timetable changes through the day and at night), not today's trip moved.
 // "Arrive by" asks for a time that early, then earlier by however late that trip gets in, so it's the last one in time.
-let laterTrip = null, laterSeq = 0;
+let laterTrip = null;
 async function updateLaterTrains() {
+  cancelLaterRequests();
+  if (mode !== 'preview' || travel !== 'transit' || !dest || !transit || $('later').classList.contains('hidden')) return;
   const want = +new Date($('later-time').value);
-  if (Number.isNaN(want)) return;
-  const seq = ++laterSeq;
   laterTrip = null;
+  if (Number.isNaN(want)) return;
+  const task = laterRequests.start({
+    from: origin ? [origin.lng, origin.lat] : state.pos?.lngLat ?? map.getCenter().toArray(),
+    to: [dest.lng, dest.lat], want, laterMode, duration: transit.trips[0]?.duration ?? 1800,
+  });
+  const input = task.input;
   $('later-result').innerHTML = '<span class="spinner" aria-hidden="true"></span>Finding trains…';
-  const from = origin ? [origin.lng, origin.lat] : state.pos?.lngLat ?? map.getCenter().toArray();
-  const ask = (at) => api('/api/transit', { method: 'POST', body: { from, to: [dest.lng, dest.lat], at } });
+  const deadline = Date.now() + ROUTE_REQUEST_MS;
+  const ask = (at) => api('/api/transit', { method: 'POST', body: { from: input.from, to: input.to, at }, signal: task.signal, timeoutMs: Math.max(1, deadline - Date.now()) });
   try {
-    let plan = await ask(laterMode === 'leave' ? want : want - (transit.trips[0]?.duration ?? 1800) * 1000);
-    for (let k = 0; laterMode === 'arrive' && plan.trips[0]?.arrive > want && k < 2; k++) {
+    let plan = await ask(input.laterMode === 'leave' ? want : want - input.duration * 1000);
+    for (let k = 0; input.laterMode === 'arrive' && plan.trips[0]?.arrive > want && k < 2; k++) {
+      if (!laterRequests.owns(task)) return;
       plan = await ask(plan.trips[0].depart - (plan.trips[0].arrive - want) - 60_000);
     }
-    if (seq !== laterSeq) return;
+    if (!laterRequests.owns(task)) return;
     const trip = plan.trips[0];
     if (!trip) return void ($('later-result').textContent = plan.note || 'No trains then.');
     laterTrip = trip;
@@ -2468,7 +2517,9 @@ async function updateLaterTrains() {
     $('later-result').innerHTML = `Leave <b>${formatClock(new Date(trip.depart))}</b>, arrive around <b>${formatClock(new Date(trip.arrive))}</b>.${last}
       <ol class="t-steps">${trip.legs.map(stepHtml).join('')}</ol><small class="hint">From the official timetables.</small>`;
   } catch (e) {
-    if (seq === laterSeq) $('later-result').textContent = e.message;
+    if (laterRequests.owns(task)) $('later-result').textContent = e.message;
+  } finally {
+    laterRequests.finish(task);
   }
 }
 
@@ -2494,6 +2545,7 @@ function downloadCalendar() {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   toast('Added: open the file to put it in your calendar.');
   $('later').classList.add('hidden');
+  cancelLaterRequests();
 }
 
 function toLocalInput(d) {
@@ -2505,7 +2557,11 @@ function toLocalInput(d) {
 function startDrive() {
   autoGo.stop();
   const route = routes[selected];
-  if (!route) return;
+  if (mode !== 'preview' || !route) return;
+  resuming = null;
+  previewRequests.cancel();
+  cancelLaterRequests();
+  resetTripRequests();
   mode = 'drive';
   drawPois(); // off the map while driving
   trail = [];
@@ -2785,15 +2841,23 @@ function setOffrouteNote(offRoute) {
   }
 }
 
+function resetTripRequests() {
+  tripId++;
+  rerouteRequests.cancel();
+  rideRequests.cancel();
+  lastReroute = replanAt = 0;
+}
+
 async function reroute(fix, { force = false, note } = {}) {
-  if (rerouting || (!force && Date.now() - lastReroute < REROUTE_GAP_MS) || !dest) return;
-  rerouting = true;
+  if (mode !== 'drive' || (rerouteRequests.pending && !force) || (!force && Date.now() - lastReroute < REROUTE_GAP_MS) || !dest) return;
+  const task = rerouteRequests.start({ tripId, route: routeRequest(fix.lngLat, [dest.lng, dest.lat], fix.heading ?? undefined, stops) });
+  const current = () => rerouteRequests.owns(task) && mode === 'drive' && tripId === task.input.tripId;
   lastReroute = Date.now();
   try {
-    const rs = await requestRoutes(fix.lngLat, [dest.lng, dest.lat], fix.heading ?? undefined, stops);
-    if (mode !== 'drive') return;
-    keepTrail(fix.lngLat);
-    nav = new Navigator(rs[0], { units: state.settings.units });
+    const rs = await requestRoutes(task.input.route, task.signal);
+    if (!current()) return;
+    keepTrail(task.input.route.from);
+    nav = new Navigator(rs[0], { units: task.input.route.units });
     nav.spoken.add('depart');
     computeOnRoute();
     loadReports(true);
@@ -2802,11 +2866,12 @@ async function reroute(fix, { force = false, note } = {}) {
     if (rs.closuresIgnored) toast("Couldn't find a way around a reported closure.");
     if (share) pushShare(true);
   } catch (e) {
+    if (!current()) return;
     // The common mid-drive failure is a dead spot: say so, and keep guiding on the loaded route.
     if (!navigator.onLine || e.status === 0) toast("You're offline, so the route can't be recalculated. Stay on the highlighted route.", 4000);
     else toast(e.message);
   } finally {
-    rerouting = false;
+    rerouteRequests.finish(task);
   }
 }
 
@@ -2960,6 +3025,7 @@ async function arrive() {
 }
 
 async function endDrive(arrived) {
+  resetTripRequests();
   stopSimulation();
   stopTunnelWatch();
   discardProbeBuffer(); // fixes buffered on this drive must not leak into a later batch

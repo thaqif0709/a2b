@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Thaqif Syarafuddin bin Roslan. A2B: https://github.com/thaqif0709/a2b (see NOTICE).
 
 // Shared app state, settings, storage and the API client.
+import { boundedRequest } from './request-lifecycle.js';
 
 export const $ = (id) => document.getElementById(id);
 
@@ -48,22 +49,28 @@ const deviceId = (() => {
   return id;
 })();
 
-export async function api(path, { method = 'GET', body } = {}) {
-  const res = await fetch(path, {
-    method,
-    headers: { 'x-a2b-device': deviceId, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    credentials: 'same-origin',
-  }).catch(() => {
-    throw Object.assign(new Error("Can't reach A2B. Check your connection and try again."), { status: 0 });
-  });
-  const data = await res.json().catch(() => ({}));
-  // Without a message of our own, a 429 or 5xx came from Cloudflare itself, e.g. the free plan's daily cap.
-  const busy = res.status === 429 || res.status >= 500;
-  const fallback = busy ? 'A2B is busy right now (it runs on free servers during the beta). Try again in a minute.' : `Something went wrong (${res.status}).`;
-  if (data.code === 'full') dispatchEvent(new Event('a2b:full'));
-  if (!res.ok) throw Object.assign(new Error(data.error || fallback), { status: res.status, code: data.code });
-  return data;
+export async function api(path, { method = 'GET', body, signal, timeoutMs } = {}) {
+  return boundedRequest(async (requestSignal) => {
+    const res = await fetch(path, {
+      method,
+      headers: { 'x-a2b-device': deviceId, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: 'same-origin',
+      signal: requestSignal,
+    }).catch(() => {
+      if (requestSignal.aborted) throw requestSignal.reason;
+      throw Object.assign(new Error("Can't reach A2B. Check your connection and try again."), { status: 0 });
+    });
+    if (requestSignal.aborted) throw requestSignal.reason;
+    const data = await res.json().catch(() => ({}));
+    if (requestSignal.aborted) throw requestSignal.reason;
+    // Without a message of our own, a 429 or 5xx came from Cloudflare itself, e.g. the free plan's daily cap.
+    const busy = res.status === 429 || res.status >= 500;
+    const fallback = busy ? 'A2B is busy right now (it runs on free servers during the beta). Try again in a minute.' : `Something went wrong (${res.status}).`;
+    if (data.code === 'full') dispatchEvent(new Event('a2b:full'));
+    if (!res.ok) throw Object.assign(new Error(data.error || fallback), { status: res.status, code: data.code });
+    return data;
+  }, { signal, timeoutMs });
 }
 
 // ---------- Settings ----------
@@ -73,8 +80,10 @@ export function loadLocalSettings() {
 }
 
 export async function saveSettings(patch) {
+  const routingChanged = ['units', 'avoid_tolls', 'avoid_highways', 'avoid_ferries'].some((k) => k in patch && patch[k] !== state.settings[k]);
   Object.assign(state.settings, patch);
   local.set('settings', state.settings);
+  if (routingChanged) dispatchEvent(new Event('a2b:routing-settings'));
   if (state.user) {
     try {
       const { user } = await api('/api/me', { method: 'PATCH', body: { settings: patch } });

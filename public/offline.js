@@ -138,6 +138,19 @@ export function prefetchBudget(connection = globalThis.navigator?.connection) {
   return { maxTiles: PREFETCH_BUDGET_TILES, maxBytes: PREFETCH_BUDGET_BYTES, metered: false };
 }
 
+// Keep the in-drive message honest when route tiles hit the tile or data budget.
+export function offlineMapPrefetchNotice({ fetched = 0, total = 0, complete = false } = {}) {
+  if (total <= 0) return null;
+  if (!complete) {
+    return fetched > 0
+      ? 'Map tiles were loaded for part of this route; offline coverage may be incomplete.'
+      : 'Offline map coverage for this route could not be confirmed.';
+  }
+  return fetched > 50
+    ? 'Map tiles were loaded for the full route corridor; browser storage may still limit offline access.'
+    : null;
+}
+
 // Fetch the route corridor into the tile cache. Already-cached tiles are served from cache by the
 // worker, so re-driving a familiar road costs almost nothing. Never throws: prefetch is best-effort.
 //
@@ -147,15 +160,17 @@ export function prefetchBudget(connection = globalThis.navigator?.connection) {
 // of the corridor is picked up by the worker as the map loads it.
 export async function prefetchRouteTiles(coords, getStyle, { zooms = PREFETCH_ZOOMS, maxTiles, maxBytes, onProgress } = {}) {
   try {
-    if (!coords?.length || typeof caches === 'undefined') return { fetched: 0, total: 0 };
+    if (!coords?.length || typeof caches === 'undefined') return { fetched: 0, total: 0, complete: false };
     const budget = prefetchBudget();
     const tileCap = maxTiles ?? budget.maxTiles;
     const byteCap = maxBytes ?? budget.maxBytes;
     const { templates, minzoom, maxzoom } = await tileSourceInfo(getStyle());
-    if (!templates.length) return { fetched: 0, total: 0 };
+    if (!templates.length) return { fetched: 0, total: 0, complete: false };
     const clamped = zooms.filter((z) => z >= minzoom && z <= maxzoom);
-    if (!clamped.length) return { fetched: 0, total: 0 };
-    const tiles = tilesForCoords(coords, clamped).slice(0, tileCap);
+    if (!clamped.length) return { fetched: 0, total: 0, complete: false };
+    const candidates = tilesForCoords(coords, clamped);
+    const tiles = candidates.slice(0, tileCap);
+    const tileBudgetLimited = tiles.length < candidates.length;
     let fetched = 0;
     let bytes = 0;
     let stopped = false;
@@ -164,12 +179,18 @@ export async function prefetchRouteTiles(coords, getStyle, { zooms = PREFETCH_ZO
     await Promise.all(Array.from({ length: Math.min(FETCH_AT_ONCE, queue.length) }, async () => {
       while (queue.length && !stopped) {
         const t = queue.shift();
+        let tileComplete = true;
         for (const template of templates) {
-          if (stopped) break;
+          if (stopped) {
+            tileComplete = false;
+            break;
+          }
           try {
             const res = await fetch(tileUrl(template, t));
-            if (!res.ok) continue;
-            fetched++;
+            if (!res.ok) {
+              tileComplete = false;
+              continue;
+            }
             // Track data use so a long drive can't burn ~100 MB unasked: prefer the real size
             // when the header is there, else a per-zoom estimate (cheap; tiles already cached
             // cost nothing but still count, which is fine).
@@ -177,15 +198,23 @@ export async function prefetchRouteTiles(coords, getStyle, { zooms = PREFETCH_ZO
             if (!Number.isFinite(size) || size <= 0) size = estimateTileBytes(t.z);
             bytes += size;
             if (bytes >= byteCap) stopped = true;
-          } catch {} // went offline mid-prefetch: the tiles so far still count
+          } catch {
+            tileComplete = false;
+          } // went offline mid-prefetch: the tiles so far still count
         }
-        onProgress?.(fetched, tiles.length);
+        if (tileComplete) fetched++;
+        onProgress?.(fetched, candidates.length);
       }
     }));
     await trimTileCache();
-    return { fetched, total: tiles.length, truncated: stopped };
+    // fetched counts complete tile positions; total is the full corridor before the tile cap.
+    return {
+      fetched,
+      total: candidates.length,
+      complete: !tileBudgetLimited && fetched === candidates.length,
+    };
   } catch {
-    return { fetched: 0, total: 0 };
+    return { fetched: 0, total: 0, complete: false };
   }
 }
 

@@ -22,7 +22,7 @@ import { startPresence, checkIn } from './presence.js';
 import { noteProbeFix, startProbeSender, discardProbeBuffer } from './probe.js';
 import { welcome, hideSplash } from './welcome.js';
 import { watchUpdates, updateCheckpoint } from './update.js';
-import { prefetchRouteTiles } from './offline.js';
+import { offlineMapPrefetchNotice, prefetchRouteTiles } from './offline.js';
 import { DeadReckoner, shouldEstimate, nearTunnel, pointAt, BAD_ACCURACY_M } from './dead-reckoning.js';
 import { matchesWordStarts } from './text.js';
 import { signPlaces } from './signs.js';
@@ -2544,7 +2544,10 @@ function startDrive() {
   // Save the corridor's map tiles while still online, so dead spots show map, not blank.
   if (local.get('offlineMaps', true)) {
     prefetchRouteTiles(route.coords, () => map.getStyle())
-      .then(({ fetched }) => { if (fetched > 50) toast('Map saved along this route — it keeps showing without signal.'); })
+      .then((result) => {
+        const notice = offlineMapPrefetchNotice(result);
+        if (notice) toast(notice, 5000);
+      })
       .catch(() => {});
   }
 

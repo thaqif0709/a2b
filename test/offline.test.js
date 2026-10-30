@@ -3,7 +3,46 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { lngLatToTile, tileUrl, tilesForCoords, tileSourceInfo, prefetchBudget, PREFETCH_ZOOMS, MAX_CACHED_TILES } from '../public/offline.js';
+import {
+  lngLatToTile,
+  tileUrl,
+  tilesForCoords,
+  tileSourceInfo,
+  prefetchBudget,
+  prefetchRouteTiles,
+  offlineMapPrefetchNotice,
+  PREFETCH_ZOOMS,
+  MAX_CACHED_TILES,
+} from '../public/offline.js';
+
+async function withPrefetchMocks(fetchTile, run) {
+  const originalFetch = globalThis.fetch;
+  const originalCaches = Object.getOwnPropertyDescriptor(globalThis, 'caches');
+  globalThis.caches = { open: async () => ({ keys: async () => [] }) };
+  globalThis.fetch = async (url) => {
+    if (String(url) === 'https://tiles.example.org/planet') {
+      return {
+        ok: true,
+        json: async () => ({
+          tiles: ['https://tiles.example.org/tiles/{z}/{x}/{y}.pbf'],
+          minzoom: 0,
+          maxzoom: 14,
+        }),
+      };
+    }
+    return fetchTile(String(url));
+  };
+  try {
+    return await run();
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalCaches) Object.defineProperty(globalThis, 'caches', originalCaches);
+    else delete globalThis.caches;
+  }
+}
+
+const vectorStyle = () => ({ sources: { map: { type: 'vector', url: 'https://tiles.example.org/planet' } } });
+const tileResponse = (ok = true) => ({ ok, headers: { get: () => '64' } });
 
 test('lngLatToTile centres the world at low zoom', () => {
   assert.deepEqual(lngLatToTile(0, 0, 0), { z: 0, x: 0, y: 0 });
@@ -70,4 +109,64 @@ test('metered connections get a smaller prefetch budget', () => {
   assert.ok(prefetchBudget({ type: 'cellular' }).maxTiles < prefetchBudget({ type: 'wifi' }).maxTiles);
   assert.ok(prefetchBudget({ type: 'wifi' }).maxBytes <= 50 * 1024 * 1024);
   assert.ok(prefetchBudget(undefined).maxTiles > 0); // desktops without the API get the full budget
+});
+
+test('prefetch reports when the tile budget leaves part of the route unsaved', async () => {
+  const result = await withPrefetchMocks(async () => tileResponse(), () =>
+    prefetchRouteTiles([[-120, 0], [0, 0], [120, 0]], vectorStyle, {
+      zooms: [2],
+      maxTiles: 1,
+      maxBytes: 10_000,
+    }),
+  );
+
+  assert.ok(result.total > 1);
+  assert.equal(result.fetched, 1);
+  assert.equal(result.complete, false);
+  assert.match(offlineMapPrefetchNotice(result), /coverage may be incomplete/);
+});
+
+test('prefetch reports partial coverage when the byte budget stops the corridor', async () => {
+  const result = await withPrefetchMocks(async () => tileResponse(), () =>
+    prefetchRouteTiles([[-120, 0], [0, 0], [120, 0]], vectorStyle, {
+      zooms: [2],
+      maxTiles: 100,
+      maxBytes: 64,
+    }),
+  );
+
+  assert.ok(result.total > 1);
+  assert.ok(result.fetched > 0);
+  assert.equal(result.complete, false);
+  assert.match(offlineMapPrefetchNotice(result), /coverage may be incomplete/);
+});
+
+test('prefetch marks a fully fetched route complete and keeps the existing success threshold', async () => {
+  const result = await withPrefetchMocks(async () => tileResponse(), () =>
+    prefetchRouteTiles([[101.7, 3.15]], vectorStyle, {
+      zooms: [0],
+      maxTiles: 10,
+      maxBytes: 10_000,
+    }),
+  );
+
+  assert.deepEqual(result, { fetched: 1, total: 1, complete: true });
+  assert.equal(offlineMapPrefetchNotice(result), null);
+  assert.equal(
+    offlineMapPrefetchNotice({ fetched: 51, total: 51, complete: true }),
+    'Map tiles were loaded for the full route corridor; browser storage may still limit offline access.',
+  );
+});
+
+test('prefetch does not claim coverage when tile requests fail', async () => {
+  const result = await withPrefetchMocks(async () => tileResponse(false), () =>
+    prefetchRouteTiles([[101.7, 3.15]], vectorStyle, {
+      zooms: [0],
+      maxTiles: 10,
+      maxBytes: 10_000,
+    }),
+  );
+
+  assert.equal(result.complete, false);
+  assert.match(offlineMapPrefetchNotice(result), /could not be confirmed/);
 });

@@ -56,6 +56,8 @@ TYPES = {
     'police': lambda name, cat: cat == 'police_station',
     'convenience': lambda name, cat: cat == 'convenience_store',
     'ev': lambda name, cat: cat == 'ev_charging_station',  # the server adds OpenStreetMap's and Open Charge Map's
+    # Not searched for: tells which mall a shop is in, when its address gives a floor but not the mall (public/indoor.js).
+    'mall': lambda name, cat: cat == 'shopping_mall',
 }
 
 # Rough bounding boxes, so Overture only has to scan the right parts of its files.

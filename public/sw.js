@@ -8,11 +8,11 @@
 // Two map caches: small long-lived files (map library, style, TileJSON, fonts, sprites) live in
 // MAPS and are never trimmed, so trimming and "Clear offline maps" can't evict the library or the
 // labels. Only versioned vector tiles live in TILES, which is trimmed to MAX_TILES.
-const CACHE = 'a2b-v39';
+const CACHE = 'a2b-v40';
 const TILES = 'a2b-tiles-v1'; // versioned tiles only; kept across activates; cleared from Settings › Offline maps
 const MAPS = 'a2b-maps-v1'; // library, style, TileJSON, fonts, sprites; never trimmed
 const MAX_TILES = 2000; // bound phone storage; iOS can evict a PWA's whole storage when it gets large
-const SHELL = ['/', '/styles.css', '/app.js', '/core.js', '/panels.js', '/nav.js', '/motion.js', '/voice.js', '/vehicle3d.js', '/geo.js', '/icons.js', '/report-types.js', '/map-themes.js', '/places.js', '/text.js', '/sheet-drag.js', '/follow.js', '/presence.js', '/welcome.js', '/update.js', '/offline.js', '/train-guide.js', '/signs.js', '/dead-reckoning.js', '/map-places.js', '/suggest.js', '/icon.svg', '/manifest.webmanifest'];
+const SHELL = ['/', '/styles.css', '/app.js', '/core.js', '/panels.js', '/nav.js', '/motion.js', '/voice.js', '/vehicle3d.js', '/geo.js', '/icons.js', '/report-types.js', '/map-themes.js', '/places.js', '/text.js', '/sheet-drag.js', '/follow.js', '/presence.js', '/welcome.js', '/update.js', '/offline.js', '/train-guide.js', '/signs.js', '/dead-reckoning.js', '/map-places.js', '/suggest.js', '/indoor.js', '/icon.svg', '/manifest.webmanifest'];
 const MAPLIBRE = ['https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js', 'https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css'];
 
 self.addEventListener('install', (e) => {

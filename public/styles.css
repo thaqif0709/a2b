@@ -465,6 +465,22 @@ body.walking #speedo, body.walking #limit, body.walking #toll-chip, body.walking
 .arrived .btn { margin-top: 12px; }
 .flag { width: 64px; height: 64px; border-radius: 50%; background: var(--good) center/34px no-repeat url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M5 21V4m0 0h11l-2 4 2 4H5' fill='none' stroke='%23fff' stroke-width='2.2' stroke-linejoin='round' stroke-linecap='round'/%3E%3C/svg%3E"); }
 
+/* ---------- Inside a mall: the end of a walk to a shop in one (app.js openMallCard) ---------- */
+.mall-card { display: grid; gap: 4px; padding: 12px 0 0; }
+.mall-where { color: var(--muted); font-size: 15px; }
+.mall-where b { color: var(--text); }
+.mall-card h2 { font-size: 24px; overflow-wrap: anywhere; }
+.mall-floor { display: flex; align-items: center; gap: 8px; margin-top: 4px; font-size: 17px; font-weight: 700; color: var(--accent-text); }
+.mall-floor svg { width: 22px; height: 22px; flex: none; }
+.mall-pointer { display: flex; align-items: center; justify-content: center; gap: 16px; min-height: 72px; margin: 10px 0 2px; }
+.mall-arrow { width: 64px; height: 64px; flex: none; border-radius: 50%; background: var(--bg-2); color: var(--accent-text); display: grid; place-items: center; transition: transform 0.25s ease-out; }
+.mall-arrow svg { width: 34px; height: 34px; }
+.mall-dist { display: grid; justify-items: start; }
+.mall-dist b { font-size: 30px; font-variant-numeric: tabular-nums; }
+.mall-dist small { color: var(--muted); font-size: 15px; }
+.mall-dist small:empty { display: none; }
+#btn-mall-compass { justify-self: center; }
+
 /* ---------- Reports ---------- */
 .report-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px 8px; padding: 16px 0 8px; }
 .report-tile { display: grid; justify-items: center; gap: 8px; font-weight: 600; font-size: 15px; }

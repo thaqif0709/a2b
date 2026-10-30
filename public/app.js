@@ -2,14 +2,15 @@
 // Copyright (C) 2026 Thaqif Syarafuddin bin Roslan. A2B: https://github.com/thaqif0709/a2b (see NOTICE).
 
 import { REPORT_TYPES, reportLabel, reportIcon, canReportFrom, TRAIN_REPORT_TYPES, trainReportIcon } from './report-types.js';
-import { distance, bearing, cumulative, formatDistance, formatDuration, formatClock } from './geo.js';
+import { distance, bearing, angleDiff, cumulative, formatDistance, formatDuration, formatClock } from './geo.js';
 import { Navigator, Simulator, reportsAlong, sliceAlong, spokenDistance, roundaboutTurn } from './nav.js';
 import { canAutoStartRoute } from './route-preview.js';
 import { TrainGuide, markerFor, walkText } from './train-guide.js';
 import { Glide } from './motion.js';
 import { Follow, shouldSend, nextPollDelay } from './follow.js';
 import { sheetGesture, settle, rubberBand } from './sheet-drag.js';
-import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES, addTypeSource, withoutBaseDuplicates } from './places.js';
+import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES, addTypeSource, withoutBaseDuplicates, mallsAround } from './places.js';
+import { insideMall, compassWord } from './indoor.js';
 import { start as startVehicle, DEFAULT_COLOR, vehicleFor } from './vehicle3d.js';
 import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PLACE_ICONS, soundIcon } from './icons.js';
 import {
@@ -1110,6 +1111,16 @@ function wireUi() {
     $('arrived').classList.add('hidden');
     backToBrowse();
   };
+  $('btn-mall-here').onclick = () => {
+    const { place, walk } = mallCard ?? {};
+    closeMallCard();
+    if (place) showArrived(place.name, walk.dist, Date.now() - walk.started);
+  };
+  $('btn-mall-end').onclick = () => {
+    closeMallCard();
+    backToBrowse();
+  };
+  $('btn-mall-compass').onclick = startCompass;
 
   // Reports
   $('btn-report-back').onclick = () => renderReportGrid();
@@ -1138,7 +1149,7 @@ function closeScreen(id) {
   if (id === 'suggest') closeSuggest();
 }
 
-const OVERLAYS = ['ctx', 'auth', 'panel', 'search', 'report-card', 'report-sheet', 'parking', 'later', 'arrived', 'resume', 'here-confirm', 'train-report', 'train-report-vote', 'suggest', 'preview'];
+const OVERLAYS = ['ctx', 'auth', 'panel', 'search', 'report-card', 'report-sheet', 'parking', 'later', 'mall', 'arrived', 'resume', 'here-confirm', 'train-report', 'train-report-vote', 'suggest', 'preview'];
 
 // Closes the top-most screen; returns false when nothing was open.
 function closeTop() {
@@ -1146,6 +1157,7 @@ function closeTop() {
     if ($(id).classList.contains('hidden')) continue;
     if (id === 'ctx') hideContextMenu();
     else if (id === 'arrived') $('btn-arrived-done').click();
+    else if (id === 'mall') $('btn-mall-end').click();
     else closeScreen(id);
     return true;
   }
@@ -2379,6 +2391,7 @@ function resetTravel() {
 
 function backToBrowse() {
   autoGo.stop();
+  if (mallCard) closeMallCard();
   mode = 'browse';
   resetTravel();
   transit = null;
@@ -2535,6 +2548,8 @@ function startDrive() {
   armBack();
   follow = true;
   $('btn-recenter-drive').classList.add('hidden');
+  findIndoor(travel === 'walk' ? dest : null);
+  if (travel === 'walk') startCompass(); // inside the tap on Start: iOS only asks for the compass from a tap (the mall card's arrow)
   // Speak inside the tap so mobile browsers allow audio for the rest of the drive.
   speak(route.steps[0]?.pre);
   addPlace('recent', dest).then(renderSearchHome).catch(() => {});
@@ -2611,7 +2626,8 @@ function driveTick(fix) {
   setOffrouteNote(live.offRoute);
   if (live.offRoute && (!offTrail.length || distance(offTrail.at(-1), fix.lngLat) > 5)) offTrail.push(fix.lngLat);
   if (live.offRoute) reroute(fix);
-  if (live.arrived) arrive();
+  // Walking to a shop in a mall, close to it in a straight line is there: GPS wanders indoors, and the path may not go in.
+  if (live.arrived || (indoor && distance(fix.lngLat, [dest.lng, dest.lat]) < MALL_CARD_M)) arrive();
 }
 
 // ---------- Tunnel mode ----------
@@ -2948,15 +2964,86 @@ function overview() {
 }
 
 async function arrive() {
-  const name = dest?.name ?? '';
-  const took = Date.now() - driveStarted;
+  const place = dest;
   const dist = nav?.total ?? 0;
-  speak(nav?.steps.at(-1)?.pre || 'You have arrived.');
+  const inMall = travel === 'walk' ? indoor : null;
+  speak(inMall
+    ? `You're at ${inMall.mall}. ${inMall.name} is ${inMall.floor ? `on ${inMall.floor.say}` : 'inside'}.`
+    : nav?.steps.at(-1)?.pre || 'You have arrived.');
   await endDrive(true);
+  if (inMall) openMallCard(place, inMall, { dist, started: driveStarted });
+  else showArrived(place?.name ?? '', dist, Date.now() - driveStarted);
+}
+
+function showArrived(name, dist, took) {
   $('arrived-name').textContent = name;
   $('arrived-stats').textContent = `${formatDistance(dist, state.settings.units)} in ${formatDuration(took / 1000)}`;
   $('arrived').classList.remove('hidden');
   $('browse-ui').classList.add('hidden');
+}
+
+// ---------- Inside a mall ----------
+// GPS doesn't reach inside a mall and there are no indoor maps of Malaysia's malls, so a walk to a shop in one ends at
+// the mall with a card for the last bit: the floor and lot from the shop's address (indoor.js), and an arrow on the
+// compass pointing at the shop's pin, with the distance in a straight line. "I'm here" finishes the walk as arriving
+// does; "End walk" just ends it.
+const MALL_CARD_M = 50; // this close to the shop in a straight line, you're at the mall
+let indoor = null; // { mall, floor, unit, name } when the walk is to a shop inside a mall
+let mallCard = null; // { place, walk: { dist, started }, timer, turn } while the card is up
+
+// Whether the walk's destination is a shop in a mall: from its address or name, else from the malls listed nearby.
+async function findIndoor(place) {
+  indoor = null;
+  if (!place) return;
+  const found = insideMall(place) ?? (place.address ? insideMall(place, await mallsAround([place.lng, place.lat]).catch(() => [])) : null);
+  if (dest === place && mode === 'drive' && travel === 'walk') indoor = found;
+}
+
+function openMallCard(place, info, walk) {
+  $('mall-name').textContent = info.mall;
+  $('mall-shop').textContent = info.name;
+  const where = [info.floor?.label, info.unit && `${info.floor ? 'unit' : 'Unit'} ${info.unit}`].filter(Boolean).join(' · ');
+  $('mall-floor').classList.toggle('hidden', !where);
+  $('mall-floor-text').textContent = where;
+  $('mall-hint').textContent = `${info.floor ? `Go to ${info.floor.say}, then follow the arrow.` : 'Floor not listed: check the mall directory.'} GPS is weak indoors, so the distance is in a straight line.`;
+  destMarker?.setLngLat([place.lng, place.lat]).addTo(map); // the shop's pin stays on the map while you find it
+  clearInterval(mallCard?.timer);
+  mallCard = { place, walk, turn: null, timer: setInterval(renderMallPointer, 250) };
+  renderMallPointer();
+  $('mall').classList.remove('hidden');
+  $('browse-ui').classList.add('hidden');
+}
+
+// The arrow turns with the phone to point at the shop. With no compass (most computers, or one not allowed yet), the
+// way is said in words from north instead: an arrow that doesn't turn with you would point the wrong way.
+function renderMallPointer() {
+  if (!mallCard) return;
+  const { place } = mallCard;
+  const at = state.pos?.lngLat;
+  const shop = [place.lng, place.lat];
+  const d = at ? distance(at, shop) : null;
+  const facing = compassFresh() ? compass : null;
+  const close = d != null && d < 20;
+  $('mall-dist').textContent = d == null ? 'Finding you…' : close ? 'Very close' : formatDistance(d, state.settings.units);
+  $('mall-dir').textContent = d != null && !close && facing == null ? `to the ${compassWord(bearing(at, shop))}` : '';
+  const arrow = $('mall-arrow');
+  arrow.classList.toggle('hidden', d == null || close || facing == null);
+  if (d != null && !close && facing != null) {
+    const turn = bearing(at, shop) - facing;
+    // Round the short way from where it points now, so it never spins the long way past north.
+    mallCard.turn = mallCard.turn == null ? turn : mallCard.turn + angleDiff(mallCard.turn, turn);
+    arrow.style.transform = `rotate(${mallCard.turn}deg)`;
+  }
+  // iPhones only give the compass after a tap that asks for it: offer one when the walk's Start didn't get it.
+  $('btn-mall-compass').classList.toggle('hidden', facing != null || !globalThis.DeviceOrientationEvent?.requestPermission);
+}
+
+function closeMallCard() {
+  clearInterval(mallCard?.timer);
+  mallCard = null;
+  indoor = null;
+  $('mall').classList.add('hidden');
+  stopCompass();
 }
 
 async function endDrive(arrived) {
@@ -2984,6 +3071,7 @@ async function endDrive(arrived) {
   renderStopMenu();
   wakeLock?.release?.().catch(() => {});
   wakeLock = null;
+  if (!(arrived && indoor)) stopCompass(); // the mall card's arrow keeps it
   $('alert').classList.add('hidden');
   $('offroute').classList.add('hidden');
   $('limit').classList.add('hidden');

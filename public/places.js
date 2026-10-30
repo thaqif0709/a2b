@@ -224,6 +224,12 @@ async function fileRows(type, at) {
   return shards.flatMap((s) => s?.p ?? []);
 }
 
+// Shopping malls listed in the areas around `at` ([lng, lat]), as { name, lng, lat }: for telling which mall a shop is in
+// (indoor.js). Place data built before malls had their own file has none.
+export async function mallsAround(at) {
+  return (await fileRows('mall', at)).map(([name, lng, lat]) => ({ name, lng, lat }));
+}
+
 const toPlace = ([name, lng, lat, address, category], type, at) =>
   ({ name, address, lat, lng, category: category || type, type, km: distance(at, [lng, lat]) / 1000, source: 'overture' });
 

@@ -260,6 +260,12 @@ function openPanel(title, html) {
   return $('panel-body');
 }
 
+export function closePanel() {
+  $('panel').classList.add('hidden');
+  // Back/Escape may hide the screen while a request is pending. Never retain passwords in hidden UI.
+  $('panel-body').querySelectorAll('input[type="password"]').forEach((input) => { input.value = ''; });
+}
+
 // The voice directions are read in (see voice.js), with a sample to hear it.
 async function renderOfflineSize() {
   const el = $('s-offline-size');
@@ -448,18 +454,7 @@ export function openSettings() {
         toast(e.message);
       }
     };
-    $('s-pass').onclick = async () => {
-      const current = prompt('Current password');
-      if (!current) return;
-      const next = prompt('New password (at least 8 characters)');
-      if (!next) return;
-      try {
-        await api('/api/me', { method: 'PATCH', body: { current_password: current, password: next } });
-        toast('Password changed');
-      } catch (e) {
-        toast(e.message);
-      }
-    };
+    $('s-pass').onclick = openChangePassword;
     $('s-delete').onclick = async () => {
       if (!confirm('Delete your account? Your saved places and reports will be removed. This cannot be undone.')) return;
       try {
@@ -473,6 +468,80 @@ export function openSettings() {
       }
     };
   }
+}
+
+function openChangePassword() {
+  const body = openPanel('Change password', `
+    <form id="password-form" class="auth-form password-form" novalidate>
+      <label for="password-current">Current password
+        <input id="password-current" type="password" autocomplete="current-password" required>
+      </label>
+      <label for="password-new">New password
+        <input id="password-new" type="password" autocomplete="new-password" minlength="8" aria-describedby="password-hint" required>
+      </label>
+      <p id="password-hint" class="hint">Use at least 8 characters. You can paste from a password manager.</p>
+      <label for="password-confirm">Confirm new password
+        <input id="password-confirm" type="password" autocomplete="new-password" required>
+      </label>
+      <p id="password-error" class="error hidden" role="alert" tabindex="-1"></p>
+      <button id="password-save" class="btn primary" type="submit">Change password</button>
+      <button id="password-cancel" class="btn ghost" type="button">Cancel</button>
+    </form>`);
+  const form = body.querySelector('form');
+  const current = $('password-current'), next = $('password-new'), confirm = $('password-confirm');
+  const error = $('password-error'), save = $('password-save'), cancel = $('password-cancel');
+  const fields = [current, next, confirm];
+  let pending = false;
+  const leave = () => {
+    form.reset();
+    openSettings();
+    $('s-pass')?.focus();
+  };
+  cancel.onclick = leave;
+  form.onsubmit = async (event) => {
+    event.preventDefault();
+    if (pending) return;
+    error.classList.add('hidden');
+    fields.forEach((field) => {
+      field.removeAttribute('aria-invalid');
+      field.removeAttribute('aria-describedby');
+    });
+    next.setAttribute('aria-describedby', 'password-hint');
+    const invalid = !current.value ? [current, 'Enter your current password.']
+      : next.value.length < 8 ? [next, 'Use at least 8 characters for your new password.']
+      : confirm.value !== next.value ? [confirm, 'The new passwords do not match.'] : null;
+    if (invalid) {
+      const [field, message] = invalid;
+      field.setAttribute('aria-invalid', 'true');
+      field.setAttribute('aria-describedby', field === next ? 'password-hint password-error' : 'password-error');
+      error.textContent = message;
+      error.classList.remove('hidden');
+      field.focus();
+      return;
+    }
+    pending = true;
+    form.setAttribute('aria-busy', 'true');
+    [...fields, save, cancel].forEach((control) => { control.disabled = true; });
+    save.textContent = 'Changing password…';
+    try {
+      await api('/api/me', { method: 'PATCH', body: { current_password: current.value, password: next.value } });
+      form.reset();
+      // A panel closed during the request must not be reopened by a late result.
+      if (form.isConnected && !$('panel').classList.contains('hidden')) leave();
+      toast('Password changed');
+    } catch (e) {
+      if (!form.isConnected || $('panel').classList.contains('hidden')) return;
+      error.textContent = e.message;
+      error.classList.remove('hidden');
+      error.focus();
+    } finally {
+      pending = false;
+      form.removeAttribute('aria-busy');
+      [...fields, save, cancel].forEach((control) => { control.disabled = false; });
+      save.textContent = 'Change password';
+    }
+  };
+  current.focus();
 }
 
 function homeWorkAction(which) {

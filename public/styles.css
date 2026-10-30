@@ -571,6 +571,10 @@ body.walking #speedo, body.walking #limit, body.walking #toll-chip, body.walking
 .auth-form { display: grid; gap: 14px; padding: 18px 18px calc(24px + var(--safe-bottom)); align-content: start; max-width: 440px; }
 .auth-form label { display: grid; gap: 6px; font-weight: 600; font-size: 14px; }
 .auth-form input { height: 50px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-2); padding: 0 14px; font-size: 16px; font-weight: 400; }
+.password-form { width: 100%; box-sizing: border-box; }
+.password-form input { min-width: 0; width: 100%; box-sizing: border-box; }
+.password-form :focus-visible { outline: 3px solid var(--accent-text); outline-offset: 3px; }
+.password-form .error { color: var(--text); border-left: 3px solid var(--danger); padding-left: 10px; }
 .auth-hero { display: grid; justify-items: center; gap: 10px; text-align: center; color: var(--muted); padding: 6px 0 4px; }
 
 /* ---------- Misc ---------- */

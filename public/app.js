@@ -4,7 +4,7 @@
 import { REPORT_TYPES, reportLabel, reportIcon, canReportFrom, TRAIN_REPORT_TYPES, trainReportIcon } from './report-types.js';
 import { distance, bearing, cumulative, formatDistance, formatDuration, formatClock } from './geo.js';
 import { Navigator, Simulator, reportsAlong, sliceAlong, spokenDistance, roundaboutTurn } from './nav.js';
-import { canAutoStartRoute } from './route-preview.js';
+import { canAutoStartRoute, showRouteLoading } from './route-preview.js';
 import { TrainGuide, markerFor, walkText } from './train-guide.js';
 import { Glide } from './motion.js';
 import { Follow, shouldSend, nextPollDelay } from './follow.js';
@@ -17,7 +17,7 @@ import {
   isSaved, setHomeWork, armBack, sideColumnEnd,
 } from './core.js';
 import { MAP_THEMES, BASE_STYLES, applyMapTheme } from './map-themes.js';
-import { initPanels, openMenu, openAuth, openSettings, renderAvatar, refreshMe } from './panels.js';
+import { initPanels, openMenu, openAuth, openSettings, closePanel, renderAvatar, refreshMe } from './panels.js';
 import { startPresence, checkIn } from './presence.js';
 import { noteProbeFix, startProbeSender, discardProbeBuffer } from './probe.js';
 import { welcome, hideSplash } from './welcome.js';
@@ -1131,6 +1131,7 @@ function refreshSound() {
 }
 
 function closeScreen(id) {
+  if (id === 'panel') return closePanel();
   $(id).classList.add('hidden');
   if (id === 'parking') closeParking();
   if (id === 'preview') backToBrowse();
@@ -1507,7 +1508,7 @@ async function openPreview(place) {
       ? 'Location is off, so routes start from the middle of the map.'
       : 'Waiting for your location… routes start from the middle of the map for now.'
     : 'Finding the best routes…';
-  $('route-status').innerHTML = `<span class="spinner" aria-hidden="true"></span>${status}`;
+  showRouteLoading($('route-status'), status);
   transit = null;
   drawTransit();
   if (travel === 'transit') {

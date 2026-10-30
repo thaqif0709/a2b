@@ -119,7 +119,10 @@ export async function createRecoveryCode(db, userId) {
 export async function consumeRecoveryCode(db, userId, code) {
   const row = await db.prepare('SELECT * FROM recovery_codes WHERE user_id = ?').bind(userId).first();
   if (!row || row.used) return false; // no expiry: a code from sign-up day still works in month three
-  if ((await sha256(String(code ?? ''))) !== row.code_hash) return false;
+  const hash = await sha256(String(code ?? ''));
+  let diff = hash.length ^ row.code_hash.length;
+  for (let i = 0; i < hash.length; i++) diff |= hash.charCodeAt(i) ^ row.code_hash.charCodeAt(i);
+  if (diff !== 0) return false;
   await db.prepare('UPDATE recovery_codes SET used = 1 WHERE user_id = ?').bind(userId).run();
   return true;
 }

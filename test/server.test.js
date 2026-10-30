@@ -267,6 +267,12 @@ test('repeated wrong passwords are throttled', async () => {
   assert.equal((await c('POST', '/api/auth/login', { email: 'dave@test.com', password: 'password4' })).status, 429);
   await worker.scheduled({}, env); // housekeeping only clears failures older than the window
   assert.equal((await c('POST', '/api/auth/login', { email: 'dave@test.com', password: 'password4' })).status, 429);
+
+  // Repeated wrong recovery attempts are throttled too
+  const recClient = client();
+  await recClient('POST', '/api/auth/signup', { email: 'rec-throttle@test.com', password: 'password4', name: 'RecThrottle' });
+  for (let i = 0; i < 8; i++) assert.equal((await recClient('POST', '/api/auth/recover', { email: 'rec-throttle@test.com', code: 'badcode' + i, password: 'newpass16' })).status, 401);
+  assert.equal((await recClient('POST', '/api/auth/recover', { email: 'rec-throttle@test.com', code: 'badcode8', password: 'newpass16' })).status, 429);
 });
 
 test('JSON is required for writes (blocks cross-site form posts)', async () => {
@@ -938,6 +944,13 @@ test('sign-ups need a device; a taken address gets the same neutral 409', async 
   const dup = await signup('farmer0@test.com');
   assert.equal(dup.status, 409);
   assert.equal((await dup.json()).error, 'This email address is already registered.');
+
+  // Repeated signups from the same device are throttled
+  const spammer = client('signup-spammer-dev');
+  for (let i = 0; i < 5; i++) {
+    assert.equal((await spammer('POST', '/api/auth/signup', { email: `spammer${i}@test.com`, password: 'password1', name: 'Spam' })).status, 201);
+  }
+  assert.equal((await spammer('POST', '/api/auth/signup', { email: 'spammer5@test.com', password: 'password1', name: 'Spam' })).status, 429);
 });
 
 test('reports far from the driver are refused when their position is known', async () => {

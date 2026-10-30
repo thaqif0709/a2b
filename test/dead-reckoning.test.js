@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { cumulative } from '../public/geo.js';
-import { DeadReckoner, shouldEstimate, nearTunnel, pointAt, GIVE_UP_MS, GIVE_UP_M } from '../public/dead-reckoning.js';
+import { DeadReckoner, DeadReckoningEpisode, shouldEstimate, nearTunnel, pointAt, GIVE_UP_MS, GIVE_UP_M } from '../public/dead-reckoning.js';
 import { tunnelRuns } from '../src/lib/providers.js';
 
 // A road heading east along 3.1°N: 0.001° of longitude is ~111 m.
@@ -50,6 +50,71 @@ test('gives up after 90 s or 2.5 km', () => {
   let t = 0, r;
   do r = fast.advance((t += 1000)); while (!r.done);
   assert.ok(t < GIVE_UP_MS && r.along >= GIVE_UP_M, `gave up at ${t / 1000} s, ${Math.round(r.along)} m`);
+});
+
+for (const speed of [8, 70]) test(`an exhausted ${speed} m/s episode stays stopped until fresh accurate GPS`, () => {
+  const episode = new DeadReckoningEpisode();
+  const fix = { lngLat: LINE[0], speed, accuracy: 10, time: 0 };
+  assert.ok(episode.acceptFix(fix, 0));
+  let now = 3000, along = 0, lastEstimate;
+  while (!episode.exhausted) {
+    const estimate = episode.advance({ eligible: true, along, speed, now });
+    if (estimate) { along = estimate.along; lastEstimate = estimate; }
+    now += 1000;
+  }
+  assert.ok(lastEstimate && along < GIVE_UP_M, 'no estimate beyond the distance budget is displayed');
+  if (speed === 8) assert.equal(now, GIVE_UP_MS + 3000, 'time budget expires after 90 estimated seconds');
+  else assert.ok(now < GIVE_UP_MS, 'distance budget expires first');
+  for (let i = 0; i < 180; i++, now += 1000) {
+    assert.equal(episode.advance({ eligible: true, along, speed, now }), null, 'later timer ticks cannot restart');
+  }
+  for (const invalid of [
+    { time: now, accuracy: 81 }, { time: now, accuracy: NaN }, { time: now, accuracy: null },
+    { time: now - 3000 }, { time: 0 }, { time: now + 1 },
+    { time: now, estimated: true }, { time: now, lngLat: [NaN, 3.1] },
+  ]) {
+    assert.equal(episode.acceptFix({ ...fix, ...invalid }, now), false);
+    assert.equal(episode.exhausted, true);
+    assert.equal(episode.advance({ eligible: true, along, speed, now }), null);
+  }
+  assert.ok(episode.acceptFix({ ...fix, time: now }, now));
+  assert.equal(episode.active, false);
+  assert.equal(episode.exhausted, false);
+  assert.equal(episode.advance({ eligible: false, along: 100, speed, now }), null, 'GPS must be lost again');
+  const restarted = episode.advance({ eligible: true, along: 100, speed, now: now + 3000 });
+  assert.ok(restarted.along > 100 && restarted.along < 100 + speed, 'next outage starts at the real position');
+});
+
+test('stationary GPS uses measurement time, and duplicate measurements cannot recover an outage', () => {
+  const episode = new DeadReckoningEpisode();
+  const fix = { lngLat: LINE[0], speed: 0, accuracy: 10, time: 0, gpsTime: 5000 };
+  assert.ok(episode.acceptFix(fix, 5000), 'movement time stays old while the GPS measurement is fresh');
+  episode.advance({ eligible: true, along: 0, speed: 8, now: 6000 });
+  assert.equal(episode.acceptFix(fix, 6000), false, 'duplicate timestamp does not interrupt the episode');
+  assert.equal(episode.active, true);
+  assert.ok(episode.acceptFix({ ...fix, gpsTime: 9000 }, 9000));
+  assert.equal(episode.active, false);
+  episode.advance({ eligible: true, along: 0, speed: 8, now: 12000 });
+  episode.reset();
+  assert.equal(episode.active, false, 'ending a drive clears its episode');
+  assert.equal(episode.exhausted, false);
+});
+
+test('route replacement suspends the same outage until a newer accurate measurement', () => {
+  const episode = new DeadReckoningEpisode();
+  const fix = { lngLat: LINE[0], speed: 10, accuracy: 10, time: 1000 };
+  episode.acceptFix(fix, 1000);
+  episode.advance({ eligible: true, along: 5000, speed: 10, now: 2000 });
+  const budget = episode.reckoner;
+  episode.suspend();
+  assert.equal(episode.active, false);
+  assert.equal(episode.acceptFix(fix, 2000), false, 'a duplicate remains unusable even while its age is fresh');
+  assert.equal(episode.suspended, true);
+  assert.equal(episode.advance({ eligible: true, along: 0, speed: 10, now: 200_000 }), null);
+  assert.equal(episode.reckoner, budget, 'the old outage budget was not replaced');
+  assert.ok(episode.acceptFix({ ...fix, time: 200_000 }, 200_000));
+  assert.equal(episode.suspended, false);
+  assert.equal(episode.reckoner, null);
 });
 
 test('a point along the route, and the way the road runs there', () => {

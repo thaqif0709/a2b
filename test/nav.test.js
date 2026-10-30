@@ -83,6 +83,40 @@ test('navigator tracks the next turn, ETA and voice cues', () => {
   assert.equal(s5.arrived, true);
 });
 
+test('estimated arrival never latches or consumes the real arrival cue', () => {
+  const nav = new Navigator(lRoute());
+  nav.update({ position: A, speed: 14 });
+  const turn = nav.update({ position: [13.4, 52.5086], speed: 14, estimated: true });
+  assert.equal(turn.prompt, 'Turn right onto Side St.', 'ordinary turn guidance still works');
+  const guessed = nav.update({ position: C, speed: 14, estimated: true });
+  assert.equal(guessed.arrived, false);
+  assert.equal(nav.arrived, false);
+  assert.equal(guessed.prompt, null);
+  assert.equal(nav.spoken.has('2:near'), false);
+  // A real off-route position must not confirm the estimate left at the end of the route.
+  assert.equal(nav.update({ position: [13.42, 52.51], speed: 5 }).arrived, false);
+  assert.equal(nav.update({ position: B, speed: 5 }).arrived, false, 'real recovery before the destination');
+  const arrived = nav.update({ position: C, speed: 0 });
+  assert.equal(arrived.arrived, true);
+  assert.equal(arrived.prompt, 'You have arrived at your destination.');
+});
+
+test('estimated stops do not consume stop cues or count as off-route fixes', () => {
+  const route = lRoute();
+  route.steps[1] = { ...route.steps[1], type: 'stop', pre: 'You have reached your stop.' };
+  const nav = new Navigator(route);
+  nav.update({ position: A });
+  const nearStop = [13.4, 52.5086];
+  assert.equal(nav.update({ position: nearStop, speed: 10, estimated: true }).prompt, null);
+  assert.equal(nav.spoken.has('1:near'), false);
+  assert.equal(nav.update({ position: nearStop, speed: 10 }).prompt, 'You have reached your stop.');
+  const away = [13.403, 52.503];
+  nav.update({ position: away });
+  assert.equal(nav.offCount, 1);
+  for (let i = 0; i < 5; i++) assert.equal(nav.update({ position: away, estimated: true }).offRoute, false);
+  assert.equal(nav.offCount, 1, 'only real fixes change the off-route counter');
+});
+
 test('a slice of the route runs around the corner', () => {
   const r = lRoute();
   const cum = cumulative(r.coords);
@@ -178,4 +212,28 @@ test('exit numbers and long road codes are read digit by digit', () => {
   assert.equal(spokenCodes('Turn right onto FT50.'), 'Turn right onto FT50.');
   assert.equal(spokenCodes('In 300 meters, turn right.'), 'In 300 meters, turn right.');
   assert.equal(spokenCodes('Speed camera in 500 meters. The limit is 110.'), 'Speed camera in 500 meters. The limit is 110.');
+});
+
+
+test('ordinary real GPS retains main arrival behavior without an on-route prerequisite', () => {
+  // A very short route is already within main's arrival-distance threshold at its start.
+  const short = { coords: [[101.6, 3.1], [101.6001, 3.1]], steps: [
+    { type: 'depart', begin: 0, end: 1, time: 10, pre: 'Walk east.' },
+    { type: 'arrive', begin: 1, end: 1, time: 0, pre: 'You have arrived.' },
+  ] };
+  const result = new Navigator(short).update({ position: [101.6, 3.1005], accuracy: 10 });
+  assert.ok(result.offBy > 40);
+  assert.equal(result.offRoute, false);
+  assert.equal(result.arrived, true, 'ordinary real GPS keeps main distance-based arrival');
+});
+
+test('ordinary real GPS keeps stop cues outside the route without estimate recovery', () => {
+  const route = lRoute();
+  route.steps[1] = { ...route.steps[1], type: 'stop', pre: 'You have reached your stop.' };
+  const nav = new Navigator(route);
+  nav.update({ position: A, speed: 0 });
+  nav.update({ position: [13.4, 52.508], speed: 0 }); // ~111 m before stop, outside the near-cue range
+  const result = nav.update({ position: [13.401, 52.508], speed: 20 });
+  assert.ok(result.offBy > 40);
+  assert.equal(result.prompt, 'You have reached your stop.', 'real fixes retain main speed-based cue timing');
 });

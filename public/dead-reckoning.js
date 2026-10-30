@@ -29,6 +29,15 @@ export function shouldEstimate({ sinceFixMs, accuracy, speed, tunnel }) {
   return lost && ((speed ?? 0) > MOVING_MPS || (tunnel && (speed ?? 0) > 1));
 }
 
+export function isFreshGpsFix(fix, now) {
+  if (!fix || fix.estimated) return false;
+  const time = fix.gpsTime ?? fix.time;
+  const [lng, lat] = fix.lngLat ?? [];
+  return Number.isFinite(time) && time <= now && now - time <= LOST_AFTER_MS &&
+    Number.isFinite(fix.accuracy) && fix.accuracy >= 0 && fix.accuracy <= BAD_ACCURACY_M &&
+    Number.isFinite(lng) && Math.abs(lng) <= 180 && Number.isFinite(lat) && Math.abs(lat) <= 90;
+}
+
 // Keeps the car moving along the route from where the last good fix put it.
 export class DeadReckoner {
   constructor({ along, speed, now }) {
@@ -47,6 +56,55 @@ export class DeadReckoner {
     this.along += this.speed * dt;
     const done = now - this.start.now >= GIVE_UP_MS || this.along - this.start.along >= GIVE_UP_M;
     return { along: this.along, speed: this.speed, done };
+  }
+}
+
+// One GPS outage gets one budget. An expired estimate must stay expired until a new, usable GPS measurement
+// arrives; clearing only the reckoner would let the next timer tick start another 90 seconds / 2.5 km.
+export class DeadReckoningEpisode {
+  constructor() {
+    this.reset();
+  }
+
+  reset() {
+    this.reckoner = null;
+    this.exhausted = false;
+    this.suspended = false;
+    this.lastFixTime = -Infinity;
+  }
+
+  get active() {
+    return this.reckoner !== null && !this.suspended;
+  }
+
+  // A replacement route has a different distance origin. Keep this outage's budget, but never apply its old
+  // `along` to the new route. Only a newer real measurement may release the suspension.
+  suspend() {
+    this.suspended = true;
+  }
+
+  acceptFix(fix, now) {
+    // `time` can be held at the start of a stationary spell for speed calculation; gpsTime is the measurement.
+    const time = fix.gpsTime ?? fix.time;
+    if (!isFreshGpsFix(fix, now) || time <= this.lastFixTime) return false;
+    this.lastFixTime = time;
+    this.reckoner = null;
+    this.exhausted = false;
+    this.suspended = false;
+    return true;
+  }
+
+  advance({ eligible, along, speed, now, limit }) {
+    if (this.exhausted || this.suspended) return null;
+    if (!this.reckoner) {
+      if (!eligible) return null;
+      this.reckoner = new DeadReckoner({ along, speed, now: now - 1000 });
+    }
+    const estimate = this.reckoner.advance(now, limit);
+    if (!estimate.done) return estimate;
+    this.reckoner = null;
+    this.exhausted = true;
+    return null;
   }
 }
 

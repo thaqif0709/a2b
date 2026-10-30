@@ -27,6 +27,7 @@ import { DeadReckoner, shouldEstimate, nearTunnel, pointAt, BAD_ACCURACY_M } fro
 import { matchesWordStarts } from './text.js';
 import { signPlaces } from './signs.js';
 import { mapPlace } from './map-places.js';
+import { createLocationWatch, locationMessage } from './location.js';
 import { initSuggest, openSuggest, closeSuggest, suggesting, syncDriverPlaces } from './suggest.js';
 
 // Which map look to use for day or night (see map-themes.js). 'mapTheme' in local storage overrides it.
@@ -101,6 +102,7 @@ let offTrail = []; // where the car has been since it left the current route
 const tollsSpoken = new Set(); // toll plazas (route + index) already announced this drive
 const camerasWarned = new Set(); // fixed speed cameras (route + index) already announced this drive
 const cameraPins = [];
+let locationWatch = null, locationStarted = false;
 
 // ================= Boot =================
 // With Reduce Motion on (an iPhone accessibility setting), MapLibre turns every camera move into an instant
@@ -797,19 +799,34 @@ function keepTrail(at) {
 
 // ================= Location =================
 function startLocation() {
-  if (!('geolocation' in navigator)) return locationFailed();
-  navigator.geolocation.watchPosition(onFix, locationFailed, { enableHighAccuracy: true, maximumAge: 1000, timeout: 30000 });
+  locationStarted = true;
+  locationWatch ??= createLocationWatch({ geolocation: navigator.geolocation, hasPosition: () => Boolean(state.pos), onFix, onState: renderLocationStatus });
+  locationWatch.start();
 }
 
-function locationFailed(err) {
-  state.locationDenied = true;
-  if (mode === 'browse' && !state.pos) $('loc-banner').classList.remove('hidden');
-  if (err && err.code !== 1 && !state.pos) setTimeout(startLocation, 15000);
+function retryLocation() {
+  locationWatch?.stop();
+  startLocation();
+}
+
+function stopLocation() {
+  locationWatch?.stop();
+}
+
+function resumeLocation() {
+  if (locationStarted && !['denied', 'unsupported'].includes(locationWatch?.status)) startLocation();
+}
+
+function renderLocationStatus(status) {
+  state.locationStatus = status;
+  state.locationDenied = status === 'denied';
+  const message = locationMessage(status);
+  $('loc-message').textContent = message;
+  $('loc-banner').classList.toggle('hidden', !message);
+  $('btn-loc-retry').classList.toggle('hidden', !['denied', 'timeout', 'unavailable'].includes(status));
 }
 
 function onFix(p) {
-  state.locationDenied = false;
-  $('loc-banner').classList.add('hidden');
   const raw = [p.coords.longitude, p.coords.latitude];
   const prev = state.pos;
   const speed = p.coords.speed;
@@ -936,7 +953,10 @@ function recenter() {
     return rideTick();
   }
   if (state.pos) map.easeTo({ center: state.pos.lngLat, zoom: Math.max(map.getZoom(), 15), bearing: 0, pitch: 0, duration: 700 });
-  else if (state.locationDenied) toast('Location is off. Allow location for this site in your browser settings.');
+  else {
+    if (!locationStarted) startLocation();
+    toast(locationMessage(state.locationStatus) || 'Finding your location…');
+  }
 }
 
 // ================= Long-press: drop a pin =================
@@ -1019,10 +1039,7 @@ function wireUi() {
   $('ride-report-chip').onclick = () => askTrainReport(trainReports.shown);
   rideSheet.init();
   $('btn-compass').onclick = () => map.easeTo({ bearing: 0, pitch: 0 });
-  $('btn-loc-retry').onclick = () => {
-    $('loc-banner').classList.add('hidden');
-    startLocation();
-  };
+  $('btn-loc-retry').onclick = retryLocation;
   $('btn-report').onclick = openReportMenu;
   $('btn-report-drive').onclick = openReportMenu;
   $('btn-sound').onclick = $('btn-sound-browse').onclick = $('btn-sound-ride').onclick = () => {
@@ -1122,6 +1139,8 @@ function wireUi() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && (mode === 'drive' || mode === 'ride')) requestWakeLock();
   });
+  window.addEventListener('pagehide', stopLocation);
+  window.addEventListener('pageshow', resumeLocation);
 }
 
 function refreshSound() {

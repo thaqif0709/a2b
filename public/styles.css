@@ -127,7 +127,7 @@ body.driving .maplibregl-ctrl-bottom-right { bottom: calc(92px + var(--trip-keep
   position: absolute; top: calc(14px + var(--safe-top)); left: 14px; right: 70px; background: var(--bg); box-shadow: var(--shadow);
   border-radius: 14px; padding: 10px 12px; display: flex; gap: 10px; align-items: center; font-size: 14px;
 }
-.loc-banner button { color: var(--accent-text); font-weight: 700; white-space: nowrap; }
+.loc-banner button { color: var(--accent-text); font-weight: 700; white-space: nowrap; min-height: 44px; flex: none; }
 
 /* ---------- Screens and sheets ---------- */
 .screen {

@@ -20,6 +20,7 @@ export const state = {
   work: null,
   pos: null, // { lngLat, heading, speed, accuracy, time }
   locationDenied: false,
+  locationStatus: 'idle',
 };
 
 // ---------- Local storage (per-device conveniences; never required) ----------

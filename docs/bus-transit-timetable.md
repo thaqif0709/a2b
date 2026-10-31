@@ -101,6 +101,17 @@ Tasks:
 
 Buses are a reach-out feature for places that do not have rail access. Keep all steps gated and behind tests so rail quality does not regress.
 
+## Phase 0 findings (Rapid KL bus feed)
+
+- Feed URL: `https://api.data.gov.my/gtfs-static/prasarana?category=rapid-bus-kl`
+- Agency: Rapid KL, timezone `Asia/Kuala_Lumpur`.
+- Raw zip: ~1.7 MB.
+- Counts: 140 routes, 2122 trips, 4107 stops, 88828 stop times, 69577 shape points, 3 calendars (weekday/weekend; both valid from 2020-04-01 to 2027-03-31).
+- Calendar route types: all `3` (bus).
+- This is substantially smaller than feared and is stable to 2027-03-31.
+
+Implication: Phase 1 should be feasible without a massive bundle if we simplify shapes and combine into an optional file-backed bundle. Start with Rapid KL only, then expand by jurisdiction.
+
 ## Tracking
 
 - Base branch for this work: `claude/bus-transit-timetable` off `main`.

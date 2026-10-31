@@ -21,8 +21,12 @@
     "construction": "python3 scripts/build-construction.py",
     "cameras": "node scripts/build-cameras.mjs",
     "schools": "node scripts/build-schools.mjs",
+<<<<<<< HEAD
     "transit": "python3 scripts/build-transit.py",
     "transit:bus": "python3 scripts/build-transit-bus.py"
+=======
+    "transit": "python3 scripts/build-transit.py"
+>>>>>>> parent of 5937635 (Merge PR #45: safe account forms)
   },
   "devDependencies": {
     "wrangler": "4.151.3"

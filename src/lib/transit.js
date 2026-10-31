@@ -10,6 +10,7 @@
 
 import DATA from './transit-data.json' with { type: 'json' };
 import { distance, decodePolyline, angleDiff } from '../../public/geo.js';
+import * as BusTransit from './bus-transit.js';
 import { trackOf, snap, pointAt } from '../../public/train-guide.js';
 
 const WALK_MPS = 1.25; // ~4.5 km/h
@@ -22,7 +23,7 @@ const CHANGE_PENALTY_S = 240; // a change of train is worse than its minutes alo
 // A minute on foot counts as this many on a train when choosing a way there: a few minutes more on board beats a
 // long walk to a further station or between lines (people would rather ride than walk 20 minutes in the heat).
 const WALK_COST = 2;
-const MAX_OPTIONS = 3;
+export const MAX_OPTIONS = 3;
 const MAX_SEARCHES = 16; // looking for different ways there: each search is under a millisecond
 const ALT_DEPTH = 3;
 const SLOWER_OK = (best) => best * 1.4 + 600; // an option this much slower than the fastest isn't worth showing
@@ -324,6 +325,22 @@ function toTrip(found, from, to, dayStart) {
   const end = found.end;
   legs.push({ mode: 'walk', from: place, to: { name: 'Destination', lat: to[1], lng: to[0] }, distance: Math.round(end.m * DETOUR), duration: walkSeconds(end.m), coords: [[place.lng, place.lat], to] });
   return summarise(legs, ms(found.t0));
+}
+
+// Guarded, read-only combined search: train trips remain unchanged and bus alternatives are
+// returned in `options` (train + bus, sorted by effort, capped at MAX_OPTIONS).
+export function planTransitCombined(from, to, at = Date.now(), { moving = null } = {}) {
+  const plan = planTransit(from, to, at, { moving });
+  let busPlan = null;
+  try { busPlan = BusTransit.planTransit(from, to, at, { moving }); } catch {}
+  const trainTrips = plan.trips ?? [];
+  const busTrips = busPlan?.trips ?? [];
+  const options = [...trainTrips, ...busTrips].sort((a, b) => effort(a) - effort(b)).slice(0, MAX_OPTIONS);
+  const note = plan.note ?? busPlan?.note ?? null;
+  const night = plan.night ?? busPlan?.night;
+  const firstTrain = plan.firstTrain ?? busPlan?.firstBus;
+  const outdated = plan.outdated ?? busPlan?.outdated;
+  return { ...plan, ...(night !== undefined && { night }), ...(firstTrain !== undefined && { firstTrain }), ...(outdated !== undefined && { outdated }), note, trainTrips, busTrips, options };
 }
 
 export function summarise(legs, depart) {

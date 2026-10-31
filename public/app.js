@@ -1408,7 +1408,7 @@ function showResults(q, near, places, note, overture, enter) {
   $('search-home').classList.add('hidden');
   if (!places.length) {
     searchMessage(note || `No results for "${q}".`);
-    if (!searchTarget) $('search-status').append(addMissingButton(q, `Add “${q}” to the map`, 'btn primary small add-missing'));
+    $('search-status').append(addMissingButton(q, `Add “${q}” to the map`, 'btn primary small add-missing'));
     return;
   }
   const ul = $('results');

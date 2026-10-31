@@ -363,9 +363,9 @@ export function planTransit(from, to, at = Date.now(), { moving = null } = {}) {
   const trips = alternatives(from, to, day, dayStart, aboard);
   if (!trips.length) return note(stale ? 'No other trains can get you there at this time.' : 'No trains can get you there at this time.');
   // Late at night the first trip waits for the morning's first train: say so rather than offer a long wait.
-  const firstTrain = trips[0].legs.find((l) => l.mode === 'bus');
-  const overnight = day.secs < NIGHT_ENDS_S || (firstTrain.depart - dayStart) / 1000 >= DAY;
-  if (firstBus.wait > NIGHT_WAIT_S && overnight) return { ...note('Trains have stopped for the night.'), trips, night: true, firstTrain: firstTrain.depart };
+  const firstBus = trips[0].legs.find((l) => l.mode === 'bus');
+  const overnight = day.secs < NIGHT_ENDS_S || (firstBus.depart - dayStart) / 1000 >= DAY;
+  if (firstBus.wait > NIGHT_WAIT_S && overnight) return { ...note('Buses have stopped for the night.'), trips, night: true, firstBus: firstBus.depart };
   const quickerOnFoot = !aboard && walkAll <= Math.min(...trips.map((t) => t.duration), QUICK_WALK_S);
   return { ...note(quickerOnFoot ? 'Walking there is about as quick.' : null), trips };
 }

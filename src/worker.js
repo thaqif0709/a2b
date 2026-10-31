@@ -4,7 +4,7 @@
 import { ensureSchema } from './lib/schema.js';
 import {
   hashPassword, verifyPassword, normalizeEmail, validatePassword, cleanName, createSession, createRecoveryCode,
-  consumeRecoveryCode, currentUser, destroySession, sessionCookie, publicUser, sha256, readCookie,
+  recoverAccount, RECOVERY_WINDOW_MS, currentUser, destroySession, sessionCookie, publicUser, sha256, readCookie,
 } from './lib/auth.js';
 import { probesRepo, annotateWithProbes, PROBE_RETENTION_MS } from './lib/probes.js';
 import { searchPlaces, reverseGeocode, fetchRoutes, fetchRouteAttributes, annotateWithReports, httpError, corridorBox, routeReportBox, roadMidpoint, MAX_EXCLUDE } from './lib/providers.js';
@@ -60,6 +60,7 @@ export default {
       env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(now),
       env.DB.prepare('DELETE FROM trips WHERE updated_at < ?').bind(now - 2 * 86400_000),
       env.DB.prepare('DELETE FROM login_failures WHERE at < ?').bind(now - LOGIN_WINDOW_MS),
+      env.DB.prepare('DELETE FROM recovery_attempts WHERE at <= ?').bind(now - RECOVERY_WINDOW_MS),
       env.DB.prepare('DELETE FROM presence WHERE last_seen < ?').bind(now - 86400_000),
       env.DB.prepare('DELETE FROM usage_devices WHERE day < ?').bind(dayOf(now - USAGE_DAYS * 86400_000)),
       env.DB.prepare('DELETE FROM usage_daily WHERE day < ?').bind(dayOf(now - USAGE_DAYS * 86400_000)),
@@ -216,16 +217,12 @@ async function route(request, env, url) {
     const email = normalizeEmail(body.email);
     const bad = validatePassword(body.password);
     if (bad) throw httpError(bad, 400);
-    const row = email ? await db.prepare('SELECT * FROM users WHERE email = ?').bind(email).first() : null;
-    if (!row || !(await consumeRecoveryCode(db, row.id, body.code))) throw httpError('Wrong email or recovery code.', 401);
-    const { hash, salt } = await hashPassword(body.password);
-    await db.batch([
-      db.prepare('UPDATE users SET pass_hash = ?, pass_salt = ? WHERE id = ?').bind(hash, salt, row.id),
-      db.prepare('DELETE FROM sessions WHERE user_id = ?').bind(row.id),
-      db.prepare('DELETE FROM recovery_codes WHERE user_id = ?').bind(row.id),
-    ]);
-    const me = await db.prepare('SELECT * FROM users WHERE id = ?').bind(row.id).first();
-    return withSession(request, db, me, 200, { device });
+    if (!email) throw httpError('Wrong email or recovery code.', 401);
+    const result = await recoverAccount(db, email, body.code, body.password, validDevice(device) ? device : null);
+    if (result.status === 'limited') throw httpError('Too many recovery attempts. Try again in 15 minutes.', 429);
+    if (result.status !== 'ok') throw httpError('Wrong email or recovery code.', 401);
+    return json({ user: publicUser(result.user), recovery_code: result.recovery }, 200,
+      { 'set-cookie': sessionCookie(request, result.token, result.expires) });
   }
 
   if (path === '/api/auth/logout' && method === 'POST') {

@@ -192,9 +192,9 @@ async function logout() {
 
 // The recovery code is shown once and never again: a panel with a copy button keeps it on screen until it
 // is dismissed, so it can't be lost the way a prompt can.
-function openRecoveryCode(code) {
+function openRecoveryCode(code, replaced = false) {
   openPanel('Save your recovery code', `<div class="feedback">
-    <p class="hint">Write this down somewhere safe. It resets your password if you ever lose it — there is no other way to see it again.</p>
+    <p class="hint">${replaced ? 'Your old recovery code no longer works. Save this replacement. ' : ''}Write this down somewhere safe. It resets your password if you ever lose it — there is no other way to see it again.</p>
     <input id="rc-code" class="field" readonly value="${esc(code)}" style="font-family:monospace;text-align:center;letter-spacing:1px">
     <div style="display:flex;gap:8px;margin-top:12px">
       <button class="btn primary" id="rc-copy" style="flex:1">Copy code</button>
@@ -220,7 +220,7 @@ function openRecoveryCode(code) {
 function recoverAccount() {
   $('auth').classList.add('hidden'); // the reset form is a panel; the sign-in screen would sit on top of it
   openPanel('Reset your password', `<div class="feedback">
-    <p class="hint">Enter the account email, the recovery code shown when you signed up, and a new password.</p>
+    <p class="hint">Enter the account email, your latest saved recovery code, and a new password.</p>
     <input id="rc-email" class="field" type="email" autocomplete="email" placeholder="Account email">
     <input id="rc-code-in" class="field" placeholder="Recovery code">
     <input id="rc-pass" class="field" type="password" autocomplete="new-password" placeholder="New password (at least 8 characters)">
@@ -236,17 +236,23 @@ function recoverAccount() {
       return;
     }
     err.classList.add('hidden');
+    const button = $('rc-go');
+    button.disabled = true;
+    button.textContent = 'Resetting password…';
     try {
-      await api('/api/auth/recover', { method: 'POST', body: { email, code, password } });
-      await refreshMe();
-      $('panel').classList.add('hidden');
+      const result = await api('/api/auth/recover', { method: 'POST', body: { email, code, password } });
       $('auth').classList.add('hidden');
       $('auth-form').reset();
+      // Show the replacement before any follow-up request can fail: this response is its only copy.
+      openRecoveryCode(result.recovery_code, true);
+      await refreshMe();
       await ctx.onUserChanged();
-      toast(`Welcome back, ${state.user.name}!`);
     } catch (e) {
       err.textContent = e.message;
       err.classList.remove('hidden');
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Reset password';
     }
   };
 }

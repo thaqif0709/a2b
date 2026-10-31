@@ -1279,9 +1279,26 @@ function renderSearchHome() {
 // Clear the search history (on this phone, or on the account when signed in).
 async function clearRecent() {
   if (!confirm('Clear your search history?')) return;
-  for (const p of [...state.places.recent]) await removePlace('recent', p.id).catch(() => {});
-  renderSearchHome();
-  toast('Search history cleared.');
+  const btn = $('recent-clear');
+  const previousLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Clearing…';
+  try {
+    if (state.user) {
+      await api('/api/places?kind=recent', { method: 'DELETE' });
+    } else {
+      state.places.recent = [];
+      local.set('recent', state.places.recent);
+    }
+    state.places.recent = [];
+    renderSearchHome();
+    toast('Search history cleared.');
+  } catch (err) {
+    toast(err?.message ?? "Couldn't clear search history.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = previousLabel || 'Clear';
+  }
 }
 
 function renderPlaceList(ul, list, icon, kind) {

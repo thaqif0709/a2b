@@ -311,6 +311,10 @@ test('saved and recent places', async () => {
   assert.equal((await bob('DELETE', `/api/places/${saved.body.place.id}`)).status, 200);
   r = await alice('GET', '/api/places');
   assert.equal(r.body.saved[0].name, 'My gym', "Bob can't delete Alice's place");
+  assert.equal((await alice('DELETE', '/api/places?kind=recent')).status, 200);
+  r = await alice('GET', '/api/places');
+  assert.equal(r.body.recent.length, 0, 'bulk clear empties recent history');
+  assert.equal((await alice('DELETE', '/api/places?kind=foo')).status, 400);
   assert.equal((await client()('GET', '/api/places')).status, 401);
 });
 

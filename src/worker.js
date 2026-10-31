@@ -22,6 +22,7 @@ import { suggestionsRepo } from './lib/suggestions.js';
 import { presenceRepo, limits, validDevice } from './lib/presence.js';
 import { usageRepo, USAGE_DAYS, dayOf } from './lib/usage.js';
 import { planTransitCombined as planTransit, withRealWalks } from './lib/transit.js';
+import * as BusTransit from './lib/bus-transit.js';
 import { decodePolyline } from '../public/geo.js';
 import { overlap, routeTime, worthOffering, MAX_OVERLAP, MAX_REST_CHARS } from '../public/faster-route.js';
 
@@ -446,6 +447,16 @@ async function route(request, env, url) {
     const lat = num(url, 'lat'), lng = num(url, 'lng');
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw httpError('lat and lng are required.', 400);
     return json({ place: await reverseGeocode(env, { lat, lng }) });
+  }
+
+  // Nearest transit (bus) stops around a point: for picking where to board, or a quick "where's my stop" search.
+  if (path === '/api/transit-stops' && method === 'GET') {
+    await needSpot();
+    const lat = num(url, 'lat'), lng = num(url, 'lng');
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw httpError('lat and lng are required.', 400);
+    const limit = Math.min(20, Math.max(1, num(url, 'limit') || 8));
+    await count('routes');
+    return json({ stops: BusTransit.nearestStops([lng, lat], limit) });
   }
 
   // Trips by train (LRT, MRT, Monorail, BRT, KTM Komuter): see src/lib/transit.js.

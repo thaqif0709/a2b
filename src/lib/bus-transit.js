@@ -36,6 +36,17 @@ const MYT = 8 * 3600_000;
 const FEED_NAMES = { 'prasarana-bus': 'Rapid KL buses' };
 const DAY = 86400;
 
+
+// The bus stops closest to a point, for searching/choosing where to board. Each entry is
+// { name, code, lat, lng, metres } and is sorted by crow-flies distance.
+export function nearestStops(point, limit = 8) {
+  const [lng, lat] = point;
+  return (DATA.stops ?? [])
+    .map(([name, slat, slng, code], i) => ({ name, code, lat: slat, lng: slng, metres: Math.round(distance([lng, lat], [slng, slat])) }))
+    .sort((a, b) => a.metres - b.metres)
+    .slice(0, Math.max(1, Math.min(20, limit)));
+}
+
 export const walkSeconds = (m) => Math.round((m * DETOUR) / WALK_MPS);
 const walkCost = (m) => walkSeconds(m) * WALK_COST;
 // How a whole trip ranks: its minutes, with the walking counted as WALK_COST says (trip.walk is street metres).

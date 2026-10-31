@@ -1646,7 +1646,8 @@ async function showTransit(place, from, status) {
     if (mode !== 'preview' || dest !== place || travel !== 'transit') return;
     transit = { place, trips: plan.trips, selected: 0, reports: plan.reports ?? [] };
     const night = plan.night ? `${plan.note} The first trains leave around ${formatClock(new Date(plan.firstTrain))}.` : plan.note;
-    const last = plan.trips[0]?.lastTrain ? 'Last train tonight: miss it and there’s no later one this way.' : '';
+    const lastTrip = plan.trips[0];
+    const last = (lastTrip?.lastTrain || lastTrip?.lastBus) ? `Last ${lastTrip?.lastBus ? 'bus' : 'train'} tonight: miss it and there’s no later one this way.` : '';
     const elsewhere = origin ? `From ${origin.name}. Leave later puts the trip in your calendar.` : '';
     $('route-status').textContent = [status, elsewhere, last, night, plan.trips.length ? 'Times are estimates from the official timetables.' : ''].filter(Boolean).join(' ');
     renderTransit();
@@ -1717,7 +1718,8 @@ function stepHtml(l) {
     const to = l.to.name === 'Destination' ? (dest?.name ?? 'your destination') : `${l.to.name} station`;
     return `<li><span>Walk to ${esc(to)}<small>${mins(l.duration)} · ${formatDistance(l.distance, units)}</small></span></li>`;
   }
-  const when = (l.last ? '<b class="t-last">Last train</b> · ' : '') + (l.aboard ? 'You’re on it' : l.every ? `Every ${l.every} min` : `Train at ${formatClock(new Date(l.depart))}`);
+  const rideKind = l.mode === 'bus' ? 'Bus' : 'Train';
+  const when = (l.last ? `<b class="t-last">Last ${rideKind}</b> · ` : '') + (l.aboard ? 'You’re on it' : l.every ? `Every ${l.every} min` : `${rideKind} at ${formatClock(new Date(l.depart))}`);
   return `<li class="ride" style="--dot:${esc(l.line.color)}"><span>${lineChip(l)} ${l.aboard ? 'Stay on the ' : ''}${esc(l.line.name)} towards ${esc(l.towards)}
     <small>${when} · ${l.stops} stop${l.stops > 1 ? 's' : ''} to ${esc(l.to.name)}, ${mins(l.duration)}</small></span></li>`;
 }
@@ -1730,7 +1732,7 @@ function drawTransit() {
   const features = [];
   for (const l of trip?.legs ?? []) {
     features.push({ type: 'Feature', properties: { mode: l.mode, color: l.line?.color ?? '#5f6b76' }, geometry: { type: 'LineString', coordinates: l.coords } });
-    if (l.mode === 'train') for (const s of [l.from, l.to]) features.push({ type: 'Feature', properties: { mode: 'stop', color: l.line.color, name: s.name }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] } });
+    if (l.mode === 'train' || l.mode === 'bus') for (const s of [l.from, l.to]) features.push({ type: 'Feature', properties: { mode: 'stop', color: l.line.color, name: s.name }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] } });
   }
   src.setData({ type: 'FeatureCollection', features });
 }

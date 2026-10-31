@@ -21,7 +21,7 @@ import { trainReportsRepo } from './lib/train-reports.js';
 import { suggestionsRepo } from './lib/suggestions.js';
 import { presenceRepo, limits, validDevice } from './lib/presence.js';
 import { usageRepo, USAGE_DAYS, dayOf } from './lib/usage.js';
-import { planTransit, withRealWalks } from './lib/transit.js';
+import { planTransitCombined as planTransit, withRealWalks } from './lib/transit.js';
 import { decodePolyline } from '../public/geo.js';
 import { overlap, routeTime, worthOffering, MAX_OVERLAP, MAX_REST_CHARS } from '../public/faster-route.js';
 

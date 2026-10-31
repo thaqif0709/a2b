@@ -46,7 +46,9 @@ Tasks:
 
 Acceptance: the builder passes and the produced bundle is size/diff-checkable; `npm run transit` remains green for the rail-only world.
 
-## Phase 2 — Planning integration (read-only proposals)
+## Phase 2 — Planning integration (in progress)
+
+Phase 2 slice: added `src/lib/bus-transit.js`, a bus-only clone of the train Dijkstra planner plus `test/bus-transit.test.js`. It is isolated (no wiring into app/worker yet).
 
 Goal: add bus-only and rail+bus proposals behind a flag, without changing user-visible ride mode.
 

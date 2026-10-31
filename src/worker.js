@@ -368,6 +368,16 @@ async function route(request, env, url) {
     return json({ place: row }, existing ? 200 : 201);
   }
 
+  // Clear all places of one kind at once (used by "Clear" on recent history). Deleting one row per item was
+  // what made clearing a long history slow.
+  if (path === '/api/places' && method === 'DELETE') {
+    const u = needUser();
+    const kind = url.searchParams.get('kind');
+    if (kind !== 'saved' && kind !== 'recent') throw httpError('kind must be saved or recent.', 400);
+    await db.prepare('DELETE FROM places WHERE user_id = ? AND kind = ?').bind(u.id, kind).run();
+    return json({ ok: true });
+  }
+
   if (parts[1] === 'places' && parts[2] && method === 'PATCH') {
     const u = needUser();
     const body = await readJson(request);

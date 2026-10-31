@@ -12,7 +12,9 @@ This must happen incrementally. Buses have vastly more stops, lower speed assump
 - Real-time bus arrival or operator APIs beyond published GTFS.
 - Door-to-door bus guidance in `train-guide.js` before trip planning is stable.
 
-## Phase 0 — Data discovery (no code change to app)
+## Phase 0 — Data discovery (done)
+
+Phase 0 complete: see "Phase 0 findings (Rapid KL bus feed)" below.
 
 Goal: prove the official bus GTFS feed can support a small, cheap offline slice.
 
@@ -25,7 +27,9 @@ Tasks:
 
 Acceptance: a short note (in this doc) of the feed URL(s), expiry date(s), rough stop/route counts, and whether the feed is usable.
 
-## Phase 1 — Isolated bus transit data (build + library)
+## Phase 1 — Isolated bus transit data (done)
+
+Phase 1 complete: `scripts/build-transit-bus.py` now generates `src/lib/bus-transit-data.json` (~606 KB, 139 lines, 4106 stops, 338 patterns). `npm run transit:bus` rebuilds it. Rail `transit-data.json` is untouched.
 
 Goal: barrels bus routes/stops into a separate data file, not touching the rail bundle.
 

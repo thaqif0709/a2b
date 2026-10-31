@@ -39,10 +39,11 @@ export function initPanels(callbacks) {
 
 export async function refreshMe() {
   try {
-    const { user, stats, tester } = await api('/api/me');
+    const { user, stats, tester, owner } = await api('/api/me');
     state.user = user;
     state.stats = stats ?? null;
     state.tester = Boolean(tester);
+    state.owner = Boolean(owner);
     if (user) {
       // The account's settings win over this device's, so they follow the driver between phones.
       Object.assign(state.settings, user.settings);
@@ -51,6 +52,7 @@ export async function refreshMe() {
   } catch {
     state.user = null;
     state.tester = false;
+    state.owner = false;
   }
   if (!state.tester) state.simulate = false; // testing tools only for tester accounts
 }
@@ -361,12 +363,15 @@ export function openSettings() {
       <button class="set-row" id="s-feedback"><span>Send feedback<small>Ideas, bugs, a wrong road or a missing place. It goes straight to the developer.</small></span></button>
     </div>
     ${state.tester ? `<div class="set-group"><h3>Testing</h3>
-      <button class="set-row" id="s-usage"><span>Usage<small>Who's on A2B now, and the last two weeks</small></span></button>
-      <button class="set-row" id="s-inbox"><span>Feedback<small>What drivers sent from Settings, and places they suggested</small></span></button>
+      <button class="set-row" id="s-suggestions"><span>Suggested places<small>Review places drivers added or corrected</small></span></button>
       <label class="set-row"><span>Demo drive<small>Simulate GPS along the route. Handy for trying A2B at a desk.</small></span><input type="checkbox" class="switch" id="s-sim" ${state.simulate ? 'checked' : ''}></label>
       <div class="set-row${state.simulate ? '' : ' hidden'}" id="s-sim-speed-row"><span>Demo speed<small>How fast the demo car drives</small></span><div class="choice" id="s-sim-speed">${[1, 2, 4, 8]
         .map((v) => `<button data-v="${v}" class="${local.get('simSpeed', 1) === v ? 'on' : ''}">${v}×</button>`)
         .join('')}</div></div>
+    </div>` : ''}
+    ${state.owner ? `<div class="set-group"><h3>Administration</h3>
+      <button class="set-row" id="s-usage"><span>Usage<small>Who's on A2B now, and the last two weeks</small></span></button>
+      <button class="set-row" id="s-inbox"><span>Feedback inbox<small>Private messages drivers sent from Settings</small></span></button>
     </div>` : ''}`);
 
   body.querySelectorAll('[data-set]').forEach((c) => {
@@ -420,13 +425,12 @@ export function openSettings() {
     ctx.setupVehicle();
   };
   if (state.tester) {
+    $('s-suggestions').onclick = () => openInbox('places');
     $('s-sim').onchange = (e) => {
       state.simulate = e.target.checked;
       local.set('simulate', state.simulate);
       $('s-sim-speed-row').classList.toggle('hidden', !state.simulate);
     };
-    $('s-usage').onclick = openUsage;
-    $('s-inbox').onclick = openInbox;
     // Testing aid: applies straight away, also to a demo drive already under way.
     $('s-sim-speed').onclick = (e) => {
       const b = e.target.closest('button');
@@ -435,6 +439,10 @@ export function openSettings() {
       local.set('simSpeed', Number(b.dataset.v));
       ctx.setSimSpeed(Number(b.dataset.v));
     };
+  }
+  if (state.owner) {
+    $('s-usage').onclick = openUsage;
+    $('s-inbox').onclick = () => openInbox();
   }
   $('s-feedback').onclick = openFeedback;
   $('s-home').onclick = () => homeWorkAction('home');
@@ -572,11 +580,15 @@ function openFeedback() {
   setTimeout(() => text.focus(), 300);
 }
 
-// The owner's feedback inbox (GET /api/feedback is only answered for tester accounts). Close marks one handled and
+// The owner's feedback inbox (the server checks owner access for every read and update). Close marks one handled and
 // moves it under Closed, tagged with when; Reopen brings it back. Nothing is deleted.
 async function openInbox(tab = 'messages') {
-  const panel = openPanel('Feedback', `${inboxTabs(tab)}<div id="fb-list"><p class="hint" style="padding:12px 18px">Loading…</p></div>`);
-  panel.querySelector('.fb-tabs').onclick = (e) => {
+  if (!state.owner && !state.tester) return;
+  if (!state.owner) tab = 'places';
+  else if (!state.tester) tab = 'messages';
+  const panel = openPanel(state.owner ? 'Feedback' : 'Suggested places', `${inboxTabs(tab)}<div id="fb-list"><p class="hint" style="padding:12px 18px">Loading…</p></div>`);
+  const tabs = panel.querySelector('.fb-tabs');
+  if (tabs) tabs.onclick = (e) => {
     const t = e.target.closest('[data-tab]')?.dataset.tab;
     if (t && t !== tab) openInbox(t);
   };
@@ -620,9 +632,9 @@ async function openInbox(tab = 'messages') {
 }
 
 const inboxTabs = (tab) =>
-  `<div class="seg fb-tabs" role="tablist">${[['messages', 'Messages'], ['places', 'Places']]
+  state.owner ? `<div class="seg fb-tabs" role="tablist">${[['messages', 'Messages'], ...(state.tester ? [['places', 'Places']] : [])]
     .map(([t, l]) => `<button role="tab" data-tab="${t}" aria-selected="${t === tab}" class="${t === tab ? 'on' : ''}">${l}</button>`)
-    .join('')}</div>`;
+    .join('')}</div>` : '';
 
 // Places drivers suggested (src/lib/suggestions.js): each opens on the map to approve or reject (public/suggest.js).
 // The last few reviewed are listed under them, and an approved one can be taken back out of search.
@@ -663,7 +675,7 @@ async function renderPlaceSuggestions(body) {
   };
 }
 
-// The owner's usage dashboard (GET /api/stats is only answered for tester accounts). Refreshes while open.
+// The owner's usage dashboard (GET /api/stats is only answered for owner accounts). Refreshes while open.
 async function openUsage() {
   const body = openPanel('Usage', '<p class="hint" style="padding:12px 18px">Loading…</p>');
   const render = async () => {

@@ -669,19 +669,60 @@ test('a new account takes over the places a guest saved on the device', async ()
   assert.equal((await client()('POST', '/api/places/import', guest)).status, 401);
 });
 
-test('testing tools are flagged only for accounts in TESTER_EMAILS', async () => {
-  const tess = client();
-  await tess('POST', '/api/auth/signup', { email: 'Tess@Test.com', password: 'password5', name: 'Tess' });
-  const other = client();
-  await other('POST', '/api/auth/signup', { email: 'olly@test.com', password: 'password6', name: 'Olly' });
-  assert.equal((await tess('GET', '/api/me')).body.tester, false, 'no secret set: nobody is a tester');
-  env.TESTER_EMAILS = ' someone@else.com, tess@test.com ';
+test('public signup cannot claim owner access through an unverified email or supplied role fields', async () => {
+  env.TESTER_EMAILS = 'unverified-owner@test.com';
   try {
-    assert.equal((await tess('GET', '/api/me')).body.tester, true);
-    assert.equal((await other('GET', '/api/me')).body.tester, false);
-    assert.equal((await client()('GET', '/api/me')).body.tester, undefined, 'guests get no flag');
+    const claimant = client();
+    const signup = await claimant('POST', '/api/auth/signup', {
+      email: 'Unverified-Owner@Test.com', password: 'password5', name: 'Claimant', owner: true, tester: true,
+    });
+    assert.equal(signup.status, 201);
+    assert.equal((await claimant('GET', '/api/stats')).status, 404, 'signup must not unlock private usage data');
+    assert.equal((await claimant('GET', '/api/feedback')).status, 404, 'signup must not unlock the private inbox');
+    const me = (await claimant('GET', '/api/me')).body;
+    assert.equal(me.tester, true, 'existing email-based tester access is retained');
+    assert.equal(me.owner, false);
   } finally {
     delete env.TESTER_EMAILS;
+  }
+});
+
+test('owner IDs and tester emails grant separate access and can be revoked', async () => {
+  const tess = client();
+  const tessSignup = await tess('POST', '/api/auth/signup', { email: 'Tess@Test.com', password: 'password5', name: 'Tess' });
+  const other = client();
+  const otherSignup = await other('POST', '/api/auth/signup', { email: 'olly@test.com', password: 'password6', name: 'Olly' });
+  assert.equal((await tess('GET', '/api/me')).body.tester, false, 'no secret set: nobody is a tester');
+  env.TESTER_EMAILS = ' , Tess@Test.com, ';
+  env.OWNER_USER_IDS = String(otherSignup.body.user.id);
+  try {
+    const testerMe = (await tess('GET', '/api/me')).body;
+    assert.equal(testerMe.tester, true);
+    assert.equal(testerMe.owner, false, 'demo access does not imply owner access');
+    assert.equal((await tess('GET', '/api/stats')).status, 404);
+    const ownerMe = (await other('GET', '/api/me')).body;
+    assert.equal(ownerMe.owner, true);
+    assert.equal(ownerMe.tester, false, 'owner access does not change the tester allowlist');
+    assert.equal((await other('GET', '/api/stats')).status, 200);
+    const claimant = client();
+    await claimant('POST', '/api/auth/signup', {
+      email: 'role-claimant@test.com', password: 'password7', name: 'Claimant',
+      id: otherSignup.body.user.id, owner: true, tester: true,
+    });
+    const claimantMe = (await claimant('GET', '/api/me')).body;
+    assert.notEqual(claimantMe.user.id, otherSignup.body.user.id, 'signup cannot choose a trusted ID');
+    assert.equal(claimantMe.owner, false);
+    assert.equal(claimantMe.tester, false);
+    assert.equal((await claimant('GET', '/api/stats')).status, 404);
+    assert.equal((await client()('GET', '/api/me')).body.tester, undefined, 'guests get no flag');
+    env.OWNER_USER_IDS = `${otherSignup.body.user.id}0`;
+    delete env.TESTER_EMAILS;
+    assert.equal((await other('GET', '/api/stats')).status, 404, 'removing an ID revokes access on the next request');
+    assert.equal((await other('GET', '/api/me')).body.owner, false, 'IDs match exactly, never by prefix');
+    assert.equal((await tess('GET', '/api/me')).body.tester, false, 'removing the email revokes tester access');
+  } finally {
+    delete env.TESTER_EMAILS;
+    delete env.OWNER_USER_IDS;
   }
 });
 
@@ -696,12 +737,16 @@ test('feedback: anyone can send it, only the owner can read it, close it and reo
   assert.equal((await fran('POST', '/api/feedback', { message: 'Love the speed camera alerts!' })).status, 201);
 
   const owner = client();
-  await owner('POST', '/api/auth/signup', { email: 'inbox@test.com', password: 'password9', name: 'Owner' });
-  assert.equal((await owner('GET', '/api/feedback')).status, 404, 'no testers set: nobody can read it');
-  env.TESTER_EMAILS = 'inbox@test.com';
+  const ownerSignup = await owner('POST', '/api/auth/signup', { email: 'inbox@test.com', password: 'password9', name: 'Owner' });
+  const tester = client();
+  const testerSignup = await tester('POST', '/api/auth/signup', { email: 'inbox-tester@test.com', password: 'password9', name: 'Tester' });
+  assert.equal((await owner('GET', '/api/feedback')).status, 404, 'no owner IDs set: nobody can read it');
+  env.OWNER_USER_IDS = String(ownerSignup.body.user.id);
+  env.TESTER_EMAILS = 'inbox-tester@test.com';
   try {
     assert.equal((await fran('GET', '/api/feedback')).status, 404, 'other accounts cannot read it');
     assert.equal((await guest('GET', '/api/feedback')).status, 404);
+    assert.equal((await tester('GET', '/api/feedback')).status, 404, 'testers cannot read private feedback');
     const { feedback } = (await owner('GET', '/api/feedback')).body;
     assert.deepEqual(feedback.map((f) => [f.message, f.name, f.email, f.app]), [
       ['Love the speed camera alerts!', 'Fran', 'fran@test.com', null],
@@ -709,6 +754,8 @@ test('feedback: anyone can send it, only the owner can read it, close it and reo
     ]);
     assert.equal((await fran('PATCH', `/api/feedback/${feedback[0].id}`, { closed: true })).status, 404, 'only the owner closes it');
     assert.equal((await fran('DELETE', `/api/feedback/${feedback[0].id}`)).status, 404);
+    assert.equal((await tester('PATCH', `/api/feedback/${feedback[0].id}`, { closed: true })).status, 404);
+    assert.equal((await tester('DELETE', `/api/feedback/${feedback[0].id}`)).status, 404);
     await owner('PATCH', `/api/feedback/${feedback[0].id}`, { closed: true });
     let list = (await owner('GET', '/api/feedback')).body.feedback;
     assert.equal(list.length, 2, 'closing keeps it');
@@ -723,6 +770,7 @@ test('feedback: anyone can send it, only the owner can read it, close it and reo
     assert.equal(list.length, 2, "an old app's Done closes it rather than deleting it");
     assert.ok(list.find((f) => f.id === feedback[1].id).closed_at);
   } finally {
+    delete env.OWNER_USER_IDS;
     delete env.TESTER_EMAILS;
   }
 
@@ -866,10 +914,11 @@ test('only so many devices get a spot at once, and accounts can take the ones gu
 });
 
 test('the usage dashboard counts devices, busy moments and turn-aways, for the owner only', async () => {
-  Object.assign(env, { MAX_ACTIVE: '1', MAX_GUESTS: '1', TESTER_EMAILS: 'owner@test.com' });
+  Object.assign(env, { MAX_ACTIVE: '1', MAX_GUESTS: '1' });
   try {
     const owner = client('owner-device-1');
-    await owner('POST', '/api/auth/signup', { email: 'owner@test.com', password: 'password8', name: 'Owner' });
+    const signup = await owner('POST', '/api/auth/signup', { email: 'owner@test.com', password: 'password8', name: 'Owner' });
+    env.OWNER_USER_IDS = String(signup.body.user.id);
     for (const t of ['usage_daily', 'usage_devices', 'presence']) await env.DB.prepare(`DELETE FROM ${t}`).run(); // start the day clean
     const one = client('usage-guest-1'), two = client('usage-guest-2');
     assert.equal((await one('POST', '/api/presence')).body.admitted, true);
@@ -886,7 +935,7 @@ test('the usage dashboard counts devices, busy moments and turn-aways, for the o
     assert.equal(today.signups, 0, 'the owner signed up before the counts were cleared');
     assert.deepEqual([r.body.now.active, r.body.now.guests, r.body.now.waiting, r.body.now.max], [1, 1, 1, 1]);
   } finally {
-    for (const k of ['MAX_ACTIVE', 'MAX_GUESTS', 'TESTER_EMAILS']) delete env[k];
+    for (const k of ['MAX_ACTIVE', 'MAX_GUESTS', 'OWNER_USER_IDS']) delete env[k];
     await env.DB.prepare('DELETE FROM presence').run();
   }
 });

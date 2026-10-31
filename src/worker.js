@@ -103,12 +103,12 @@ async function route(request, env, url) {
 
   // The owner's usage dashboard; anyone else gets a plain "not found".
   if (path === '/api/stats' && method === 'GET') {
-    if (!user || !isTester(env, user)) throw httpError('Not found.', 404);
+    if (!user || !isOwner(env, user)) throw httpError('Not found.', 404);
     return json(await usage.report(limits(env)));
   }
 
   // ---------- Feedback ----------
-  // From Settings › Feedback, with or without an account; read by the owner in Settings › Testing.
+  // From Settings › Feedback, with or without an account; read by the owner in Settings › Administration.
   if (path === '/api/feedback' && method === 'POST') {
     // Open to anyone with a valid device id, even when A2B is full: that's exactly when feedback is most
     // needed. The 10-a-day limit below still applies.
@@ -128,7 +128,7 @@ async function route(request, env, url) {
   }
 
   if (path === '/api/feedback' && method === 'GET') {
-    if (!user || !isTester(env, user)) throw httpError('Not found.', 404);
+    if (!user || !isOwner(env, user)) throw httpError('Not found.', 404);
     const rows = await db
       .prepare('SELECT f.id, f.message, f.app, f.ua, f.created_at, f.closed_at, u.name, u.email FROM feedback f LEFT JOIN users u ON u.id = f.user_id ORDER BY f.closed_at IS NOT NULL, f.created_at DESC LIMIT 200')
       .all();
@@ -139,7 +139,7 @@ async function route(request, env, url) {
   // nothing is lost to a stray tap. DELETE, which older copies of the app send for "Done", closes it too.
   const oneFeedback = path.match(/^\/api\/feedback\/(\d+)$/);
   if (oneFeedback && (method === 'PATCH' || method === 'DELETE')) {
-    if (!user || !isTester(env, user)) throw httpError('Not found.', 404);
+    if (!user || !isOwner(env, user)) throw httpError('Not found.', 404);
     const closed = method === 'DELETE' || (await readJson(request)).closed !== false;
     await db.prepare('UPDATE feedback SET closed_at = ? WHERE id = ?').bind(closed ? Date.now() : null, Number(oneFeedback[1])).run();
     return json({ ok: true, closed });
@@ -238,7 +238,7 @@ async function route(request, env, url) {
     const sessions = (
       await db.prepare('SELECT token_hash, device, last_seen FROM sessions WHERE user_id = ? ORDER BY last_seen DESC').bind(user.id).all()
     ).results.map((s) => ({ id: s.token_hash.slice(0, 12), device: s.device, last_seen: s.last_seen, current: s.token_hash === user.token_hash }));
-    return json({ user: publicUser(user), stats: await reports.stats(user.id), tester: isTester(env, user), sessions });
+    return json({ user: publicUser(user), stats: await reports.stats(user.id), tester: isTester(env, user), owner: isOwner(env, user), sessions });
   }
 
   if (path === '/api/me' && method === 'PATCH') {
@@ -726,8 +726,6 @@ function cleanLang(v) {
   return ((v ?? 'en').match(/[a-zA-Z-]+/)?.[0] ?? 'en').slice(0, 5);
 }
 
-// Testing tools (demo drive) are for the accounts listed in the TESTER_EMAILS secret, comma separated
-// (`wrangler secret put TESTER_EMAILS`), so the addresses never ship in the code.
 // A search for parking (see parkingQuery): the car parks around the place named, or around the searcher, and
 // where that is, so the app can add the parking it knows from Overture. Null when it isn't a search for parking,
 // or the place named isn't found, so the ordinary search answers instead.
@@ -758,6 +756,15 @@ async function searchParking(env, q, lat, lng, lang) {
 
 const FEEDBACK_MAX = 2000; // characters
 const FEEDBACK_PER_DAY = 10; // per account, or per device without one
+
+// Private owner data requires a confirmed existing account ID, never an unverified signup email.
+function hasAccountId(value, user) {
+  return String(value ?? '').split(',').some((id) => id.trim() === String(user.id));
+}
+
+function isOwner(env, user) {
+  return hasAccountId(env.OWNER_USER_IDS, user);
+}
 
 function isTester(env, user) {
   const list = String(env.TESTER_EMAILS ?? '').split(',').map((e) => normalizeEmail(e)).filter(Boolean);

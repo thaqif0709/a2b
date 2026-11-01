@@ -927,9 +927,10 @@ function handleFix(fix, first = false) {
   updateSpeedo(fix.speed);
   if (mode === 'drive') return driveTick(fix);
   moveCar({ pos: fix.lngLat, heading: fix.heading ?? 0 });
-  if (first && mode === 'browse') map.jumpTo({ center: fix.lngLat, zoom: 15.5 });
+  // Not under a suggestion's pin: the map shows the place being suggested or reviewed, not the phone.
+  if (first && mode === 'browse' && !suggesting()) map.jumpTo({ center: fix.lngLat, zoom: 15.5 });
   // Moving without a route after panning the map away: come back to the car after a while.
-  else if (mode === 'browse' && !follow && (fix.speed ?? 0) > 2 && Date.now() - lastUserMove > BROWSE_RESUME_MS) recenter();
+  else if (mode === 'browse' && !follow && !suggesting() && (fix.speed ?? 0) > 2 && Date.now() - lastUserMove > BROWSE_RESUME_MS) recenter();
 }
 
 // Each fix sets where the car should be; every animation frame draws it part of the way there,
@@ -954,7 +955,7 @@ function frame(now) {
   let settling = false;
   if (follow && !userMoving && !touching && !map.isEasing()) {
     if (mode === 'drive' && live) settling = followDrive(dt);
-    else if (mode === 'browse') map.jumpTo({ center: shown.pos });
+    else if (mode === 'browse' && !suggesting()) map.jumpTo({ center: shown.pos });
   } else camZoom = null;
   const done = glide.done(now);
   if (mode === 'drive') drawDriveLine();

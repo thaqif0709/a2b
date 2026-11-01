@@ -48,20 +48,30 @@ const deviceId = (() => {
   return id;
 })();
 
-export async function api(path, { method = 'GET', body } = {}) {
+// A request still unanswered after this long is given up as unreachable, rather than spinning for as long as the
+// phone lets a dead connection hang. Longer than the server's own wait on its slowest provider (a route).
+const API_TIMEOUT_MS = 40_000;
+
+// Set by presence.js: checks this device in again and says whether it has a spot.
+export const presenceHook = { recheck: null };
+
+export async function api(path, { method = 'GET', body, retry = true } = {}) {
   const res = await fetch(path, {
     method,
     headers: { 'x-a2b-device': deviceId, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body),
     credentials: 'same-origin',
+    signal: AbortSignal.timeout?.(API_TIMEOUT_MS),
   }).catch(() => {
     throw Object.assign(new Error("Can't reach A2B. Check your connection and try again."), { status: 0 });
   });
   const data = await res.json().catch(() => ({}));
+  // Turned away for want of a spot: usually this device's spot lapsed (the app was away for over 5 minutes) or
+  // its first check-in hasn't landed yet on a slow connection. Check in, and if that gets a spot, ask once more.
+  if (data.code === 'full' && retry && (await presenceHook.recheck?.())) return api(path, { method, body, retry: false });
   // Without a message of our own, a 429 or 5xx came from Cloudflare itself, e.g. the free plan's daily cap.
   const busy = res.status === 429 || res.status >= 500;
   const fallback = busy ? 'A2B is busy right now (it runs on free servers during the beta). Try again in a minute.' : `Something went wrong (${res.status}).`;
-  if (data.code === 'full') dispatchEvent(new Event('a2b:full'));
   if (!res.ok) throw Object.assign(new Error(data.error || fallback), { status: res.status, code: data.code });
   return data;
 }

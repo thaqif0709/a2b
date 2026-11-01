@@ -12,7 +12,7 @@ const CACHE = 'a2b-v40';
 const TILES = 'a2b-tiles-v1'; // versioned tiles only; kept across activates; cleared from Settings › Offline maps
 const MAPS = 'a2b-maps-v1'; // library, style, TileJSON, fonts, sprites; never trimmed
 const MAX_TILES = 2000; // bound phone storage; iOS can evict a PWA's whole storage when it gets large
-const SHELL = ['/', '/styles.css', '/app.js', '/core.js', '/panels.js', '/nav.js', '/motion.js', '/voice.js', '/vehicle3d.js', '/geo.js', '/icons.js', '/report-types.js', '/map-themes.js', '/places.js', '/text.js', '/sheet-drag.js', '/follow.js', '/presence.js', '/welcome.js', '/update.js', '/offline.js', '/train-guide.js', '/signs.js', '/dead-reckoning.js', '/map-places.js', '/suggest.js', '/school-zones.js', '/faster-route.js', '/icon.svg', '/manifest.webmanifest'];
+const SHELL = ['/', '/styles.css', '/app.js', '/core.js', '/panels.js', '/nav.js', '/motion.js', '/voice.js', '/vehicle3d.js', '/geo.js', '/icons.js', '/report-types.js', '/map-themes.js', '/places.js', '/text.js', '/sheet-drag.js', '/follow.js', '/presence.js', '/welcome.js', '/update.js', '/offline.js', '/train-guide.js', '/signs.js', '/dead-reckoning.js', '/map-places.js', '/suggest.js', '/school-zones.js', '/faster-route.js', '/route-preview.js', '/address.js', '/probe.js', '/icon.svg', '/manifest.webmanifest'];
 // Served from our own domain (public/vendor/), so a network that blocks or stalls a CDN can't stop the app.
 const MAPLIBRE = ['/vendor/maplibre-gl@4.7.1/maplibre-gl.js', '/vendor/maplibre-gl@4.7.1/maplibre-gl.css'];
 const VENDOR = [...MAPLIBRE, '/vendor/three@0.160.0/three.module.js']; // every library file the app loads; three.js on first use
@@ -95,17 +95,7 @@ self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET') return;
   if (isMapMetadata(url)) {
     // Network first: a new release must replace the cached style/TileJSON; cache is offline fallback.
-    e.respondWith(
-      fetch(e.request)
-        .then((res) => {
-          if (res.ok) {
-            const copy = res.clone();
-            e.waitUntil(caches.open(MAPS).then((c) => c.put(e.request, copy)).catch(() => {}));
-          }
-          return res;
-        })
-        .catch(() => caches.match(e.request)),
-    );
+    e.respondWith(networkFirst(e, MAPS, e.request));
     return;
   }
   if (isVendor(url) || isFontOrSprite(url)) {
@@ -140,15 +130,43 @@ self.addEventListener('fetch', (e) => {
   if (url.origin !== location.origin || url.pathname.startsWith('/api/') || url.pathname.startsWith('/places/') || url.pathname === '/version.json') return;
   // Network first so new deploys show up straight away; the cache is the fallback when offline.
   const key = e.request.mode === 'navigate' ? '/' : e.request;
-  e.respondWith(
-    fetch(e.request)
-      .then((res) => {
-        if (res.ok) {
-          const copy = res.clone();
-          e.waitUntil(caches.open(CACHE).then((c) => c.put(key, copy)).catch(() => {}));
-        }
-        return res;
-      })
-      .catch(() => caches.match(key)),
-  );
+  e.respondWith(networkFirst(e, CACHE, key));
 });
+
+// Network first, but on a connection that is up yet barely works (weak WiFi, a captive portal), don't wait for
+// it: after NETWORK_WAIT_MS the cached copy is served instead, if there is one. The network answer still
+// lands in the cache when it comes, so the next launch is fresh. Once one request has had to fall back, the
+// rest go straight to the cache for SLOW_HOLD_MS: the app's modules load in a chain of imports, and waiting at
+// every link would add up to many seconds.
+const NETWORK_WAIT_MS = 3000;
+const SLOW_HOLD_MS = 30_000;
+let slowUntil = 0;
+
+function networkFirst(e, cacheName, key) {
+  let saved;
+  e.waitUntil(new Promise((resolve) => (saved = resolve))); // keeps the worker alive for a late cache write
+  const network = fetch(e.request).then((res) => {
+    if (res.ok) {
+      const copy = res.clone();
+      caches.open(cacheName).then((c) => c.put(key, copy)).catch(() => {}).finally(saved);
+    } else saved();
+    return res;
+  }, (err) => {
+    saved();
+    throw err;
+  });
+  let answered = false;
+  network.then(() => {
+    answered = true;
+    slowUntil = 0;
+  }, () => (answered = true));
+  const wait = Date.now() < slowUntil ? 0 : NETWORK_WAIT_MS;
+  const cachedAfterWait = new Promise((r) => setTimeout(r, wait))
+    .then(() => (answered ? null : caches.match(key)))
+    .then((hit) => {
+      if (!hit) return network;
+      slowUntil = Date.now() + SLOW_HOLD_MS;
+      return hit;
+    });
+  return Promise.race([network, cachedAfterWait]).catch(() => caches.match(key));
+}

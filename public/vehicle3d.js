@@ -44,7 +44,7 @@ export async function start(map, kind, color, pose, { night = false } = {}) {
   const rotateUp = new THREE.Matrix4().makeRotationX(Math.PI / 2);
   let renderer = null;
   let failed = false;
-  map.addLayer({
+  const layer = {
     id: 'vehicle-3d',
     type: 'custom',
     renderingMode: '3d',
@@ -88,7 +88,12 @@ export async function start(map, kind, color, pose, { night = false } = {}) {
       renderer.resetState();
       renderer.render(scene, camera);
     },
-  });
+  };
+  try {
+    map.addLayer(layer);
+  } catch {
+    return false; // the map's style hasn't loaded yet; app.js starts the vehicle again on 'style.load'
+  }
   return !failed;
 }
 

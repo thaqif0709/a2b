@@ -8,25 +8,29 @@
 // Two map caches: small long-lived files (map library, style, TileJSON, fonts, sprites) live in
 // MAPS and are never trimmed, so trimming and "Clear offline maps" can't evict the library or the
 // labels. Only versioned vector tiles live in TILES, which is trimmed to MAX_TILES.
-const CACHE = 'a2b-v39';
+const CACHE = 'a2b-v40';
 const TILES = 'a2b-tiles-v1'; // versioned tiles only; kept across activates; cleared from Settings › Offline maps
 const MAPS = 'a2b-maps-v1'; // library, style, TileJSON, fonts, sprites; never trimmed
 const MAX_TILES = 2000; // bound phone storage; iOS can evict a PWA's whole storage when it gets large
 const SHELL = ['/', '/styles.css', '/app.js', '/core.js', '/panels.js', '/nav.js', '/motion.js', '/voice.js', '/vehicle3d.js', '/geo.js', '/icons.js', '/report-types.js', '/map-themes.js', '/places.js', '/text.js', '/sheet-drag.js', '/follow.js', '/presence.js', '/welcome.js', '/update.js', '/offline.js', '/train-guide.js', '/signs.js', '/dead-reckoning.js', '/map-places.js', '/suggest.js', '/school-zones.js', '/faster-route.js', '/icon.svg', '/manifest.webmanifest'];
-const MAPLIBRE = ['https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js', 'https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css'];
+// Served from our own domain (public/vendor/), so a network that blocks or stalls a CDN can't stop the app.
+const MAPLIBRE = ['/vendor/maplibre-gl@4.7.1/maplibre-gl.js', '/vendor/maplibre-gl@4.7.1/maplibre-gl.css'];
+const VENDOR = [...MAPLIBRE, '/vendor/three@0.160.0/three.module.js']; // every library file the app loads; three.js on first use
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then(async (c) => {
     await c.addAll(SHELL);
-    // The map library loads from a CDN: cache it best-effort in the never-trimmed maps cache,
-    // but never fail the install over it.
+    // The map library goes in the never-trimmed maps cache, so it outlives app updates (its URL changes only
+    // with its version). Best-effort: a missing copy is fetched and cached on first use.
     const maps = await caches.open(MAPS);
-    await Promise.all(MAPLIBRE.map((u) => fetch(u).then((res) => res.ok ? maps.put(u, res) : null).catch(() => null)));
+    await Promise.all(MAPLIBRE.map((u) => maps.match(u).then((hit) => hit ?? fetch(u).then((res) => res.ok ? maps.put(u, res) : null)).catch(() => null)));
   }).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
-  e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== TILES && k !== MAPS).map((k) => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== TILES && k !== MAPS).map((k) => caches.delete(k))))
+    .then(() => caches.open(MAPS)).then(dropRetiredLibs)
+    .then(() => self.clients.claim()));
 });
 
 // Versioned vector tiles (/planet/<release>/…) are cache-first: a new tile release is new URLs.
@@ -48,8 +52,18 @@ function isMapMetadata(url) {
     (url.pathname.startsWith('/styles/') || url.pathname === '/planet');
 }
 
-function isMapLib(url) {
-  return url.host === 'unpkg.com' && url.pathname.startsWith('/maplibre-gl@');
+// The maps cache is never trimmed, so library copies from before an upgrade (or from the CDN the app used to load
+// them from) would stay on the phone for good: keep only the ones the app still loads.
+function dropRetiredLibs(cache) {
+  return cache.keys().then((keys) => Promise.all(keys.filter((k) => {
+    const url = new URL(k.url);
+    return url.host === 'unpkg.com' || (isVendor(url) && !VENDOR.includes(url.pathname));
+  }).map((k) => cache.delete(k)))).catch(() => {});
+}
+
+// Third-party libraries in public/vendor/<name>@<version>/: a new version is a new URL.
+function isVendor(url) {
+  return url.origin === location.origin && url.pathname.startsWith('/vendor/');
 }
 
 // The Cache API lists keys in insertion order, so trimming from the front drops the oldest entries.
@@ -94,7 +108,7 @@ self.addEventListener('fetch', (e) => {
     );
     return;
   }
-  if (isMapLib(url) || isFontOrSprite(url)) {
+  if (isVendor(url) || isFontOrSprite(url)) {
     // Small and long-lived: cache-first in the never-trimmed cache, so the library and labels
     // survive trims, "Clear offline maps", and offline cold starts (e.g. a basement car park).
     e.respondWith(caches.open(MAPS).then(async (c) => {

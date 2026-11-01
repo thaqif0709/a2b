@@ -24,6 +24,8 @@ test('the libraries the app loads are served from our own domain', () => {
     assert.ok(existsSync(new URL(`.${path}`, pub)), `${path} exists`);
   }
   const three = readFileSync(new URL('vehicle3d.js', pub), 'utf8').match(/const THREE_URL = '([^']+)'/)[1];
+  // Cloudflare answers a path with '@' by redirecting to '%40': an extra round trip for every file.
+  for (const name of readdirSync(new URL('vendor/', pub))) assert.doesNotMatch(name, /@/, `public/vendor/${name} has no '@'`);
   assert.match(sw.match(/const VENDOR = .*/)[0], new RegExp(`'${three}'`), 'sw.js VENDOR lists the three.js file vehicle3d.js loads');
   assert.ok(existsSync(new URL(`.${three}`, pub)), `${three} exists`);
 });

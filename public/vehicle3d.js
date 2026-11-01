@@ -5,7 +5,7 @@
 // MapLibre custom layer, so it sits on the road in the map's own perspective. three.js is loaded on first use;
 // if it can't load or WebGL refuses, start() resolves false and the app keeps its flat arrow.
 
-const THREE_URL = '/vendor/three@0.160.0/three.module.js'; // served from our own domain (README: Updating MapLibre and three.js)
+const THREE_URL = '/vendor/three-0.160.0/three.module.js'; // served from our own domain (README: Updating MapLibre and three.js)
 const SIZE_PX = { chevron: 44, car: 48, motorbike: 58, train: 78 }; // on-screen length, whatever the zoom
 export const VEHICLES = [['chevron', 'Chevron'], ['car', 'Car']];
 // Paint colours to choose from in Settings; the first, a brighter take on the app's plum, is the default.

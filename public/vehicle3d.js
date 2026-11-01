@@ -5,7 +5,7 @@
 // MapLibre custom layer, so it sits on the road in the map's own perspective. three.js is loaded on first use;
 // if it can't load or WebGL refuses, start() resolves false and the app keeps its flat arrow.
 
-const THREE_URL = 'https://unpkg.com/three@0.160.0/build/three.module.js';
+const THREE_URL = '/vendor/three@0.160.0/three.module.js'; // served from our own domain (README: Updating MapLibre and three.js)
 const SIZE_PX = { chevron: 44, car: 48, motorbike: 58, train: 78 }; // on-screen length, whatever the zoom
 export const VEHICLES = [['chevron', 'Chevron'], ['car', 'Car']];
 // Paint colours to choose from in Settings; the first, a brighter take on the app's plum, is the default.
@@ -44,7 +44,7 @@ export async function start(map, kind, color, pose, { night = false } = {}) {
   const rotateUp = new THREE.Matrix4().makeRotationX(Math.PI / 2);
   let renderer = null;
   let failed = false;
-  map.addLayer({
+  const layer = {
     id: 'vehicle-3d',
     type: 'custom',
     renderingMode: '3d',
@@ -88,7 +88,12 @@ export async function start(map, kind, color, pose, { night = false } = {}) {
       renderer.resetState();
       renderer.render(scene, camera);
     },
-  });
+  };
+  try {
+    map.addLayer(layer);
+  } catch {
+    return false; // the map's style hasn't loaded yet; app.js starts the vehicle again on 'style.load'
+  }
   return !failed;
 }
 

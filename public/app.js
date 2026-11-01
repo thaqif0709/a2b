@@ -267,13 +267,19 @@ async function boot() {
   setInterval(() => applyTheme(), 5 * 60_000);
   startProbeSender(); // opt-in traffic sharing batches; silent unless the driver said yes
 
+  // Deep links: /drive/<token> watches a shared drive; /?to=lat,lng&name= opens a destination.
+  const m = location.pathname.match(/^\/drive\/([a-z0-9]+)$/i);
+  // Check in and set up the offline shell before waiting on the account: on a slow connection those requests can
+  // take a while, and a search made meanwhile would be turned away for want of a spot.
+  if (!m) { // watching a friend's drive doesn't take one of the spots
+    startPresence({ driving: () => mode === 'drive', signUp: () => openAuth(null, 'signup') });
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
   await refreshMe();
   await onUserChanged();
 
-  // Deep links: /drive/<token> watches a shared drive; /?to=lat,lng&name= opens a destination.
-  const m = location.pathname.match(/^\/drive\/([a-z0-9]+)$/i);
-  if (m) return startWatching(m[1]); // watching a friend's drive doesn't take one of the spots
-  startPresence({ driving: () => mode === 'drive', signUp: () => openAuth(null, 'signup') });
+  if (m) return startWatching(m[1]);
   const to = new URLSearchParams(location.search).get('to');
   if (to) {
     const [lat, lng] = to.split(',').map(Number);
@@ -283,7 +289,6 @@ async function boot() {
       openPreview({ name, address: '', lat, lng });
     }
   } else setTimeout(offerResume, 600); // a trip the phone cut off (not over a link someone opened)
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
   watchUpdates({
     // On the map with nothing open, so a refresh interrupts nothing.
     idle: () => mode === 'browse' && [...OVERLAYS, 'menu', 'watch', 'gate', 'welcome'].every((id) => $(id).classList.contains('hidden')),

@@ -21,6 +21,8 @@ The repository is public. Never push to `main` directly.
   step prints which data it found.
 - Database changes go in a new file in `migrations/`; apply it with `npx wrangler d1 migrations apply a2b --remote`
   before deploying code that needs it.
+- MapLibre and three.js are copies in `public/vendor/`, not CDN links. To upgrade either, follow "Updating MapLibre
+  and three.js" in the README's deploy section.
 - Never print, echo or commit the Cloudflare API token or other secrets (the TomTom key, `TESTER_EMAILS`).
 
 ## Monthly map data

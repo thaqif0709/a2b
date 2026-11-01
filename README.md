@@ -115,7 +115,7 @@ The database tables are created on the first request (or run `npm run db:migrate
 To use your own domain, add it under *Workers & Pages → a2b → Settings → Domains & Routes*.
 
 **Updating MapLibre and three.js.** The map library ([MapLibre GL JS](https://maplibre.org)) and the 3D vehicle
-library ([three.js](https://threejs.org)) are served from `public/vendor/<name>@<version>/`, not from a CDN, so a
+library ([three.js](https://threejs.org)) are served from `public/vendor/<name>-<version>/`, not from a CDN, so a
 network that blocks or stalls the CDN can't stop the app from opening. They don't update by themselves. To move to
 a new version:
 
@@ -126,15 +126,16 @@ a new version:
    tar -xzf maplibre-gl-<version>.tgz
    ```
 
-2. Copy them into a new folder named for the version, with the licence, and delete the old folder:
+2. Copy them into a new folder named `<name>-<version>` (not `<name>@<version>`: Cloudflare redirects `@` to `%40`,
+   an extra round trip for every file), with the licence, and delete the old folder:
    - MapLibre: `package/dist/maplibre-gl.js`, `package/dist/maplibre-gl.css` and `package/LICENSE.txt` into
-     `public/vendor/maplibre-gl@<version>/`
+     `public/vendor/maplibre-gl-<version>/`
    - three.js: `package/build/three.module.js` and `package/LICENSE` (as `LICENSE.txt`) into
-     `public/vendor/three@<version>/`
+     `public/vendor/three-<version>/`
 3. Change the version in every place that names it:
    - MapLibre: the `<link>` and `<script>` in `public/index.html`, and `MAPLIBRE` in `public/sw.js`
    - three.js: `THREE_URL` in `public/vehicle3d.js`, and `VENDOR` in `public/sw.js`
-4. Bump `CACHE` in `public/sw.js` (`a2b-v40` → `a2b-v41`), so phones pick up the new files and drop the old ones.
+4. Bump `CACHE` in `public/sw.js` (e.g. `a2b-v41` → `a2b-v42`), so phones pick up the new files and drop the old ones.
 5. Check the release notes for breaking changes, run `npm test`, try the map, a route and a drive in a browser,
    then deploy as usual.
 

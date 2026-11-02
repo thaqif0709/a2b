@@ -33,7 +33,7 @@ const LOGIN_MAX_FAILURES = 8; // per address: wrong passwords for one account st
 const RECENTS_KEPT = 20;
 const FULL_MESSAGE = 'A2B is full right now. You will be let in when a spot opens.';
 const UNEXPECTED_MESSAGE = 'Something went wrong on our side. Please try again in a minute.';
-const SETTINGS_KEYS = { voice: 'boolean', speed_warning: 'boolean', units: ['metric', 'imperial'], theme: ['auto', 'day', 'night'], avoid_tolls: 'boolean', avoid_highways: 'boolean', avoid_ferries: 'boolean', alerts: 'boolean', traffic_probe: 'boolean', map_pois: 'boolean', night_vehicle_lights: 'boolean', weather: 'boolean', lang: ['auto', 'en', 'ms'] };
+const SETTINGS_KEYS = { voice: 'boolean', speed_warning: 'boolean', units: ['metric', 'imperial'], theme: ['auto', 'day', 'night'], avoid_tolls: 'boolean', avoid_highways: 'boolean', avoid_ferries: 'boolean', alerts: 'boolean', traffic_probe: 'boolean', map_pois: 'boolean', night_vehicle_lights: 'boolean', weather: 'boolean', lang: ['auto', 'en', 'ms', 'zh', 'ta'] }; // lang: every code in public/i18n.js's LANGUAGES
 
 export default {
   async fetch(request, env) {

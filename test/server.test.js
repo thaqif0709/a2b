@@ -14,6 +14,7 @@ import { parkingQuery } from '../src/lib/parking.js';
 import { cameraBearing } from '../scripts/build-cameras.mjs';
 import { REPORT_TYPES, TRAIN_REPORT_POINTS } from '../public/report-types.js';
 import { encodePolyline as encode, decodePolyline } from '../public/geo.js';
+import { LANGUAGES } from '../public/i18n.js';
 
 // ---------- Fake upstream services ----------
 const LINE = Array.from({ length: 21 }, (_, i) => [13.4, 52.5 + 0.00045 * i]); // ~1 km north
@@ -299,6 +300,10 @@ test('profile: home, work and settings', async () => {
   const r = await alice('PATCH', '/api/me', { home: { name: 'Home', address: '1 Road', lat: 52.5, lng: 13.4 }, settings: { units: 'imperial', voice: false, bogus: 1, theme: 'purple', lang: 'ms' } });
   assert.deepEqual(r.body.user.home, { name: 'Home', address: '1 Road', lat: 52.5, lng: 13.4 });
   assert.deepEqual(r.body.user.settings, { units: 'imperial', voice: false, lang: 'ms' });
+  for (const { code } of LANGUAGES) {
+    const saved = await alice('PATCH', '/api/me', { settings: { lang: code } });
+    assert.equal(saved.body.user.settings.lang, code, `${code} is kept on the account`);
+  }
   assert.equal((await alice('PATCH', '/api/me', { password: 'newpassword', current_password: 'wrong' })).status, 403);
 });
 

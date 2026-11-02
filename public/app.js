@@ -308,6 +308,46 @@ async function onUserChanged() {
   renderSearchHome();
 }
 
+// A finger swipes a sideways row, but a mouse can't, and the row hides its scrollbar: the wheel and a drag move it
+// too. A drag doesn't count as a click on the button it started on.
+function scrollsSideways(row) {
+  row.addEventListener('wheel', (e) => {
+    const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? 0 : e.deltaY; // a sideways trackpad swipe already scrolls it
+    const end = row.scrollWidth - row.clientWidth;
+    if (!d || (d < 0 && row.scrollLeft <= 0) || (d > 0 && row.scrollLeft >= end - 1)) return; // let the page scroll
+    row.scrollLeft += d;
+    e.preventDefault();
+  }, { passive: false });
+  let drag = null;
+  let draggedAt = 0;
+  row.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button === 0) drag = { id: e.pointerId, x: e.clientX, left: row.scrollLeft, moved: false };
+  });
+  row.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const dx = e.clientX - drag.x;
+    if (!drag.moved) {
+      if (Math.abs(dx) < 6) return;
+      drag.moved = true;
+      row.setPointerCapture(e.pointerId);
+    }
+    row.scrollLeft = drag.left - dx;
+  });
+  const end = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    if (drag.moved) draggedAt = Date.now();
+    drag = null;
+  };
+  row.addEventListener('pointerup', end);
+  row.addEventListener('pointercancel', end);
+  row.addEventListener('click', (e) => {
+    if (Date.now() - draggedAt < 350) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, true);
+}
+
 function el(tag, cls, html = '') {
   const e = document.createElement(tag);
   if (cls) e.className = cls;
@@ -1179,6 +1219,7 @@ function wireUi() {
     };
     return b;
   }));
+  scrollsSideways($('search-cats'));
   $('search-clear').onclick = () => {
     $('search-input').value = '';
     $('search-clear').classList.add('hidden');

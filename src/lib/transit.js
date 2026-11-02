@@ -19,6 +19,9 @@ const ACCESS_STOPS = 6; // nearest stations tried at each end
 const TRANSFER_M = 400; // stations this close are one interchange (Masjid Jamek, KL Sentral)
 const TRANSFER_EXTRA_S = 60; // stairs, gates
 const CHANGE_PENALTY_S = 240; // a change of train is worse than its minutes alone
+// A minute on foot counts as this many on a train when choosing a way there: a few minutes more on board beats a
+// long walk to a further station or between lines (people would rather ride than walk 20 minutes in the heat).
+const WALK_COST = 2;
 const MAX_OPTIONS = 3;
 const MAX_SEARCHES = 16; // looking for different ways there: each search is under a millisecond
 const ALT_DEPTH = 3;
@@ -34,13 +37,16 @@ const FEED_NAMES = { prasarana: 'LRT, MRT, Monorail and BRT', ktmb: 'KTM Komuter
 const DAY = 86400;
 
 export const walkSeconds = (m) => Math.round((m * DETOUR) / WALK_MPS);
+const walkCost = (m) => walkSeconds(m) * WALK_COST;
+// How a whole trip ranks: its minutes, with the walking counted as WALK_COST says (trip.walk is street metres).
+export const effort = (trip) => trip.duration + ((WALK_COST - 1) * trip.walk) / WALK_MPS;
 
 // ---------- The network, read once ----------
 const stops = DATA.stops.map(([name, lat, lng, code], i) => ({ i, name, lat, lng, code, at: [lng, lat], visits: [] }));
 const patterns = DATA.patterns.map((p, k) => ({ ...p, k }));
 for (const p of patterns) p.stops.forEach((s, pos) => stops[s].visits.push([p.k, pos]));
 // Stations close enough to change trains on foot, worked out by the build (TRANSFER_M there too).
-const nearby = DATA.nearby.map((list) => list.map(([to, m]) => ({ to, m, secs: walkSeconds(m) + TRANSFER_EXTRA_S })));
+const nearby = DATA.nearby.map((list) => list.map(([to, m]) => ({ to, m, secs: walkSeconds(m) + TRANSFER_EXTRA_S, cost: walkCost(m) + TRANSFER_EXTRA_S })));
 // Each train leg's pattern and stops, kept off the leg itself so they aren't sent: withRealWalks re-boards with them.
 const rides = new WeakMap();
 const shapes = new Map();
@@ -150,7 +156,7 @@ function search(from, to, t0, day, forbidden, { noChange = new Set(), aboard = n
     label[s] = l;
     queue.push(l.cost, s);
   };
-  for (const { s, m } of starts) relax(s, { t: t0 + walkSeconds(m), cost: walkSeconds(m), rides: 0, line: null, prev: { kind: 'walk', from: null, m } });
+  for (const { s, m } of starts) relax(s, { t: t0 + walkSeconds(m), cost: walkCost(m), rides: 0, line: null, prev: { kind: 'walk', from: null, m } });
   if (aboard) {
     // Staying on: every later stop of your train, when it gets there.
     const p = patterns[aboard.k];
@@ -168,7 +174,7 @@ function search(from, to, t0, day, forbidden, { noChange = new Set(), aboard = n
     if (here.prev.kind === 'ride' && noChange.has(s)) continue; // looking for a way that changes somewhere else
     // Walk across to another line's platform, but never two walks in a row.
     if (here.prev.kind === 'ride') {
-      for (const n of nearby[s]) relax(n.to, { t: here.t + n.secs, cost: here.cost + n.secs, rides: here.rides, line: here.line, prev: { kind: 'walk', from: s, m: n.m } });
+      for (const n of nearby[s]) relax(n.to, { t: here.t + n.secs, cost: here.cost + n.cost, rides: here.rides, line: here.line, prev: { kind: 'walk', from: s, m: n.m } });
     }
     for (const [k, pos] of stops[s].visits) {
       const p = patterns[k];
@@ -188,7 +194,7 @@ function search(from, to, t0, day, forbidden, { noChange = new Set(), aboard = n
   for (const [s, m] of ends) {
     const l = label[s];
     if (!l || !l.rides) continue;
-    const total = l.cost + walkSeconds(m);
+    const total = l.cost + walkCost(m);
     if (!best || total < best.cost) best = { s, m, cost: total, t: l.t + walkSeconds(m) };
   }
   if (!best) return null;
@@ -360,7 +366,7 @@ export function planTransit(from, to, at = Date.now(), { moving = null } = {}) {
   const firstTrain = trips[0].legs.find((l) => l.mode === 'train');
   const overnight = day.secs < NIGHT_ENDS_S || (firstTrain.depart - dayStart) / 1000 >= DAY;
   if (firstTrain.wait > NIGHT_WAIT_S && overnight) return { ...note('Trains have stopped for the night.'), trips, night: true, firstTrain: firstTrain.depart };
-  const quickerOnFoot = !aboard && walkAll <= Math.min(trips[0].duration, QUICK_WALK_S);
+  const quickerOnFoot = !aboard && walkAll <= Math.min(...trips.map((t) => t.duration), QUICK_WALK_S);
   return { ...note(quickerOnFoot ? 'Walking there is about as quick.' : null), trips };
 }
 
@@ -396,20 +402,21 @@ function alternatives(from, to, day, dayStart, aboard) {
       }
     }
   }
-  const all = [...found.values()].sort((a, b) => a.arrive - b.arrive);
+  // Best first: the least effort (time, with walking counting extra), not simply the earliest there.
+  const all = [...found.values()].sort((a, b) => effort(a) - effort(b));
   if (!all.length) return [];
-  const limit = SLOWER_OK(all[0].duration);
+  const limit = SLOWER_OK(Math.min(...all.map((t) => t.duration)));
   const chosen = [all[0]];
   const lines = (t) => t.legs.filter((l) => l.mode === 'train').map((l) => l.line.id).join('>');
   let pool = all.slice(1).filter((t) => t.duration <= limit && lines(t) !== lines(all[0]));
   while (chosen.length < MAX_OPTIONS && pool.length) {
-    const score = (t) => (t.arrive - all[0].arrive) / 1000 + SAME_WAY_S * Math.max(...chosen.map((c) => sameWay(t, c)));
+    const score = (t) => effort(t) - effort(all[0]) + SAME_WAY_S * Math.max(...chosen.map((c) => sameWay(t, c)));
     pool.sort((a, b) => score(a) - score(b));
     const next = pool.shift();
     chosen.push(next);
     pool = pool.filter((t) => lines(t) !== lines(next)); // the same lines changing somewhere else: not another option
   }
-  return chosen.sort((a, b) => a.arrive - b.arrive);
+  return chosen.sort((a, b) => effort(a) - effort(b));
 }
 
 // A stop where you could change to another line: one of its trains, or another line's station a short walk away.
@@ -440,6 +447,14 @@ function sameWay(a, b) {
 const lineKey = (trip) => trip.legs.filter((l) => l.mode === 'train').map((l) => `${l.line.id}:${l.from.code}:${l.to.code}`).join('>');
 
 export const feeds = DATA.feeds;
+
+// The names of a line's stations (for checking a rider's report names one), or null for a line there isn't.
+const stationNames = new Map();
+export function lineStations(line) {
+  if (!DATA.lines[line]) return null;
+  if (!stationNames.has(line)) stationNames.set(line, new Set(patterns.filter((p) => p.line === line).flatMap((p) => p.stops.map((s) => stops[s].name))));
+  return stationNames.get(line);
+}
 
 // ---------- Real walks ----------
 const UA = 'a2b-navigation/0.1 (+https://a2b-beta.pages.dev)';
@@ -505,7 +520,7 @@ export async function withRealWalks(env, plan, { now = Date.now() } = {}) {
     }
     Object.assign(trip, summarise(trip.legs, trip.depart));
   }
-  plan.trips.sort((a, b) => a.arrive - b.arrive); // the real walks can change which arrives first
+  plan.trips.sort((a, b) => effort(a) - effort(b)); // the real walks can change which is best
   return plan;
 }
 

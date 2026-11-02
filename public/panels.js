@@ -339,6 +339,7 @@ export function openSettings() {
       <div class="set-row"><span>Vehicle<small>How you appear on the map</small></span><div class="choice" id="s-vehicle">${VEHICLES
         .map(([v, l]) => `<button data-v="${v}" class="${local.get('vehicle', 'chevron') === v ? 'on' : ''}">${l}</button>`)
         .join('')}</div></div>
+      ${toggleRow('night_vehicle_lights', 'Night vehicle lights', 'Soft vehicle-light glow in night mode. On by default.')}
       <div class="set-row swatch-row"><span>Colour</span><div class="swatches" id="s-vehicle-color">${COLORS
         .map(([c, l]) => `<button data-c="${c}" aria-label="${l}" title="${l}" class="${local.get('vehicleColor', DEFAULT_COLOR) === c ? 'on' : ''}" style="--c:${c}"></button>`)
         .join('')}</div></div>
@@ -377,7 +378,9 @@ export function openSettings() {
         return;
       }
       if (c.dataset.set === 'traffic_probe' && !c.checked) stopSharing();
-      await saveSettings({ [c.dataset.set]: c.checked });
+      const saving = saveSettings({ [c.dataset.set]: c.checked });
+      if (c.dataset.set === 'night_vehicle_lights') ctx.setupVehicle();
+      await saving;
       if (c.dataset.set === 'voice') ctx.refreshSound();
       if (c.dataset.set === 'map_pois') ctx.drawPois();
     };
@@ -676,7 +679,7 @@ async function openUsage() {
   const timer = setInterval(async () => (await render()) || clearInterval(timer), 30_000);
 }
 
-const TOMTOM_FREE = 20_000; // TomTom's free Routing API requests a month
+const TOMTOM_FREE = 20_000; // TomTom's free Routing API requests a month, and as many Geocoding API ones
 
 function usageHtml({ now, days, totals }) {
   const today = days.at(-1);
@@ -697,6 +700,7 @@ function usageHtml({ now, days, totals }) {
       ${stat(today.signups, 'sign-ups')}${stat(today.routes, 'routes')}${stat(today.searches, 'searches')}
     </div>
     <p class="hint" style="padding:6px 18px 0">Live traffic: ${today.tomtom ?? 0} TomTom lookups today, ${totals.tomtom_month ?? 0} this month (${TOMTOM_FREE.toLocaleString()} a month are free).</p>
+    <p class="hint" style="padding:4px 18px 0">Address search: ${today.addresses ?? 0} TomTom lookups today, ${totals.addresses_month ?? 0} this month (${TOMTOM_FREE.toLocaleString()} a month are free).</p>
     <h3>Last 14 days</h3>
     <div class="u-days">${[...days]
       .reverse()
@@ -719,7 +723,7 @@ function openAbout() {
     <p>Keep your eyes on the road. Only use the app when it is safe and legal to do so. Reports from other drivers can be wrong.</p>
     <p>Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>.
        Map tiles by <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>.
-       Routing by <a href="https://valhalla.github.io/valhalla/" target="_blank" rel="noopener">Valhalla</a>, search by <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a>, live traffic by <a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a>,
+       Routing by <a href="https://valhalla.github.io/valhalla/" target="_blank" rel="noopener">Valhalla</a>, search by <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a>, live traffic and house addresses by <a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a>,
        train timetables from Prasarana and KTMB via <a href="https://data.gov.my" target="_blank" rel="noopener">data.gov.my</a>.
        Shops and places also from <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps Foundation</a> (Meta, Microsoft, Foursquare, AllThePlaces and others; <a href="/places/NOTICE.txt" target="_blank">licences</a>).
        EV chargers also from <a href="https://openchargemap.org" target="_blank" rel="noopener">Open Charge Map</a> (<a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>).</p>

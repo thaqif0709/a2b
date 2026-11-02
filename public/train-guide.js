@@ -27,6 +27,10 @@ export const OFF_WALK_M = 120; // this far off the walk, and getting further fro
 export const LEFT_STATION_M = 400; // waiting for a train this far from the station: you've left it
 export const OFF_TRAIN_M = 400; // on a ride this far from the line, with good GPS: not on this train
 export const OFF_MS = 15_000; // off for this long, not just a wobble
+// Moving at train speed this far off the trip (on another line, say, after changing at an interchange) is no wobble:
+// off sooner, so the trip is planned again while you can still act on it.
+export const OFF_FAST_M = 200;
+export const OFF_FAST_MS = 5_000;
 const WALK_MPS = 1.25, WALK_DETOUR = 1.3; // as src/lib/transit.js: streets aren't straight lines
 export const HERE_TRUST_MS = 120_000; // after "I'm already here", trust you over GPS this long (it's often wrong indoors)
 
@@ -198,6 +202,9 @@ export class TrainGuide {
     if (leg.mode === 'train') {
       this.times = leg.stations.map((s) => s[3]);
       this.alongs = stationAlongs(this.track, leg.stations);
+      // Drawn along the real track, not just station to station (KTM's feed has no tracks: on a curve that straight
+      // line can be a few hundred metres off the train), so being well off it means another train.
+      this.onTrack = leg.coords.length > leg.stations.length;
       // Planned from on board (src/lib/transit.js): riding from the start, by the clock from when it left its first
       // stop until GPS says where.
       if (leg.aboard) {
@@ -259,11 +266,11 @@ export class TrainGuide {
     return false;
   }
 
-  // Off the trip for a while (not just a GPS wobble).
-  offFor(now, off) {
+  // Off the trip for a while (not just a GPS wobble); `fast`, at train speed well off it, after only a moment.
+  offFor(now, off, fast = false) {
     if (!off || now - (this.hereAt ?? -Infinity) < HERE_TRUST_MS) this.offSince = null;
     else this.offSince ??= now;
-    return this.offSince != null && now - this.offSince >= OFF_MS;
+    return this.offSince != null && now - this.offSince >= (fast ? OFF_FAST_MS : OFF_MS);
   }
 
   // "I'm already here", for when GPS can't say (underground, indoors, no signal): on foot, at the end of this walk;
@@ -350,7 +357,9 @@ export class TrainGuide {
       }
       if (left != null) this.closest = Math.min(this.closest, left);
       this.walkLeft = left ?? this.walkLeft;
-      const off = this.offFor(now, pos != null && snap(this.track, pos).off > OFF_WALK_M && left > this.closest + 100);
+      const offWalk = pos != null ? snap(this.track, pos).off : 0;
+      const fast = (good?.speed ?? 0) >= BOARD_MPS && offWalk > OFF_FAST_M; // on a train instead of walking
+      const off = this.offFor(now, pos != null && ((offWalk > OFF_WALK_M && left > this.closest + 100) || fast), fast);
       return { view: { kind: 'walk', leg, left: left ?? leg.distance, pos, heading: pos ? bearing(pos, target) : null, off }, events };
     }
 
@@ -365,7 +374,9 @@ export class TrainGuide {
         if (!(s && s.along > PAST_M)) this.boardedAt = Math.min(now, leg.depart + 30_000);
         events.push({ type: 'boarded', text: `On the ${leg.line.name}. ${ridingText(leg, n - 1)}` });
       } else {
-        const off = this.offFor(now, fromStation > LEFT_STATION_M);
+        // On a train, but not this one (it isn't on this line's track): another line, or the wrong way.
+        const fast = this.onTrack && (good?.speed ?? 0) >= BOARD_MPS && fromStation > OFF_FAST_M && s.off > NEAR_TRACK_M;
+        const off = this.offFor(now, fromStation > LEFT_STATION_M || fast, fast);
         // Wandering off from the platform: the marker goes with you, not left at the station.
         const pos = good && fromStation > ARRIVE_M ? good.lngLat : [leg.from.lng, leg.from.lat];
         return { view: { kind: 'wait', leg, pos, heading: pointAt(this.track, 0).heading, departAt: leg.depart, off }, events };
@@ -398,7 +409,9 @@ export class TrainGuide {
       // "No GPS" only when there's no good fix: one that's good but off the line isn't underground.
       estimating = !s && now - this.lastGood > LOST_MS;
     }
-    const off = this.offFor(now, wayOff);
+    const fast = this.onTrack && (good?.speed ?? 0) >= BOARD_MPS && s != null && s.off > OFF_FAST_M
+      && (!this.approaching || snap(this.approachTrack, good.lngLat).off > OFF_FAST_M);
+    const off = this.offFor(now, wayOff || fast, fast);
     const sinceBoard = (now - this.boardedAt) / 1000;
     if (!this.approaching && !this.alerted && shouldAlert({ alongs: this.alongs, times: this.times, along: this.along, sinceBoard })) {
       this.alerted = true;

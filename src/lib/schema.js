@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS toll_plazas (key TEXT PRIMARY KEY, info TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS closure_blocks (report_id INTEGER PRIMARY KEY, lat REAL NOT NULL, lng REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS presence (device TEXT PRIMARY KEY, user_id INTEGER, admitted INTEGER NOT NULL, last_seen INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS presence_seen ON presence (last_seen);
-CREATE TABLE IF NOT EXISTS usage_daily (day TEXT PRIMARY KEY, peak_active INTEGER NOT NULL DEFAULT 0, peak_at INTEGER, signups INTEGER NOT NULL DEFAULT 0, routes INTEGER NOT NULL DEFAULT 0, searches INTEGER NOT NULL DEFAULT 0, tomtom INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS usage_daily (day TEXT PRIMARY KEY, peak_active INTEGER NOT NULL DEFAULT 0, peak_at INTEGER, signups INTEGER NOT NULL DEFAULT 0, routes INTEGER NOT NULL DEFAULT 0, searches INTEGER NOT NULL DEFAULT 0, tomtom INTEGER NOT NULL DEFAULT 0, addresses INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS usage_devices (day TEXT NOT NULL, device TEXT NOT NULL, account INTEGER NOT NULL DEFAULT 0, turned_away INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (day, device));
 CREATE TABLE IF NOT EXISTS feedback (id INTEGER PRIMARY KEY, user_id INTEGER, device TEXT, message TEXT NOT NULL, app TEXT, ua TEXT, created_at INTEGER NOT NULL, closed_at INTEGER);
 CREATE INDEX IF NOT EXISTS feedback_device ON feedback (device, created_at);
@@ -63,7 +63,14 @@ CREATE TABLE IF NOT EXISTS driver_places (
   id INTEGER PRIMARY KEY AUTOINCREMENT, suggestion_id INTEGER, name TEXT NOT NULL, address TEXT NOT NULL DEFAULT '', category TEXT NOT NULL DEFAULT '',
   lat REAL, lng REAL, hides_name TEXT, hides_lat REAL, hides_lng REAL, user_id INTEGER, updated_at INTEGER NOT NULL, removed INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS driver_places_updated ON driver_places (updated_at)
+CREATE INDEX IF NOT EXISTS driver_places_updated ON driver_places (updated_at);
+CREATE TABLE IF NOT EXISTS train_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, line TEXT NOT NULL, station TEXT NOT NULL DEFAULT '', type TEXT NOT NULL,
+  created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, still INTEGER NOT NULL DEFAULT 0, gone INTEGER NOT NULL DEFAULT 0, removed INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS train_reports_live ON train_reports (line, expires_at);
+CREATE INDEX IF NOT EXISTS train_reports_user ON train_reports (user_id, created_at);
+CREATE TABLE IF NOT EXISTS train_report_votes (report_id INTEGER NOT NULL, user_id INTEGER NOT NULL, vote TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (report_id, user_id))
 `;
 
 let ready = null;

@@ -42,6 +42,31 @@ export const REPORT_TYPES = {
   },
 };
 
+// What riders can report about a train line, from a train trip (src/lib/train-reports.js). Kept to the line and a
+// station, not a spot on the map: riders see them on that line's rides and when a trip by train uses it, and drivers
+// never do. `life` in minutes, as above.
+export const TRAIN_REPORT_TYPES = {
+  delay: {
+    label: 'Delays', short: 'DELAYS', color: '#e67700', life: 45,
+    icon: '<circle cx="12" cy="12" r="8.5" fill="none" stroke="#fff" stroke-width="2"/><path d="M12 7.5V12l3 2" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>',
+  },
+  stopped: {
+    label: 'Train stopped', short: 'STOPPED', color: '#e5484d', life: 60,
+    icon: '<rect x="6" y="3" width="12" height="14" rx="3.5" fill="none" stroke="#fff" stroke-width="2"/><path d="M10.2 7.5v5M13.8 7.5v5M8.5 21l2-3.5M15.5 21l-2-3.5" stroke="#fff" stroke-width="2" stroke-linecap="round"/>',
+  },
+  crowded: {
+    label: 'Very crowded', short: 'CROWDED', color: '#8e4ec6', life: 30,
+    icon: '<circle cx="8" cy="7" r="2.5" fill="#fff"/><circle cx="16" cy="7" r="2.5" fill="#fff"/><path d="M3.5 19v-3a4.5 4.5 0 0 1 9 0v3M11.5 19v-3a4.5 4.5 0 0 1 9 0v3" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/>',
+  },
+  closed: {
+    label: 'Station closed', short: 'CLOSED', color: '#11181c', life: 3 * 60,
+    icon: '<circle cx="12" cy="12" r="8.5" fill="none" stroke="#fff" stroke-width="2"/><path d="M7.5 12h9" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/>',
+  },
+};
+export const trainReportIcon = (type, size = 24) =>
+  `<svg viewBox="0 0 24 24" width="${size}" height="${size}" aria-hidden="true">${TRAIN_REPORT_TYPES[type]?.icon ?? ''}</svg>`;
+export const TRAIN_REPORT_POINTS = 3;
+
 export function isValidReport(type, subtype) {
   const t = REPORT_TYPES[type];
   return Boolean(t && (subtype == null || subtype === '' || Object.hasOwn(t.subtypes, subtype)));

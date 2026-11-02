@@ -4,7 +4,7 @@
 // Keeps this device's spot in A2B (see src/lib/presence.js) by checking in every couple of minutes, and
 // covers the app with a waiting screen when it's full, letting the driver in as soon as a spot opens.
 
-import { $, api, state, esc } from './core.js';
+import { $, api, state, esc, presenceHook } from './core.js';
 
 const CHECKIN_MS = 2 * 60_000;
 let timer = null;
@@ -15,9 +15,15 @@ export function startPresence({ driving, signUp }) {
   $('gate-signup').onclick = signUp;
   $('gate-retry').onclick = () => checkIn(true);
   document.addEventListener('visibilitychange', () => !document.hidden && checkIn());
-  addEventListener('a2b:full', () => checkIn()); // a search or route was turned away
+  // A search or route was turned away: check in (showing the waiting screen if it's really full) and let it retry.
+  presenceHook.recheck = async () => {
+    await checkIn();
+    return Boolean(state.presence?.admitted);
+  };
   checkIn();
 }
+
+let pending = null; // one check-in at a time, however many requests were turned away together
 
 export async function checkIn(byHand = false) {
   clearTimeout(timer);
@@ -26,7 +32,7 @@ export async function checkIn(byHand = false) {
   if (document.hidden && !isDriving()) return;
   if (byHand) $('gate-retry').disabled = true;
   try {
-    state.presence = await api('/api/presence', { method: 'POST' });
+    state.presence = await (pending ??= api('/api/presence', { method: 'POST' }).finally(() => (pending = null)));
     renderGate(state.presence);
   } catch {
     // Offline or the server is busy: leave the app as it is and try again next time.

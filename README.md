@@ -115,6 +115,34 @@ The database tables are created on the first request (or run `npm run db:migrate
 
 To use your own domain, add it under *Workers & Pages → a2b → Settings → Domains & Routes*.
 
+**Updating MapLibre and three.js.** The map library ([MapLibre GL JS](https://maplibre.org)) and the 3D vehicle
+library ([three.js](https://threejs.org)) are served from `public/vendor/<name>-<version>/`, not from a CDN, so a
+network that blocks or stalls the CDN can't stop the app from opening. They don't update by themselves. To move to
+a new version:
+
+1. Download the new files from npm, which checks them against the registry's checksums:
+
+   ```bash
+   npm pack maplibre-gl@<version>    # and/or three@<version>
+   tar -xzf maplibre-gl-<version>.tgz
+   ```
+
+2. Copy them into a new folder named `<name>-<version>` (not `<name>@<version>`: Cloudflare redirects `@` to `%40`,
+   an extra round trip for every file), with the licence, and delete the old folder:
+   - MapLibre: `package/dist/maplibre-gl.js`, `package/dist/maplibre-gl.css` and `package/LICENSE.txt` into
+     `public/vendor/maplibre-gl-<version>/`
+   - three.js: `package/build/three.module.js` and `package/LICENSE` (as `LICENSE.txt`) into
+     `public/vendor/three-<version>/`
+3. Change the version in every place that names it:
+   - MapLibre: the `<link>` and `<script>` in `public/index.html`, and `MAPLIBRE` in `public/sw.js`
+   - three.js: `THREE_URL` in `public/vehicle3d.js`, and `VENDOR` in `public/sw.js`
+4. Bump `CACHE` in `public/sw.js` (e.g. `a2b-v41` → `a2b-v42`), so phones pick up the new files and drop the old ones.
+5. Check the release notes for breaking changes, run `npm test`, try the map, a route and a drive in a browser,
+   then deploy as usual.
+
+Never point the app back at a CDN URL: the Content-Security-Policy in `public/_headers` only allows the app's own
+scripts, so a CDN script is blocked.
+
 </details>
 
 <details>
@@ -128,9 +156,10 @@ Everything A2B uses is free and needs no key:
 | Routing, speed limits, toll booths | [Valhalla public server](https://valhalla1.openstreetmap.de) (`ROUTING_URL`) | Community-run, fair use. |
 | Search | [Photon](https://photon.komoot.io) (`GEOCODER_URL`) | Community-run, fair use. |
 | Live traffic (optional) | [TomTom Routing API](https://developer.tomtom.com) (`TOMTOM_KEY` secret) | Times each route with today's traffic; free up to a monthly quota. Without a key, routes use typical speeds. Answers aren't stored. |
+| House addresses (optional) | [TomTom Geocoding API](https://developer.tomtom.com) (same `TOMTOM_KEY`, with the Search API enabled) | Asked only for a search that looks like an address ("129, BK 5/6, Puchong") that Photon and the shop files don't have, at most `ADDRESS_LOOKUPS_PER_DAY` (600) a day. Answers aren't stored. |
 | Train timetables (LRT, MRT, Monorail, BRT, KTM Komuter) | [data.gov.my GTFS](https://developer.data.gov.my/realtime-api/gtfs-static) (Prasarana, KTMB) | Built with `npm run transit` into `src/lib/transit-data.json`, kept in git. Each feed runs to an end date the build prints; rebuild before then. Walks to and from stations use the routing server's walking routes. |
 | Toll plaza and car park details | [OpenStreetMap API](https://wiki.openstreetmap.org/wiki/API) | Looked up once and cached. |
-| Shops and places | [Overture Maps](https://overturemaps.org) | Built into small files the phone searches (`npm run places`). |
+| Shops and places | [Overture Maps](https://overturemaps.org) | Built into small files the phone searches (`npm run places`), by name and by street. |
 | Places drivers added or fixed | A2B drivers, approved by a tester | Kept in the database; phones download what changed since they last asked. |
 | Roads under construction | [Overture Maps](https://overturemaps.org) (OpenStreetMap roads) | Built with `npm run construction`, kept in git. |
 | Fixed speed cameras (AES, AWAS) | OpenStreetMap, found through Photon | Built with `npm run cameras` into `public/cameras.json`, kept in git. |
@@ -182,6 +211,7 @@ public/                 the web app
   geo.js, icons.js      maths, formatting, turn arrows and pins
   report-types.js       report types, lifetimes and points (shared with the server)
   sw.js, manifest       installable app, offline shell
+  vendor/               MapLibre GL JS and three.js, served from our own domain (see "Updating MapLibre and three.js")
 src/
   worker.js             the API
   lib/providers.js      search (Photon) and routing (Valhalla), speed limits, reports along a route
@@ -264,6 +294,8 @@ over the internet included, you must offer them its source code under the same l
 
 Map data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL). Places and roads under
 construction from the [Overture Maps Foundation](https://overturemaps.org) (see `public/places/NOTICE.txt` once built).
+Map drawn with [MapLibre GL JS](https://maplibre.org) (BSD 3-Clause) and the 3D vehicle with [three.js](https://threejs.org)
+(MIT); their licences are in `public/vendor/`.
 Map tiles by [OpenFreeMap](https://openfreemap.org), routing by [Valhalla](https://github.com/valhalla/valhalla),
-search by [Photon](https://github.com/komoot/photon), live traffic by [TomTom](https://www.tomtom.com). Train
+search by [Photon](https://github.com/komoot/photon), live traffic and house addresses by [TomTom](https://www.tomtom.com). Train
 timetables from Prasarana and KTMB through [data.gov.my](https://data.gov.my) (CC BY 4.0).

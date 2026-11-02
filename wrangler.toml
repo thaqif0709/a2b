@@ -27,3 +27,5 @@ GEOCODER_URL = "https://photon.komoot.io"
 # How many devices can use the app at once, and how many of those spots guests can take (accounts get the rest).
 MAX_ACTIVE = "50"
 MAX_GUESTS = "30"
+# Address searches TomTom may answer a day (src/lib/addresses.js); its free Geocoding allowance is 20,000 a month.
+ADDRESS_LOOKUPS_PER_DAY = "600"

@@ -9,6 +9,7 @@ import { ACTIVE_MS } from './presence.js';
 
 export const USAGE_DAYS = 30;
 const COUNTERS = new Set(['signups', 'routes', 'searches', 'tomtom']); // tomtom: live-traffic lookups (its free quota)
+const CAPPED = new Set(['addresses']); // TomTom address lookups (src/lib/addresses.js)
 
 export const dayOf = (now = Date.now()) => new Date(now + 8 * 3600_000).toISOString().slice(0, 10);
 
@@ -21,6 +22,17 @@ export function usageRepo(db) {
         .prepare(`INSERT INTO usage_daily (day, ${field}) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET ${field} = ${field} + 1`)
         .bind(dayOf(now))
         .run();
+    },
+
+    // One more of today's `field`, unless `max` are used up already: true when it was counted. One statement, so two
+    // requests at once can't both take the last one.
+    async take(field, max, now = Date.now()) {
+      if (!CAPPED.has(field) || !(max >= 1)) return false;
+      const res = await db
+        .prepare(`INSERT INTO usage_daily (day, ${field}) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET ${field} = ${field} + 1 WHERE ${field} < ?`)
+        .bind(dayOf(now), max)
+        .run();
+      return res.meta.changes > 0;
     },
 
     // After a check-in: the device was here today (and whether it was turned away), and maybe a new busiest moment.
@@ -54,14 +66,14 @@ export function usageRepo(db) {
           .bind(since)
           .all(),
         db
-          .prepare('SELECT (SELECT COUNT(*) FROM users) AS accounts, (SELECT COUNT(*) FROM reports) AS reports, (SELECT COALESCE(SUM(tomtom), 0) FROM usage_daily WHERE day >= ?) AS tomtom_month')
-          .bind(`${dayOf(now).slice(0, 8)}01`)
+          .prepare('SELECT (SELECT COUNT(*) FROM users) AS accounts, (SELECT COUNT(*) FROM reports) AS reports, (SELECT COALESCE(SUM(tomtom), 0) FROM usage_daily WHERE day >= ?) AS tomtom_month, (SELECT COALESCE(SUM(addresses), 0) FROM usage_daily WHERE day >= ?) AS addresses_month')
+          .bind(`${dayOf(now).slice(0, 8)}01`, `${dayOf(now).slice(0, 8)}01`)
           .first(),
       ]);
       const byDay = new Map();
       for (let i = 13; i >= 0; i--) {
         const day = dayOf(now - i * 86400_000);
-        byDay.set(day, { day, devices: 0, accounts: 0, turned_away: 0, peak_active: 0, peak_at: null, signups: 0, routes: 0, searches: 0, tomtom: 0 });
+        byDay.set(day, { day, devices: 0, accounts: 0, turned_away: 0, peak_active: 0, peak_at: null, signups: 0, routes: 0, searches: 0, tomtom: 0, addresses: 0 });
       }
       for (const r of days.results) Object.assign(byDay.get(r.day) ?? {}, r);
       for (const r of devices.results) Object.assign(byDay.get(r.day) ?? {}, r);

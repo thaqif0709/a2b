@@ -8,6 +8,7 @@
 
 import { distance } from './geo.js';
 import { words, matchesWordStarts } from './text.js';
+import { addressQuery, streetIndexWords, onStreet, isExact } from './address.js';
 
 const BASE = '/places';
 const MAX_RESULTS = 8;
@@ -75,14 +76,19 @@ const driverRow = (r) => [r.name, r.lng, r.lat, r.address ?? '', r.category];
 export async function searchNearby(q, near) {
   const qWords = words(q).filter((w) => w.length >= 2 || /\d/.test(w));
   if (!qWords.length || !near) return [];
+  // An address ("129, BK 5/6, Puchong"): the places on that street, looked up by its street's words, the house
+  // searched for first (see address.js). Any other search: places with every word of it.
+  const addr = addressQuery(q)?.street ? addressQuery(q) : null;
+  const fits = (name, address) => (addr ? onStreet({ name, address }, addr) : matchesWordStarts(`${name} ${address}`, q));
+  const inName = (name, address) => (addr ? isExact({ name, address }, addr) : matchesWordStarts(name, q));
   const found = [];
   for (const r of driverPlaces) {
-    if (!matchesWordStarts(`${r.name} ${r.address ?? ''}`, q)) continue;
+    if (!fits(r.name, r.address ?? '')) continue;
     const km = distance(near, [r.lng, r.lat]) / 1000;
-    if (km <= RADIUS_KM) found.push({ name: r.name, address: r.address ?? '', lat: r.lat, lng: r.lng, category: r.category || 'place', km, inName: matchesWordStarts(r.name, q), source: 'driver' });
+    if (km <= RADIUS_KM) found.push({ name: r.name, address: r.address ?? '', lat: r.lat, lng: r.lng, category: r.category || 'place', km, inName: inName(r.name, r.address ?? ''), source: 'driver' });
   }
-  // Places matching on their name alone first, then nearest.
-  const best = () => found.sort((a, b) => b.inName - a.inName || a.km - b.km).slice(0, MAX_RESULTS);
+  // The venue the query names first (see markVenues), then places matching on their name alone, then nearest.
+  const best = () => found.sort((a, b) => (b.mentions ?? 0) - (a.mentions ?? 0) || b.inName - a.inName || a.km - b.km).slice(0, MAX_RESULTS);
   const idx = await loadIndex();
   if (!idx) return best();
   const v = encodeURIComponent(idx.release ?? '');
@@ -93,7 +99,7 @@ export async function searchNearby(q, near) {
   areas.forEach((area, i) => {
     const files = lists[i];
     if (!files) return;
-    for (const w of qWords) for (const p of filesForWord(w, files)) urls.add(`${BASE}/${area}/${p}.json?v=${v}`);
+    for (const w of addr ? streetIndexWords(addr.street) : qWords) for (const p of filesForWord(w, files)) urls.add(`${BASE}/${area}/${p}.json?v=${v}`);
   });
   const shards = await Promise.all([...urls].map((u) => getJson(u)));
 
@@ -103,14 +109,31 @@ export async function searchNearby(q, near) {
       const key = `${name}|${lng}|${lat}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      if (!matchesWordStarts(`${name} ${address}`, q)) continue;
+      if (!fits(name, address)) continue;
       const km = distance(near, [lng, lat]) / 1000;
       if (km > RADIUS_KM) continue;
-      const p = { name, address, lat, lng, category: category || 'place', km, inName: matchesWordStarts(name, q), source: 'overture' };
+      const p = { name, address, lat, lng, category: category || 'place', km, inName: inName(name, address), source: 'overture' };
       if (!isHidden(p)) found.push(p);
     }
   }
+  markVenues(found);
   return best();
+}
+
+// A mall (or stadium) whose name the shops around it carry: "trx" finds 70 places, most of them "... The
+// Exchange TRX", and the one they're all in should come first, not whichever shop is nearest. Overture has copies
+// of big places pinned in the wrong spot too ("The Exchange TRX" 4 km off), so only shops within VENUE_M count.
+const VENUES = new Set(['shopping_mall', 'department_store', 'stadium_arena']);
+const VENUE_M = 1000;
+const MIN_MENTIONS = 3;
+function markVenues(found) {
+  const text = (p) => ` ${words(`${p.name} ${p.address}`).join(' ')} `;
+  for (const v of found) {
+    if (!VENUES.has(v.category) || !v.inName) continue;
+    const name = ` ${words(v.name).join(' ')} `;
+    const mentions = found.filter((p) => p !== v && Math.abs(p.lat - v.lat) < 0.01 && text(p).includes(name) && distance([v.lng, v.lat], [p.lng, p.lat]) <= VENUE_M).length;
+    if (mentions >= MIN_MENTIONS) Object.assign(v, { landmark: 'place', mentions });
+  }
 }
 
 // Puts nearby Overture places together with the other search's results, dropping duplicates (same name
@@ -129,8 +152,11 @@ export function mergeResults(server, local, q, near) {
   server = server.filter((p) => !isHidden(p)); // a place a driver's fix moved or took out
   const dup = (a, b) => words(a.name).join(' ') === words(b.name).join(' ') && distance([a.lng, a.lat], [b.lng, b.lat]) < 150;
   const first = words(q)[0] ?? '';
-  // A sight or venue before a town of that name, and a town before a station named after it.
-  const candidates = server.filter((p) => p.landmark && matchesWordStarts(p.name, first));
+  // A sight or venue before a town of that name, and a town before a station named after it. Among sights, a
+  // mall the shops nearby name (markVenues) beats a park that merely shares a word ("trx"), the nearest mall first.
+  const km = (p) => (near ? distance(near, [p.lng, p.lat]) / 1000 : 0);
+  const venues = local.filter((p) => p.mentions).sort((a, b) => km(a) - km(b));
+  const candidates = [...venues, ...server].filter((p) => p.landmark && matchesWordStarts(p.name, first));
   const landmark = ['place', 'area', 'station'].map((k) => candidates.find((p) => p.landmark === k)).find(Boolean);
   const named = landmark ? words(landmark.name).filter((w) => w.length >= 3) : [];
   const reach = landmark?.landmark === 'area' ? 3000 : 1000; // a town is a few km across
@@ -140,14 +166,18 @@ export function mergeResults(server, local, q, near) {
   const misplaced = (l) =>
     (named.length > 0 && named.every((w) => words(l.name).includes(w)) && !within(l, [landmark], reach)) ||
     (anchors.length > 0 && matchesWordStarts(l.name, q) && !within(l, anchors, Math.max(reach, 1500)));
-  const all = [...server, ...local.filter((l) => !server.some((s) => dup(s, l)) && !misplaced(l))];
+  // The landmark once: OpenStreetMap and Overture pin a big place a few hundred metres apart.
+  const copy = (p) => p !== landmark && words(p.name).join(' ') === words(landmark.name).join(' ') && within(p, [landmark], reach);
+  // A marked mall wins over OpenStreetMap's copy of it, so it keeps its place near the top.
+  const kept = [...server.filter((s) => !venues.some((v) => dup(s, v))), ...local.filter((l) => venues.includes(l) || (!server.some((s) => dup(s, l)) && !misplaced(l)))];
+  const all = landmark ? kept.filter((p) => !copy(p)) : kept;
   const tier = (p) => {
     if (p === landmark) return -1;
+    if (venues.includes(p) && matchesWordStarts(p.name, q)) return -0.5; // the other malls of that name ("pavilion")
     const full = matchesWordStarts(`${p.name} ${p.address ?? ''}`, q);
     if (full && matchesWordStarts(p.name, first)) return 0;
     return full ? 1 : 2;
   };
-  const km = (p) => (near ? distance(near, [p.lng, p.lat]) / 1000 : 0);
   return all
     .map((p) => ({ p, t: tier(p), d: km(p) }))
     .sort((a, b) => a.t - b.t || a.d - b.d)
@@ -168,6 +198,20 @@ export const TYPES = {
   ev: { label: 'EV chargers', words: ['ev charg(?:ers?|ing(?: stations?)?)', 'electric (?:car |vehicle )?charg(?:ers?|ing)', 'charging stations?', 'chargers?', 'pengecas(?: ev)?', 'stesen (?:cas|pengecas)', 'cas ev', 'ev'] },
   convenience: { label: 'Convenience stores', words: ['convenience stores?', 'convenience shops?', 'kedai serbaneka', 'kedai runcit', 'convenience', 'serbaneka', 'mini ?marts?'] },
 };
+
+// The kinds of place a search finds nearest first, as buttons under the search box (app.js). Each searches for words
+// a search already recognises: TYPES' label for those above, and "Parking", which the server answers with car parks
+// (src/lib/parking.js).
+export const SEARCH_CATEGORIES = [
+  { type: 'fuel', label: 'Petrol' },
+  { type: 'parking', label: 'Parking' },
+  { type: 'ev', label: 'EV charging' },
+  { type: 'hospital', label: 'Hospital' },
+  { type: 'clinic', label: 'Clinic' },
+  { type: 'police', label: 'Police' },
+  { type: 'convenience', label: 'Convenience' },
+].map((c) => ({ ...c, query: TYPES[c.type]?.label ?? 'Parking' }));
+
 const TYPE_RES = Object.entries(TYPES).map(([type, t]) => [type, new RegExp(`\\b(?:${t.words.join('|')})\\b`, 'gi')]);
 const FILLER = /\b(?:near(?:by|est)?|closest|at|in|around|by|the|a|an|me|my|here|dekat|berdekatan|terdekat|di|kat|sini|yang)\b/gi;
 const TYPE_RADIUS_KM = 25;

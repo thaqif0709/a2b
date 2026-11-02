@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  TrainGuide, trackOf, snap, pointAt, stationAlongs, alongAtTime, timeAtAlong, nextStop, shouldAlert, alighted, boarded, markerFor, alreadyOn, DWELL_S, OFF_MS, HERE_TRUST_MS,
+  TrainGuide, trackOf, snap, pointAt, stationAlongs, alongAtTime, timeAtAlong, nextStop, shouldAlert, alighted, boarded, markerFor, alreadyOn, DWELL_S, OFF_MS, OFF_FAST_MS, HERE_TRUST_MS,
 } from '../public/train-guide.js';
 import { planTransit, feeds } from '../src/lib/transit.js';
 import { canReportFrom } from '../public/report-types.js';
@@ -185,6 +185,40 @@ test('off the trip: on a walk heading away, or off the line on a ride', () => {
   assert.ok(!r.update({ now: T0 + 400_000, fix: null }).view.off);
 });
 
+test('on another line: off within moments at train speed, where the track is known', () => {
+  // Drawn along its track (points between the stations), as the LRT and MRT lines are.
+  const TRACK = [];
+  for (let m = 0; m <= 3000; m += 250) TRACK.push([101.7, lat(m)]);
+  const shaped = () => ({ legs: [ride({ coords: TRACK }), walk(ride().to, END, 100)] });
+  const east = (m) => ({ lngLat: [101.7 + 250 / 111_195, lat(m)], speed: 12, accuracy: 10 }); // 250 m off the line
+
+  const r = new TrainGuide(shaped(), { now: T0 });
+  r.update({ now: T0 + 300_000, fix: fix(100, { speed: 12 }) }); // on board
+  r.update({ now: T0 + 310_000, fix: east(300) });
+  assert.ok(!r.update({ now: T0 + 312_000, fix: east(330) }).view.off, 'not on the first fix');
+  assert.ok(r.update({ now: T0 + 310_000 + OFF_FAST_MS, fix: east(360) }).view.off, `off after ${OFF_FAST_MS / 1000} s, not ${OFF_MS / 1000}`);
+
+  // Walking pace that far off is a wobble or a platform walk, not another train: the usual 400 m and 15 s.
+  const w = new TrainGuide(shaped(), { now: T0 });
+  w.update({ now: T0 + 300_000, fix: fix(100, { speed: 12 }) });
+  for (let t = 310_000; t <= 330_000; t += 5000) assert.ok(!w.update({ now: T0 + t, fix: { ...east(400), speed: 1.2 } }).view.off);
+
+  // A line drawn station to station (KTM's feed has no tracks) can be that far off the train on a curve: no hurry.
+  const k = new TrainGuide({ legs: [ride(), walk(ride().to, END, 100)] }, { now: T0 });
+  k.update({ now: T0 + 300_000, fix: fix(100, { speed: 12 }) });
+  k.update({ now: T0 + 310_000, fix: east(300) });
+  assert.ok(!k.update({ now: T0 + 310_000 + OFF_FAST_MS, fix: east(360) }).view.off);
+
+  // Waiting at A, then on a train going east, away from this line: off just as soon.
+  const g = new TrainGuide(shaped(), { now: T0 });
+  g.update({ now: T0, fix: fix(0, { speed: 0 }) });
+  const away = (t, m) => g.update({ now: T0 + t, fix: { lngLat: [101.7 + m / 111_195, lat(0)], speed: 12, accuracy: 10 } }).view;
+  away(10_000, 250);
+  const v = away(10_000 + OFF_FAST_MS, 310);
+  assert.equal(v.kind, 'wait');
+  assert.ok(v.off, 'boarded the wrong train');
+});
+
 test('leaving the platform before the train comes: off the trip, the marker with you', () => {
   const g = new TrainGuide({ legs: [ride(), walk(ride().to, END, 100)] }, { now: T0 });
   const out = (t) => g.update({ now: T0 + t, fix: { lngLat: [101.706, lat(0)], speed: 1.2, accuracy: 10 } }).view;
@@ -286,12 +320,15 @@ test('train legs from the planner carry their stations with times', () => {
   assert.ok(Math.abs(leg.stations.at(-1)[3] - leg.duration) <= 1, 'the last is the ride');
 });
 
-test('no road reports from a train trip: no button on its screen, and the menu won\'t open', async () => {
+test('no road reports from a train trip: only its own report button, about the line, and the road menu won\'t open', async () => {
   assert.equal(canReportFrom('ride'), false, 'a report from a train would sit on the rail line');
   assert.equal(canReportFrom('drive'), true);
   assert.equal(canReportFrom('browse'), true);
   const html = await readFile(new URL('../public/index.html', import.meta.url), 'utf8');
   const ride = html.slice(html.indexOf('id="ride-ui"'), html.indexOf('<!-- ===== Arrived'));
   assert.ok(ride.length > 100, 'found the ride screen');
-  assert.doesNotMatch(ride, /report-fab|btn-report/, 'no report button on it');
+  assert.doesNotMatch(ride, /report-fab/, 'no road report button on it');
+  assert.deepEqual([...ride.matchAll(/id="(btn-report[\w-]*)"/g)].map((m) => m[1]), ['btn-report-ride'], 'only the train report button');
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /\$\('btn-report-ride'\)\.onclick = openTrainReport;/, 'which reports on the line (src/lib/train-reports.js), not the road');
 });

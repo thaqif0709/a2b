@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="/vendor/maplibre-gl-4.7.1/maplibre-gl.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -57,6 +57,7 @@
     </header>
     <div id="search-target" class="search-target hidden"></div>
     <div id="search-home">
+      <div id="search-cats" class="cats" role="group" aria-label="Find the nearest"></div>
       <div class="quick">
         <button class="quick-tile" id="tile-home"><span class="q-ic home"></span><span><b>Home</b><small id="home-sub">Set location</small></span></button>
         <button class="quick-tile" id="tile-work"><span class="q-ic work"></span><span><b>Work</b><small id="work-sub">Set location</small></span></button>
@@ -78,7 +79,7 @@
       <div class="dest-text">
         <h2 id="dest-name"></h2>
         <p id="dest-addr"></p>
-        <button id="btn-wrong-place" class="wrong-place hidden">Wrong spot or closed?</button>
+        <button id="btn-wrong-place" class="wrong-place hidden"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 21V4m0 0h11l-2 4 2 4H5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>Wrong or closed</button>
         <p id="peek-summary" class="peek-summary"></p>
       </div>
       <button id="btn-save-place" class="icon-btn" aria-label="Save place"><svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.8-4.5 4.2 1.1 6L12 16.7l-5.4 2.9 1.1-6-4.5-4.2 6.1-.8Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></button>
@@ -179,11 +180,13 @@
           </div>
         </div>
       </div>
-      <div id="ride-est" class="toll-chip ride-est hidden" role="status"><b>NO GPS</b><span>Estimating · underground</span></div>
+      <div id="ride-est" class="toll-chip ride-est hidden" role="status"><b>NO GPS</b><span>Estimating · Currently Underground</span></div>
       <div id="ride-off" class="offroute hidden" role="status"><span class="spinner" aria-hidden="true"></span>Recalculating…</div>
+      <button id="ride-report-chip" class="toll-chip train-report-chip hidden" aria-label="Reported on this line: still happening?"></button>
     </div>
     <div class="map-tools drive">
       <button id="btn-sound-ride" class="round small" aria-label="Sound"></button>
+      <button id="btn-report-ride" class="round small report-round" aria-label="Report a problem on this line"><svg viewBox="0 0 24 24"><path d="M12 3.5 2.8 19.5h18.4Z" fill="none" stroke="#fff" stroke-width="2.4" stroke-linejoin="round"/><path d="M12 9.5v4.5" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/><circle cx="12" cy="17" r="1.4" fill="#fff"/></svg></button>
       <button id="btn-recenter-ride" class="round hidden" aria-label="Recenter"><svg viewBox="0 0 24 24"><path d="M12 2.5 19.5 20 12 16l-7.5 4Z" fill="currentColor"/></svg><span>Recenter</span></button>
     </div>
     <section id="ride-sheet" class="sheet ride-sheet">
@@ -193,9 +196,8 @@
       <ol id="ride-stops" class="ride-stops"></ol>
       <div class="sheet-actions">
         <button id="btn-ride-stop" class="btn">Stop</button>
-        <button id="btn-ride-here" class="btn primary" aria-describedby="ride-here-hint"></button>
+        <button id="btn-ride-here" class="btn primary"></button>
       </div>
-      <p id="ride-here-hint" class="ride-here-hint">GPS lost? Tap where you are, or a station above.</p>
     </section>
   </div>
 
@@ -208,11 +210,27 @@
     </div>
   </section>
 
+  <!-- ===== Report a problem on the train line you're on, and say whether one reported is still happening ===== -->
+  <section id="train-report" class="sheet hidden" aria-label="Report a problem on this line">
+    <div class="dest-head">
+      <div class="dest-text"><h2 id="train-report-title">Report</h2><p id="train-report-where" class="hint"></p></div>
+      <button class="icon-btn" data-close="train-report" aria-label="Close"><svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+    </div>
+    <div id="train-report-grid" class="report-grid train-report-grid"></div>
+  </section>
+  <section id="train-report-vote" class="sheet hidden" aria-label="Still happening?">
+    <div class="dest-head"><div class="dest-text"><h2 id="train-vote-title"></h2><p id="train-vote-sub" class="hint"></p></div></div>
+    <div class="sheet-actions">
+      <button id="btn-train-gone" class="btn ghost">It’s cleared</button>
+      <button id="btn-train-still" class="btn primary">Still happening</button>
+    </div>
+  </section>
+
   <!-- ===== "I'm here" at a station tapped in the ride's list: asked first ===== -->
   <section id="here-confirm" class="sheet hidden" aria-label="Say where you are">
     <div class="dest-head"><div class="dest-text"><h2 id="here-title"></h2><p id="here-sub" class="hint"></p></div></div>
     <div class="sheet-actions">
-      <button id="btn-here-no" class="btn ghost">Not now</button>
+      <button id="btn-here-no" class="btn ghost">Cancel</button>
       <button id="btn-here-yes" class="btn primary">I’m here</button>
     </div>
   </section>
@@ -350,7 +368,7 @@
   <div id="toast" class="toast hidden" role="status"></div>
   <div id="ctx" class="ctx hidden"></div>
 
-  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="/vendor/maplibre-gl-4.7.1/maplibre-gl.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

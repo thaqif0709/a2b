@@ -7,7 +7,7 @@
 // working. Testers review suggestions on the same screen (Settings › Testing › Feedback › Places). Approved places
 // come back to every phone through GET /api/driver-places and are searched with its own (public/places.js).
 
-import { $, state, api, local, toast, esc, armBack } from './core.js';
+import { $, state, api, local, toast, esc, armBack, sideColumnEnd } from './core.js';
 import { setDriverPlaces } from './places.js';
 import { DEST_PIN } from './icons.js';
 
@@ -22,6 +22,7 @@ const kindLabel = (k) => KINDS.find(([v]) => v === (k ?? ''))?.[1] ?? k;
 let ctx = null; // { map, openAuth, setBrowseHidden }
 let open = null; // the suggestion being made or reviewed
 let wasMarker = null;
+let atMarker = null; // while reviewing: the spot the driver suggested
 let whereSeq = 0;
 
 export function initSuggest(callbacks) {
@@ -93,11 +94,12 @@ function askWhatsWrong(place, onClose) {
 
 // The suggestion screen. With review set, a tester's: who sent it, and Approve or Reject.
 function start(s, review = null) {
-  open = { ...s, review, picking: s.kind !== 'gone' };
+  // A tester reviews the driver's spot as it is: no centre pin to move, just the driver's pin on the map.
+  open = { ...s, review, picking: !review && s.kind !== 'gone' };
   const title = review
     ? { add: 'Add a place?', move: 'Move this place?', gone: 'Take this place out?' }[s.kind]
     : { add: 'Add a missing place', move: 'Move the pin', gone: `${s.name} isn't here any more` }[s.kind];
-  const sub = s.kind === 'gone' ? esc(s.was?.address || '') : 'Move the map so the pin is on the entrance';
+  const sub = s.kind === 'gone' ? esc(s.was?.address || '') : review ? esc(s.address || '') : 'Move the map so the pin is on the entrance';
   const by = review ? `<p class="hint suggest-by">From ${esc(review.by_name ?? 'a driver')}${review.by_email ? ` · ${esc(review.by_email)}` : ''}${review.note ? `<br>“${esc(review.note)}”` : ''}</p>` : '';
   show(esc(title), sub, `${by}
     ${s.kind !== 'add' ? '' : `<input id="suggest-name" class="field" maxlength="80" placeholder="Name of the place" value="${esc(s.name)}" autocomplete="off">
@@ -110,6 +112,7 @@ function start(s, review = null) {
     </div>`);
   $('suggest-pin').classList.toggle('hidden', !open.picking);
   placeWasMarker(s.kind === 'add' ? null : s.was);
+  if (review && s.kind !== 'gone') atMarker = pinAt(s.at, 'dest-pin');
   ctx.map.easeTo({ center: s.at, zoom: Math.max(ctx.map.getZoom(), 17), padding: padding() });
   $('suggest-body').onclick = (e) => {
     const k = e.target.closest('[data-kind]');
@@ -139,7 +142,7 @@ function show(title, sub, body) {
 // where the map's padding puts its centre.
 function padding() {
   const sheet = $('suggest').getBoundingClientRect();
-  return innerWidth >= 720 ? { left: sheet.right, top: 0, right: 0, bottom: 0 } : { bottom: sheet.height || innerHeight * 0.45, top: 0, left: 0, right: 0 };
+  return innerWidth >= 720 || sideColumnEnd() ? { left: sheet.right, top: 0, right: 0, bottom: 0 } : { bottom: sheet.height || innerHeight * 0.45, top: 0, left: 0, right: 0 };
 }
 function placePin() {
   const p = padding();
@@ -152,11 +155,15 @@ function placeWasMarker(place) {
   wasMarker?.remove();
   wasMarker = null;
   if (!place) return;
-  // Where the place is now: faded while the new pin is chosen, the usual red when it's the place being taken out.
+  // Where the place is now: faded beside the new spot of a move, the usual red otherwise (asking what's wrong, gone).
+  wasMarker = pinAt([place.lng, place.lat], `dest-pin${open?.kind === 'move' ? ' was-pin' : ''}`);
+}
+
+function pinAt(lngLat, className) {
   const el = document.createElement('div');
-  el.className = `dest-pin${open?.picking ? ' was-pin' : ''}`;
+  el.className = className;
   el.innerHTML = DEST_PIN;
-  wasMarker = new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat([place.lng, place.lat]).addTo(ctx.map);
+  return new maplibregl.Marker({ element: el, anchor: 'bottom' }).setLngLat(lngLat).addTo(ctx.map);
 }
 
 // "Near Jalan Tiang U8/94, Bukit Jelutong" for where the pin is, so the driver knows they've got the right street.
@@ -208,7 +215,8 @@ export function closeSuggest(cancelled = true) {
   const { onClose } = open;
   open = null;
   wasMarker?.remove();
-  wasMarker = null;
+  atMarker?.remove();
+  wasMarker = atMarker = null;
   $('suggest').classList.add('hidden');
   $('suggest-pin').classList.add('hidden');
   ctx.setBrowseHidden(false);
@@ -218,7 +226,8 @@ export function closeSuggest(cancelled = true) {
 
 // ---------- Reviewing (testers) ----------
 
-// One suggestion from GET /api/suggestions, on the map: the tester can fix the name and kind, and move the pin.
+// One suggestion from GET /api/suggestions, on the map at the driver's spot: the tester can fix the name and kind
+// of a new place. Approving keeps the driver's pin and address (the server's copy), wherever the map was moved to.
 export function openReview(s, onDone) {
   const was = s.was_name ? { name: s.was_name, address: s.was_address ?? '', lat: s.was_lat, lng: s.was_lng } : null;
   const at = s.kind === 'gone' ? [was.lng, was.lat] : [s.lng, s.lat];
@@ -229,7 +238,6 @@ async function decide(action) {
   const s = open;
   const body = { action };
   if (action === 'approve' && s.kind === 'add') Object.assign(body, { name: $('suggest-name').value.trim(), category: s.category });
-  if (action === 'approve' && s.kind !== 'gone') Object.assign(body, { address: s.address ?? '', ...spot() });
   const btns = [$('suggest-yes'), $('suggest-no')];
   btns.forEach((b) => (b.disabled = true));
   try {

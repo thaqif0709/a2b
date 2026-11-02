@@ -3,7 +3,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { planTransit, withRealWalks, serviceDay, runs, board, feeds } from '../src/lib/transit.js';
+import { planTransit, withRealWalks, serviceDay, runs, board, feeds, effort } from '../src/lib/transit.js';
 
 const KL_SENTRAL = [101.6865, 3.134];
 const KLCC = [101.7116, 3.1579];
@@ -120,8 +120,18 @@ test('walks become real walking routes, and the trip times follow', async () => 
   assert.equal(trains(plan.trips[0])[0].depart - plan.trips[0].depart, (firstWalk.duration + trains(plan.trips[0])[0].wait) * 1000, 'the train is caught after the longer walk');
 });
 
-test('trips are still soonest arrival first after the real walks', async () => {
-  const plan = planTransit(USJ, PAVILION, WEDNESDAY_9AM);
+test('a few minutes more on the train beats a long walk', () => {
+  // Rawang to USJ: the quickest way walks almost 2 km and changes four times; one change and half the walking is
+  // only minutes slower.
+  const plan = planTransit(RAWANG, USJ, WEDNESDAY_9AM);
+  const [best] = plan.trips;
+  assert.ok(best.walk < 1300, `walks ${best.walk} m`);
+  assert.equal(best.changes, 1);
+  assert.ok(plan.trips.every((t) => effort(t) >= effort(best)), 'shown first');
+});
+
+test('trips are still best first after the real walks', async () => {
+  const plan = planTransit(TRX, MID_VALLEY, WEDNESDAY_9AM);
   const first = plan.trips[0];
   const lastWalk = first.legs.at(-1);
   assert.ok(plan.trips.slice(1).some((t) => t.legs.at(-1).from.name !== lastWalk.from.name), 'another trip ends at a different station');
@@ -138,7 +148,7 @@ test('trips are still soonest arrival first after the real walks', async () => {
     globalThis.fetch = orig;
   }
   assert.notEqual(plan.trips[0], first);
-  assert.ok(plan.trips.every((t, i) => !i || t.arrive >= plan.trips[i - 1].arrive));
+  assert.ok(plan.trips.every((t, i) => !i || effort(t) >= effort(plan.trips[i - 1])));
 });
 
 test('says when a timetable is out of date, instead of "no trains"', () => {

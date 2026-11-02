@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="/vendor/maplibre-gl-4.7.1/maplibre-gl.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -57,13 +57,14 @@
     </header>
     <div id="search-target" class="search-target hidden"></div>
     <div id="search-home">
+      <div id="search-cats" class="cats" role="group" aria-label="Find the nearest"></div>
       <div class="quick">
         <button class="quick-tile" id="tile-home"><span class="q-ic home"></span><span><b>Home</b><small id="home-sub">Set location</small></span></button>
         <button class="quick-tile" id="tile-work"><span class="q-ic work"></span><span><b>Work</b><small id="work-sub">Set location</small></span></button>
       </div>
       <h3 class="list-head" id="saved-head">Saved places</h3>
       <ul id="saved-list" class="place-list"></ul>
-      <h3 class="list-head" id="recent-head">Recent</h3>
+      <h3 class="list-head" id="recent-head">Recent<button id="recent-clear" class="list-head-action" type="button">Clear</button></h3>
       <ul id="recent-list" class="place-list"></ul>
       <p id="search-empty-hint" class="hint">Search for an address, place or business. Long-press the map to drop a pin anywhere.</p>
     </div>
@@ -78,23 +79,30 @@
       <div class="dest-text">
         <h2 id="dest-name"></h2>
         <p id="dest-addr"></p>
+        <button id="btn-wrong-place" class="wrong-place hidden"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 21V4m0 0h11l-2 4 2 4H5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>Wrong or closed</button>
         <p id="peek-summary" class="peek-summary"></p>
       </div>
       <button id="btn-save-place" class="icon-btn" aria-label="Save place"><svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.8-4.5 4.2 1.1 6L12 16.7l-5.4 2.9 1.1-6-4.5-4.2 6.1-.8Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></button>
       <button class="icon-btn" data-close="preview" aria-label="Close"><svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
     </div>
-    <div id="travel-seg" class="seg travel-seg" role="tablist"><button data-travel="drive">Drive</button><button data-travel="walk">Walk</button><button data-travel="transit">Train</button></div>
+    <div id="from-row" class="from-row">
+      <button id="btn-from" class="from-btn"><span class="from-dot" aria-hidden="true"></span><span id="from-label">From your location</span><span class="from-change">Change</span></button>
+      <button id="btn-from-clear" class="icon-btn hidden" aria-label="Start from your location"><svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+    </div>
+    <div id="travel-seg" class="seg travel-seg" role="tablist"><button data-travel="drive">Drive</button><button data-travel="motorcycle">Motorbike</button><button data-travel="walk">Walk</button><button data-travel="transit">Train</button></div>
     <div id="route-list" class="route-list"></div>
+    <div id="route-weather" class="route-weather hidden" aria-live="polite"></div>
     <p id="route-status" class="hint"></p>
     <div class="sheet-actions">
       <button id="btn-leave-later" class="btn ghost">Leave later</button>
       <button id="btn-go" class="btn primary" disabled>Go now</button>
-      <button id="btn-transit-maps" class="btn primary transit-only">Live times in Google Maps</button>
+      <button id="btn-ride-start" class="btn primary transit-only">Start</button>
+      <button id="btn-transit-maps" class="btn transit-only">Live times in Google Maps</button>
     </div>
   </section>
 
   <!-- ===== Leave later ===== -->
-  <section id="later" class="sheet hidden" aria-label="Plan a drive">
+  <section id="later" class="sheet hidden" aria-label="Leave later">
     <div class="grabber"></div>
     <div class="dest-head"><div class="dest-text"><h2>Leave later</h2><p>Pick when you want to leave or arrive.</p></div>
       <button class="icon-btn" data-close="later" aria-label="Close"><svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button></div>
@@ -115,12 +123,21 @@
         <div class="banner-text">
           <div class="turn-dist" id="turn-dist"></div>
           <div class="turn-street" id="turn-street"></div>
+          <div class="turn-sign hidden" id="turn-sign"></div>
         </div>
       </div>
       <div id="lanes" class="lanes hidden" aria-label="Lanes"></div>
       <div id="then" class="then hidden"><span>Then</span><span id="then-icon" class="then-icon"></span></div>
     </div>
     <div id="toll-chip" class="toll-chip hidden" role="status"></div>
+    <button id="rest-chip" class="toll-chip rest-chip hidden" type="button"></button>
+    <div id="faster-card" class="faster-card hidden" role="status">
+      <span class="faster-text"><b>Faster route</b><span class="faster-line"></span></span>
+      <button id="btn-faster-keep" class="faster-keep">Keep</button>
+      <button id="btn-faster-take" class="faster-take">Switch</button>
+    </div>
+    <div id="school-chip" class="toll-chip school-chip hidden" role="status"></div>
+    <div id="dr-chip" class="toll-chip dr-chip hidden" role="status"><b>NO GPS</b><span>Estimating your position</span></div>
     <div id="offroute" class="offroute hidden"><span class="spinner" aria-hidden="true"></span>Recalculating…</div>
     </div>
     <div class="map-tools drive">
@@ -151,6 +168,83 @@
       </div>
     </div>
   </div>
+
+  <!-- ===== Riding a train trip (train-guide.js) ===== -->
+  <div id="ride-ui" class="layer hidden">
+    <div class="drive-top">
+      <div id="ride-banner" class="banner ride-banner">
+        <div class="banner-main">
+          <div class="turn" id="ride-icon"></div>
+          <div class="banner-text">
+            <div class="turn-dist" id="ride-title"></div>
+            <div class="turn-street" id="ride-sub"></div>
+          </div>
+        </div>
+      </div>
+      <div id="ride-est" class="toll-chip ride-est hidden" role="status"><b>NO GPS</b><span>Estimating · Currently Underground</span></div>
+      <div id="ride-off" class="offroute hidden" role="status"><span class="spinner" aria-hidden="true"></span>Recalculating…</div>
+      <button id="ride-report-chip" class="toll-chip train-report-chip hidden" aria-label="Reported on this line: still happening?"></button>
+    </div>
+    <div class="map-tools drive">
+      <button id="btn-sound-ride" class="round small" aria-label="Sound"></button>
+      <button id="btn-report-ride" class="round small report-round" aria-label="Report a problem on this line"><svg viewBox="0 0 24 24"><path d="M12 3.5 2.8 19.5h18.4Z" fill="none" stroke="#fff" stroke-width="2.4" stroke-linejoin="round"/><path d="M12 9.5v4.5" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/><circle cx="12" cy="17" r="1.4" fill="#fff"/></svg></button>
+      <button id="btn-recenter-ride" class="round hidden" aria-label="Recenter"><svg viewBox="0 0 24 24"><path d="M12 2.5 19.5 20 12 16l-7.5 4Z" fill="currentColor"/></svg><span>Recenter</span></button>
+    </div>
+    <section id="ride-sheet" class="sheet ride-sheet">
+      <div class="grabber" aria-hidden="true"></div>
+      <button id="ride-peek" class="ride-peek" aria-label="Show the stops"></button>
+      <p id="ride-eta" class="ride-eta"></p>
+      <ol id="ride-stops" class="ride-stops"></ol>
+      <div class="sheet-actions">
+        <button id="btn-ride-stop" class="btn">Stop</button>
+        <button id="btn-ride-here" class="btn primary"></button>
+      </div>
+    </section>
+  </div>
+
+  <!-- ===== Carry on with a trip the phone cut off (the page was closed in the background) ===== -->
+  <section id="resume" class="sheet hidden" aria-label="Continue your trip">
+    <div class="dest-head"><div class="dest-text"><h2 id="resume-title"></h2><p id="resume-sub" class="hint"></p></div></div>
+    <div class="sheet-actions">
+      <button id="btn-resume-no" class="btn ghost">No thanks</button>
+      <button id="btn-resume-go" class="btn primary">Continue</button>
+    </div>
+  </section>
+
+  <!-- ===== Report a problem on the train line you're on, and say whether one reported is still happening ===== -->
+  <section id="train-report" class="sheet hidden" aria-label="Report a problem on this line">
+    <div class="dest-head">
+      <div class="dest-text"><h2 id="train-report-title">Report</h2><p id="train-report-where" class="hint"></p></div>
+      <button class="icon-btn" data-close="train-report" aria-label="Close"><svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+    </div>
+    <div id="train-report-grid" class="report-grid train-report-grid"></div>
+  </section>
+  <section id="train-report-vote" class="sheet hidden" aria-label="Still happening?">
+    <div class="dest-head"><div class="dest-text"><h2 id="train-vote-title"></h2><p id="train-vote-sub" class="hint"></p></div></div>
+    <div class="sheet-actions">
+      <button id="btn-train-gone" class="btn ghost">It’s cleared</button>
+      <button id="btn-train-still" class="btn primary">Still happening</button>
+    </div>
+  </section>
+
+  <!-- ===== "I'm here" at a station tapped in the ride's list: asked first ===== -->
+  <section id="here-confirm" class="sheet hidden" aria-label="Say where you are">
+    <div class="dest-head"><div class="dest-text"><h2 id="here-title"></h2><p id="here-sub" class="hint"></p></div></div>
+    <div class="sheet-actions">
+      <button id="btn-here-no" class="btn ghost">Cancel</button>
+      <button id="btn-here-yes" class="btn primary">I’m here</button>
+    </div>
+  </section>
+
+  <!-- ===== Suggest a place, or review one (public/suggest.js) ===== -->
+  <div id="suggest-pin" class="suggest-pin hidden" aria-hidden="true"></div>
+  <section id="suggest" class="sheet hidden" aria-label="Suggest a place">
+    <div class="dest-head">
+      <div class="dest-text"><h2 id="suggest-title"></h2><p id="suggest-where" class="hint"></p></div>
+      <button class="icon-btn" data-close="suggest" aria-label="Close"><svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
+    </div>
+    <div id="suggest-body"></div>
+  </section>
 
   <!-- ===== Arrived ===== -->
   <section id="arrived" class="sheet hidden" aria-label="Arrived">
@@ -275,7 +369,7 @@
   <div id="toast" class="toast hidden" role="status"></div>
   <div id="ctx" class="ctx hidden"></div>
 
-  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="/vendor/maplibre-gl-4.7.1/maplibre-gl.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

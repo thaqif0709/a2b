@@ -17,14 +17,15 @@ const TIMEOUT_MS = 4000;
 
 // TomTom's route timed with live traffic: { duration, delay, jams: [{ from, to, level, delay }] }, from/to being
 // fractions of the route's length. Null when there's no key or no answer.
-export async function liveTraffic(env, route) {
+// travel: 'drive' or 'motorcycle', which TomTom times as a motorcycle.
+export async function liveTraffic(env, route, travel = 'drive') {
   if (!env.TOMTOM_KEY) return null;
   const { coords } = route;
   const every = Math.max(1, Math.ceil(coords.length / MAX_POINTS));
   const points = coords.filter((_, i) => i % every === 0 || i === coords.length - 1).map(([lng, lat]) => ({ latitude: lat, longitude: lng }));
   const ends = [coords[0], coords.at(-1)].map(([lng, lat]) => `${lat.toFixed(6)},${lng.toFixed(6)}`).join(':'); // stops are in the points
   const u = new URL(`${API}/${ends}/json`);
-  Object.entries({ key: env.TOMTOM_KEY, traffic: 'true', sectionType: 'traffic', routeRepresentation: 'polyline', travelMode: 'car' }).forEach(([k, v]) => u.searchParams.set(k, v));
+  Object.entries({ key: env.TOMTOM_KEY, traffic: 'true', sectionType: 'traffic', routeRepresentation: 'polyline', travelMode: travel === 'motorcycle' ? 'motorcycle' : 'car' }).forEach(([k, v]) => u.searchParams.set(k, v));
   const res = await fetch(u, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

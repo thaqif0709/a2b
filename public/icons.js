@@ -84,11 +84,28 @@ export const DEST_PIN = `<svg viewBox="0 0 36 46"><path d="M18 44s15-15.4 15-26A
 
 export const DROP_PIN = `<svg viewBox="0 0 36 46"><path d="M18 44s15-15.4 15-26A15 15 0 0 0 3 18c0 10.6 15 26 15 26Z" fill="#a8306d" stroke="#fff" stroke-width="2.5"/><circle cx="18" cy="18" r="5.5" fill="#fff"/></svg>`;
 
+// The search screen's category buttons: a white icon on the kind's colour (the same colours as its pins on the map).
+const catSvg = (body) => `<svg viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
+const catLetter = (l) => catSvg(`<text x="12" y="18.6" text-anchor="middle" font-size="19" font-weight="800" font-family="system-ui, -apple-system, sans-serif" fill="currentColor">${l}</text>`);
+export const CATEGORY_ICONS = {
+  fuel: { color: '#e8590c', svg: catSvg('<path fill="currentColor" fill-rule="evenodd" d="M5.5 4.5A1.5 1.5 0 0 1 7 3h5a1.5 1.5 0 0 1 1.5 1.5V20h-8Zm2 1.5v3.5h4V6Z"/><path d="M13.5 9.5h1.5a1.2 1.2 0 0 1 1.2 1.2v5.1a1.4 1.4 0 0 0 2.8 0V8.2L17 6.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>') },
+  parking: { color: '#3b5bdb', svg: catLetter('P') },
+  ev: { color: '#0c8599', svg: catSvg('<path fill="currentColor" d="M14.5 2.5 5.5 13.5h5.5l-1.5 8 9-11h-5.5l1.5-8Z"/>') },
+  hospital: { color: '#e03131', svg: catLetter('H') },
+  clinic: { color: '#1c7ed6', svg: catSvg('<path fill="currentColor" d="M10 5h4v5h5v4h-5v5h-4v-5H5v-4h5Z"/>') },
+  police: { color: '#1e3a8a', svg: catSvg('<path fill="currentColor" d="M12 3 5 5.8v5.4c0 4.3 2.9 8.1 7 9.8 4.1-1.7 7-5.5 7-9.8V5.8Z"/><path fill="#1e3a8a" d="m12 7.6 1.2 2.5 2.7.4-2 1.9.5 2.7-2.4-1.3-2.4 1.3.5-2.7-2-1.9 2.7-.4Z"/>') },
+  convenience: { color: '#2f9e44', svg: catSvg('<path fill="currentColor" d="M5.5 9h13l-1 11h-11Z"/><path d="M9 9V7.5a3 3 0 0 1 6 0V9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>') },
+};
+
 export const PLACE_ICONS = {
   parking: '<svg viewBox="0 0 24 24"><path fill="currentColor" fill-rule="evenodd" d="M6 3h12a3 3 0 0 1 3 3v12a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V6a3 3 0 0 1 3-3Zm3 4v10h2.2v-3.2h2.3a3.4 3.4 0 0 0 0-6.8Zm2.2 2h2.2a1.4 1.4 0 0 1 0 2.8h-2.2Z"/></svg>',
   pin: '<svg viewBox="0 0 24 24"><path d="M12 22s7-7.2 7-12.5a7 7 0 0 0-14 0C5 14.8 12 22 12 22Z" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="9.5" r="2.5" fill="currentColor"/></svg>',
+  house: '<svg viewBox="0 0 24 24"><path d="M3.5 11 12 4l8.5 7M6 9v11h12V9" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 20v-5.5h4V20" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>',
+  street: '<svg viewBox="0 0 24 24"><path d="M8.5 3 5 21M15.5 3 19 21" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M12 4v3M12 10.5v3M12 17v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   recent: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7v5l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   star: '<svg viewBox="0 0 24 24"><path d="m12 3 2.7 5.6 6.1.8-4.5 4.2 1.1 6L12 16.7l-5.4 2.9 1.1-6-4.5-4.2 6.1-.8Z" fill="#f5b300"/></svg>',
+  edit: '<svg viewBox="0 0 24 24"><path d="M4 20h4L19 9a2.8 2.8 0 0 0-4-4L4 16Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="m13.5 6.5 4 4" stroke="currentColor" stroke-width="2"/></svg>',
+  trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 3h4M6 7l1 13h10l1-13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11v6M14 11v6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   more: '<svg viewBox="0 0 24 24"><circle cx="12" cy="5" r="2" fill="currentColor"/><circle cx="12" cy="12" r="2" fill="currentColor"/><circle cx="12" cy="19" r="2" fill="currentColor"/></svg>',
 };
 

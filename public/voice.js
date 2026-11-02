@@ -28,6 +28,20 @@ if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
   speechSynthesis.addEventListener?.('voiceschanged', () => speechSynthesis.getVoices());
 }
 
+// For as long as the phone is talking, other sound (radio, music, a video) shouldn't be stopped outright:
+// lower it, then put it back the moment the voice finishes.
+function duckedMedia() {
+  const els = [...document.querySelectorAll('audio, video')];
+  const saved = els.map((el) => ({ el, volume: el.volume, muted: el.muted }));
+  for (const { el } of saved) { if (!el.muted) el.volume = Math.max(0.05, el.volume * 0.2); }
+  let done = false;
+  const restore = () => {
+    if (done) return; done = true;
+    for (const { el, volume, muted } of saved) { el.volume = volume; if (muted !== el.muted) el.muted = muted; }
+  };
+  return restore;
+}
+
 export function speak(text, { force = false } = {}) {
   if (!text || (!state.settings.voice && !force) || !('speechSynthesis' in window)) return;
   try {
@@ -35,6 +49,12 @@ export function speak(text, { force = false } = {}) {
     const u = new SpeechSynthesisUtterance(spokenCodes(text));
     if (v) u.voice = v;
     u.lang = v?.lang || 'en-GB';
+    const restoreMedia = duckedMedia();
+    const ms = Math.max(1500, spokenCodes(text).length * 75); // Android/Safari sometimes skip onend
+    const timer = setTimeout(restoreMedia, ms);
+    const finish = () => { clearTimeout(timer); restoreMedia(); };
+    u.onend = finish;
+    u.onerror = finish;
     speechSynthesis.cancel();
     speechSynthesis.speak(u);
   } catch {}

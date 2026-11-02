@@ -80,8 +80,8 @@ body.driving .maplibregl-ctrl-bottom-right { bottom: calc(92px + var(--trip-keep
 .map-tools.drive { bottom: calc(186px + var(--trip-keep, 0px) + var(--safe-bottom)); }
 #btn-recenter svg { color: var(--accent-text); }
 #btn-recenter.following svg { color: var(--muted); }
-#btn-recenter-drive { width: auto; padding: 0 18px 0 14px; border-radius: 26px; display: flex; gap: 8px; align-items: center; font-weight: 600; }
-#btn-recenter-drive svg { color: var(--accent-text); width: 22px; }
+#btn-recenter-drive, #btn-recenter-ride { width: auto; padding: 0 18px 0 14px; border-radius: 26px; display: flex; gap: 8px; align-items: center; font-weight: 600; }
+#btn-recenter-drive svg, #btn-recenter-ride svg { color: var(--accent-text); width: 22px; }
 
 .report-fab {
   position: absolute; right: 14px; bottom: calc(96px + var(--safe-bottom)); width: 64px; height: 64px; border-radius: 50%;
@@ -90,6 +90,12 @@ body.driving .maplibregl-ctrl-bottom-right { bottom: calc(92px + var(--trip-keep
 .report-fab svg { width: 32px; height: 32px; }
 .report-fab:active { transform: scale(0.94); }
 #drive-ui .report-fab { bottom: calc(104px + var(--trip-keep, 0px) + var(--safe-bottom)); }
+/* Riding: the buttons sit just above the sheet of stops, whatever its height (--ride-sheet, set by rideSheet). No
+   report button on a train trip (canReportFrom in report-types.js). */
+#ride-ui .map-tools { bottom: calc(var(--ride-sheet, 160px) + 14px); }
+@media (min-width: 720px) {
+  #ride-ui .map-tools { bottom: calc(96px + var(--safe-bottom)); }
+}
 
 .speedo {
   position: absolute; left: 14px; bottom: calc(100px + var(--safe-bottom)); width: 64px; height: 64px; border-radius: 50%;
@@ -137,10 +143,18 @@ body.driving .maplibregl-ctrl-bottom-right { bottom: calc(92px + var(--trip-keep
 #preview { transition: transform 0.2s ease-out; }
 #preview .grabber { width: 56px; height: 5px; padding: 8px 0; box-sizing: content-box; background-clip: content-box; cursor: pointer; }
 .peek-summary { display: none; font-weight: 600; color: var(--text) !important; }
-#preview.peek #route-list, #preview.peek #route-status, #preview.peek #dest-addr { display: none; }
+#preview.peek #route-list, #preview.peek #route-weather, #preview.peek #route-status, #preview.peek #dest-addr { display: none; }
 #preview.peek .peek-summary { display: block; }
 #preview.peek .sheet-actions { margin-top: 10px; }
-#preview { touch-action: none; user-select: none; -webkit-user-select: none; }
+#preview { user-select: none; -webkit-user-select: none; }
+/* A drag on the sheet's fixed parts pulls it up and down. Not touch-action on the sheet itself: Safari applies an
+   ancestor's "none" to everything inside, and the list could never scroll. */
+#preview > :not(#route-list), #parking > :not(#parking-list) { touch-action: none; }
+/* The sheet itself doesn't scroll (a drag on it pulls it up and down): the routes do, between the header and Go,
+   which stay in view, as the parking list does. A train trip's steps easily run past the screen. */
+#preview { display: flex; flex-direction: column; overflow: hidden; }
+#preview > * { flex: none; }
+#route-list { flex: 0 1 auto; min-height: 0; overflow-y: auto; touch-action: pan-y; overscroll-behavior: contain; }
 /* While dragging, the sheet's height follows the finger: the route list gives way, header and Go stay. */
 #preview.dragging { display: flex; flex-direction: column; overflow: hidden; animation: none; }
 #preview.dragging > * { flex: none; }
@@ -180,7 +194,10 @@ body.driving .maplibregl-ctrl-bottom-right { bottom: calc(92px + var(--trip-keep
 .hint { color: var(--muted); font-size: 14px; line-height: 1.4; padding: 8px 2px; }
 small.hint { display: block; padding: 4px 0 0; }
 .error { color: var(--danger); font-size: 14px; }
-.field { width: 100%; height: 48px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-2); padding: 0 14px; margin-top: 12px; }
+.field { width: 100%; box-sizing: border-box; height: 48px; border-radius: 12px; border: 1px solid var(--line); background: var(--bg-2); padding: 0 14px; margin-top: 12px; }
+/* iPhones give the date and time box a width of its own: keep it inside the sheet. */
+input[type='datetime-local'].field { display: block; min-width: 0; max-width: 100%; -webkit-appearance: none; appearance: none; color: var(--text); line-height: 46px; }
+input[type='datetime-local'].field::-webkit-date-and-time-value { text-align: left; line-height: 46px; }
 textarea.field { height: auto; padding: 12px 14px; resize: vertical; font: inherit; line-height: 1.4; color: var(--text); }
 .feedback { padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
 .feedback .btn { width: 100%; }
@@ -190,7 +207,11 @@ textarea.field { height: auto; padding: 12px 14px; resize: vertical; font: inher
 .fb-item p { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .fb-item small { color: var(--muted); }
 .fb-item small a { color: var(--accent-text); }
-.fb-item .btn { justify-self: end; padding: 6px 16px; min-height: 0; }
+.fb-item .btn { padding: 6px 16px; min-height: 0; }
+.fb-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+.fb-item.closed p { color: var(--muted); }
+.fb-tag { margin-right: auto; font-size: 12px; font-weight: 700; color: var(--muted); background: var(--bg-2); border-radius: 10px; padding: 3px 9px; }
+.fb-head { padding: 0 18px; }
 
 /* ---------- Search ---------- */
 .search-head { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
@@ -198,8 +219,27 @@ textarea.field { height: auto; padding: 12px 14px; resize: vertical; font: inher
 .search-box input { flex: 1; border: 0; background: none; outline: none; font-size: 17px; min-width: 0; }
 .search-box input::-webkit-search-cancel-button { display: none; }
 .search-target { margin: 10px 14px 0; padding: 10px 14px; border-radius: 12px; background: var(--bg-2); font-weight: 600; font-size: 14px; }
-#search-empty-hint, #search-status { padding: 10px 16px; }
+#search-empty-hint { padding: 10px 16px; }
+/* "No results", "busy", offline: in the middle of the screen, not tucked in a corner. */
+#search-status { padding: 18vh 32px 0; text-align: center; font-size: 16px; text-wrap: balance; }
+/* While searching: grey rows shaped like results, with the routes' shimmer passing over them. */
+.place-list li.place-skeleton { gap: 14px; padding: 12px 16px; }
+.place-skeleton > span:last-child { flex: 1; display: grid; gap: 8px; }
+.place-skeleton i { display: block; height: 12px; width: 70%; border-radius: 6px; background: var(--bg-2); }
+.place-skeleton i:first-child { height: 15px; width: 45%; }
+.place-skeleton i, .place-skeleton .p-ic { position: relative; overflow: hidden; }
+.place-skeleton i::after, .place-skeleton .p-ic::after {
+  content: ''; position: absolute; inset: 0; transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--bg) 55%, transparent), transparent); animation: shimmer 1.2s ease-in-out infinite;
+}
 #search-home, #results { overflow: auto; flex: 1; padding-bottom: calc(20px + var(--safe-bottom)); }
+/* Kinds of place to find the nearest of, in one row that scrolls sideways, above Home and Work. */
+.cats { display: flex; gap: 8px; overflow-x: auto; padding: 14px 14px 0; scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+.cats::-webkit-scrollbar { display: none; }
+.cat { flex: none; display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px 0 5px; border-radius: 20px; background: var(--bg-2); font-weight: 600; font-size: 15px; white-space: nowrap; }
+.cat:active { filter: brightness(0.94); }
+.cat-ic { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #fff; flex: none; }
+.cat-ic svg { width: 18px; height: 18px; }
 .quick { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 14px; }
 .quick-tile { display: flex; gap: 10px; align-items: center; padding: 12px; border-radius: 14px; background: var(--bg-2); text-align: left; min-width: 0; }
 .quick-tile b { display: block; }
@@ -209,6 +249,8 @@ textarea.field { height: auto; padding: 12px 14px; resize: vertical; font: inher
 .q-ic.home { background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M3 11 12 3l9 8v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1Z' fill='%23fff'/%3E%3C/svg%3E"); }
 .q-ic.work { background-color: var(--primary-2); background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cpath d='M9 6V4h6v2h5a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1Zm2 0h2V5h-2Z' fill='%23fff'/%3E%3C/svg%3E"); }
 .list-head { font-size: 13px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); padding: 10px 16px 4px; }
+#recent-head { display: flex; justify-content: space-between; align-items: baseline; }
+.list-head-action { font: inherit; font-size: 13px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--accent-text); background: none; border: 0; padding: 0; cursor: pointer; }
 .place-list { list-style: none; margin: 0; padding: 0; }
 .place-list li { display: flex; align-items: center; }
 .place-list li.search-note { display: block; padding: 10px 16px 4px; color: var(--muted); font-size: 14px; }
@@ -229,6 +271,21 @@ textarea.field { height: auto; padding: 12px 14px; resize: vertical; font: inher
 .dest-text p { color: var(--muted); font-size: 14px; line-height: 1.4; margin-top: 4px; }
 #btn-save-place.saved svg path { fill: #f5b300; stroke: #f5b300; }
 .route-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin-top: 12px; }
+.route-weather { display: flex; gap: 10px; align-items: flex-start; margin-top: 10px; padding: 10px 12px; border-radius: 12px; background: var(--bg-2); font-size: 14px; line-height: 1.4; }
+.route-weather.hidden { display: none; }
+.route-weather .w-ic { flex: none; width: 24px; height: 24px; color: #e0a100; }
+.route-weather[data-sky='cloudy'] .w-ic, .route-weather[data-sky='haze'] .w-ic, .route-weather[data-sky='windy'] .w-ic { color: var(--muted); }
+.route-weather[data-sky='rain'] .w-ic, .route-weather[data-sky='heavy-rain'] .w-ic { color: #2f80ed; }
+.route-weather[data-sky='storm'] .w-ic { color: #7b4fd6; }
+.route-weather[data-sky='rest'] .w-ic { color: var(--accent-text); }
+.route-weather svg { width: 24px; height: 24px; display: block; }
+.route-weather .w-text { min-width: 0; }
+.route-weather p { margin: 0; overflow-wrap: anywhere; }
+.route-weather .w-main { font-weight: 600; }
+.route-weather .w-tips { margin: 6px 0 0; padding-left: 18px; font-weight: 600; color: var(--accent-text); }
+.route-weather .w-tips li + li { margin-top: 2px; }
+.route-weather small { display: block; margin-top: 4px; color: var(--muted); font-size: 12px; }
+.route-weather small a { color: inherit; }
 .route-opt { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 14px; border: 2px solid var(--line); text-align: left; }
 .route-opt.skeleton { height: 74px; border-color: transparent; background: var(--bg-2); flex-direction: column; align-items: flex-start; justify-content: center; gap: 10px; }
 .route-opt.skeleton i { display: block; height: 12px; border-radius: 6px; background: color-mix(in srgb, var(--text) 9%, var(--bg-2)); width: 55%; }
@@ -244,7 +301,7 @@ textarea.field { height: auto; padding: 12px 14px; resize: vertical; font: inher
   border: 2px solid var(--bg-3); border-top-color: var(--accent-text); animation: spin 0.8s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (prefers-reduced-motion: reduce) { .spinner, .route-opt.skeleton::after { animation-duration: 2.4s; } }
+@media (prefers-reduced-motion: reduce) { .spinner, .route-opt.skeleton::after, .place-skeleton i::after, .place-skeleton .p-ic::after { animation-duration: 2.4s; } }
 .route-opt.on { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 8%, var(--bg)); }
 .route-opt .r-time { font-size: 20px; font-weight: 800; min-width: 76px; flex: none; }
 .route-opt .r-info { flex: 1; min-width: 0; font-size: 14px; color: var(--muted); }
@@ -263,13 +320,67 @@ textarea.field { height: auto; padding: 12px 14px; resize: vertical; font: inher
 .seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--bg-2); border-radius: 12px; padding: 4px; margin-top: 12px; }
 .seg button { height: 40px; border-radius: 9px; font-weight: 600; color: var(--muted); }
 .seg button.on { background: var(--bg); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); }
-.travel-seg { grid-template-columns: repeat(3, 1fr); margin: 4px 0 10px; }
+.travel-seg { grid-template-columns: repeat(4, 1fr); margin: 4px 0 10px; }
+.travel-seg button { padding: 0 2px; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Walking: no speedometer, speed limit, tolls or parking. */
 body.walking #speedo, body.walking #limit, body.walking #toll-chip, body.walking #btn-parking { display: none !important; }
 /* Trips by train (see showTransit in app.js): no Go or Leave later, a link to live times instead. */
 .transit-only { display: none; }
 #preview.transit .transit-only { display: block; }
-#preview.transit #btn-go, #preview.transit #btn-leave-later { display: none; }
+#preview.transit #btn-go { display: none; }
+/* Starting somewhere else: nothing to start from here, so Leave later (into the calendar) is the action. */
+#preview.elsewhere #btn-go, #preview.elsewhere #btn-ride-start { display: none; }
+.from-row { display: flex; align-items: center; gap: 4px; margin: 2px 0 10px; }
+.from-btn { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; padding: 9px 12px; border-radius: 12px; background: var(--bg-2); text-align: left; font-weight: 600; }
+.from-btn #from-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.from-dot { width: 12px; height: 12px; flex: none; border-radius: 50%; border: 3px solid var(--accent-text); box-sizing: border-box; }
+.from-change { margin-left: auto; flex: none; color: var(--accent-text); font-size: 14px; }
+#preview.peek #from-row { display: none; }
+.t-last { color: #e67700; font-weight: 700; }
+#later-result .t-steps { margin-top: 10px; }
+#preview.transit .sheet-actions { flex-wrap: wrap; }
+#preview.transit #btn-transit-maps { flex-basis: 100%; }
+/* Riding a train trip: the line's colour in the banner, the stops below, the alert stands out. */
+.ride-banner .turn { display: grid; place-items: center; width: 56px; height: 56px; border-radius: 14px; background: var(--line, rgba(255,255,255,0.15)); color: var(--line-text, #fff); font-weight: 800; font-size: 15px; }
+.ride-banner .turn svg { width: 34px; height: 34px; }
+.ride-banner.alert { background: #e67700; }
+.ride-est b { background: #5f6b76; color: #fff; }
+.ride-sheet { max-height: 42vh; overflow-y: auto; touch-action: pan-y; transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1); }
+.ride-sheet.dragging { transition: none; }
+.ride-sheet .grabber { cursor: pointer; }
+/* Closed: just the next station, one line. Drag up or tap to see the stops again. */
+.ride-peek { display: none; width: 100%; padding: 2px 2px 4px; border: 0; background: none; color: var(--text); font: inherit; font-size: 16px; font-weight: 700; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+.ride-peek::before { content: ''; display: inline-block; width: 10px; height: 10px; margin-right: 10px; border-radius: 50%; background: var(--dot, #1c7ed6); vertical-align: 1px; }
+.ride-sheet.closed .ride-peek { display: block; }
+.ride-sheet.closed .ride-stops, .ride-sheet.closed .sheet-actions, .ride-sheet.closed .ride-eta { display: none; }
+.ride-eta { margin: 0 2px 6px; font-size: 15px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+#resume { z-index: 20; }
+#here-confirm { z-index: 21; } /* over the ride's sheet of stops */
+.ride-stops li[data-k] { cursor: pointer; border-radius: 8px; }
+.ride-stops li[data-k]:active { background: var(--bg-2); }
+/* Tapped once: tap again to say you're there. */
+.ride-stops { list-style: none; margin: 4px 0 0; padding: 0; font-size: 15px; }
+.ride-stops li { display: grid; grid-template-columns: 18px 1fr; gap: 10px; align-items: center; padding: 6px 2px; color: var(--muted); }
+.ride-stops li::before { content: ''; width: 12px; height: 12px; margin: 0 3px; border-radius: 50%; border: 3px solid var(--dot, var(--muted)); background: var(--bg); box-sizing: border-box; }
+.ride-stops li.next { color: var(--text); font-weight: 700; }
+.ride-stops li.alight { color: var(--text); font-weight: 800; }
+.ride-stops li.alight::before { background: var(--dot, var(--muted)); }
+.ride-stops li.past { opacity: 0.45; }
+.ride-stops li.walk::before { border-style: dotted; border-color: var(--accent-text); } /* the walks' colour, as on the map */
+.rider { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--rider, #1c7ed6); color: #fff; border: 3px solid #fff; box-shadow: 0 2px 6px rgba(0,0,0,0.35); }
+.rider svg { width: 20px; height: 20px; }
+.rider.walker { width: 44px; height: 44px; background: none; border: 0; box-shadow: none; color: var(--car, #e23d9b); filter: drop-shadow(0 3px 4px rgba(0, 0, 0, 0.35)); }
+.rider.walker svg { width: 44px; height: 44px; }
+/* Train reports (see trainReports in app.js): a button with the ride's others, what riders reported under the banner,
+   and on a trip's option when planning. */
+.report-round { background: var(--report); }
+.report-round svg { width: 22px; height: 22px; }
+#train-report, #train-report-vote { z-index: 21; }
+.report-grid.train-report-grid { grid-template-columns: repeat(2, 1fr); }
+.train-report-chip { text-align: left; }
+.train-report-chip b { background: var(--tr, #e67700); color: #fff; }
+.t-report { display: inline-flex; align-items: center; gap: 6px; margin-top: 6px; font-size: 13px; font-weight: 700; color: #e67700; }
+.t-report i { width: 8px; height: 8px; border-radius: 50%; background: var(--tr, #e67700); }
 .route-opt.t-opt { flex-wrap: wrap; }
 .t-opt .t-steps { flex-basis: 100%; }
 .t-legs { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-top: 4px; }
@@ -286,7 +397,7 @@ body.walking #speedo, body.walking #limit, body.walking #toll-chip, body.walking
 
 /* ---------- Driving ---------- */
 /* Banner and the off-route pill stack, so the pill always sits just below the banner whatever its height. */
-#drive-ui .drive-top {
+#drive-ui .drive-top, #ride-ui .drive-top {
   position: absolute; top: calc(10px + var(--safe-top)); left: 10px; right: 10px; max-width: 560px;
   display: grid; grid-template-columns: minmax(0, 1fr); justify-items: center; gap: 10px; pointer-events: none;
 }
@@ -298,6 +409,11 @@ body.walking #speedo, body.walking #limit, body.walking #toll-chip, body.walking
 .banner-text { min-width: 0; }
 .turn-dist { font-size: 32px; font-weight: 800; line-height: 1.05; font-variant-numeric: tabular-nums; }
 .turn-street { font-size: 19px; font-weight: 600; opacity: 0.95; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+/* An exit's overhead sign: green with white edging, as on Malaysian expressways. */
+.turn-sign { display: flex; align-items: center; gap: 6px; max-width: 100%; margin-top: 4px; padding: 4px 8px; border: 2px solid #fff; border-radius: 8px; background: #0a7a3e; color: #fff; }
+.sign-exit { flex: none; padding: 1px 5px; border-radius: 4px; background: #fff; color: #0a7a3e; font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
+.sign-road { flex: none; padding: 0 5px; border: 1.5px solid #fff; border-radius: 4px; font-size: 13px; font-weight: 800; }
+.sign-to { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; font-weight: 700; }
 .lanes { display: flex; justify-content: center; gap: 2px; padding: 6px 12px 8px; background: var(--banner); border-top: 1px solid rgba(255, 255, 255, 0.12); }
 .lane { width: 48px; height: 46px; display: grid; place-items: center; border-radius: 8px; }
 .lane + .lane { border-left: 2px dashed rgba(255, 255, 255, 0.3); border-radius: 0; }
@@ -318,6 +434,22 @@ body.walking #speedo, body.walking #limit, body.walking #toll-chip, body.walking
 .toll-chip span { min-width: 0; line-height: 1.25; }
 .toll-chip span, .toll-chip small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .toll-chip small { display: block; color: var(--muted); font-size: 11.5px; font-weight: 500; }
+.rest-chip { margin-top: 6px; border: 0; font: inherit; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
+.rest-chip b { background: #2f9e44; color: #fff; }
+.faster-card {
+  display: flex; align-items: center; gap: 8px; width: min(100%, 360px); padding: 8px 8px 8px 14px; border-radius: 16px; background: var(--bg); color: var(--text);
+  box-shadow: var(--shadow); font-size: 14px;
+}
+.faster-text { flex: 1; min-width: 0; line-height: 1.25; }
+.faster-text b { display: block; color: var(--good); font-size: 13px; font-weight: 800; }
+.faster-line { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.faster-keep, .faster-take { flex: none; height: 40px; padding: 0 14px; border-radius: 20px; font-weight: 700; font-size: 15px; }
+.faster-keep { background: var(--bg-2); color: var(--text); }
+.faster-take { background: var(--primary); color: var(--primary-ink); }
+.school-chip { margin-top: 6px; }
+.school-chip b { background: #ffd43b; color: #1a1a1a; }
+.dr-chip { margin-top: 6px; }
+.dr-chip b { background: #5f6b76; color: #fff; }
 .offroute { background: var(--bg); color: var(--text); padding: 8px 16px; border-radius: 20px; box-shadow: var(--shadow); font-weight: 700; }
 #drive-ui .speedo { bottom: calc(108px + var(--trip-keep, 0px) + var(--safe-bottom)); }
 .limit {
@@ -496,6 +628,10 @@ body.driving .toast { top: calc(140px + var(--safe-top)); }
 .menu-row .m-new { margin-left: auto; padding: 3px 9px; border-radius: 999px; font-size: 12px; font-weight: 700; color: #fff; background: var(--primary); }
 .ctx { position: fixed; z-index: 30; background: var(--bg); border-radius: 14px; box-shadow: var(--shadow); overflow: hidden; min-width: 200px; }
 .ctx .menu-row { font-size: 16px; padding: 12px 16px; }
+.ctx .menu-row.danger, .place-list .icon-btn.danger { color: #e03131; }
+.ctx .menu-row { white-space: nowrap; }
+.ctx-ic { display: inline-grid; place-items: center; width: 22px; height: 22px; margin-right: 12px; vertical-align: -5px; }
+.ctx-ic svg { width: 22px; height: 22px; }
 
 .watch-head { display: flex; gap: 12px; align-items: center; padding: 8px 0 4px; }
 .watch-head b { font-size: 19px; display: block; }
@@ -561,7 +697,7 @@ body.driving .toast { top: calc(140px + var(--safe-top)); }
 .w-ic { display: inline-flex; vertical-align: -3px; color: var(--accent-text); }
 
 /* Parking near the destination (trip menu › Parking nearby). */
-#parking { z-index: 16; touch-action: none; user-select: none; -webkit-user-select: none; }
+#parking { z-index: 16; user-select: none; -webkit-user-select: none; }
 #parking .grabber { width: 56px; height: 5px; padding: 8px 0; box-sizing: content-box; background-clip: content-box; cursor: pointer; }
 #parking-list { touch-action: pan-y; max-height: 48vh; overflow: auto; } /* a long list still scrolls */
 #parking.peek #parking-list, #parking.peek #parking-status, #parking.peek #parking-for { display: none; }
@@ -581,3 +717,96 @@ body.driving .toast { top: calc(140px + var(--safe-top)); }
 .parking-list .on b { color: var(--accent-text); }
 .p-pin { width: 30px; height: 30px; border-radius: 8px; background: #2f6fde; color: #fff; display: grid; place-items: center; font: 900 17px/1 system-ui, sans-serif; border: 2px solid #fff; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35); cursor: pointer; }
 .trip-dest { cursor: pointer; }
+
+/* ---------- Suggesting a place (public/suggest.js) ---------- */
+/* The pin stays put and the map moves under it; it lifts while the map moves, its point marked by a small dot. */
+.suggest-pin { position: fixed; z-index: 14; width: 36px; height: 46px; transform: translate(-50%, -100%); pointer-events: none; }
+.suggest-pin svg { display: block; width: 36px; height: 46px; filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.3)); transition: transform 0.15s ease-out; }
+.suggest-pin i { position: absolute; left: 50%; bottom: -3px; width: 6px; height: 6px; margin-left: -3px; border-radius: 50%; background: rgba(0, 0, 0, 0.45); }
+.suggest-pin.moving svg { transform: translateY(-10px); }
+.was-pin { opacity: 0.45; filter: grayscale(1); }
+#suggest { max-height: 55vh; }
+.suggest-kinds { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+.suggest-kinds button { height: 36px; padding: 0 14px; border-radius: 18px; background: var(--bg-2); font-size: 14px; font-weight: 600; color: var(--muted); }
+.suggest-kinds button.on { background: var(--primary); color: var(--primary-ink); }
+.suggest-by { padding-top: 0; }
+.suggest-choices { margin: 4px -16px 0; }
+.wrong-place { display: inline-flex; align-items: center; gap: 6px; height: 30px; margin: 6px 0 2px; padding: 0 12px 0 10px; border-radius: 15px; background: var(--bg-2); color: var(--accent-text); font-size: 13px; font-weight: 600; }
+.wrong-place svg { width: 15px; height: 15px; }
+.add-missing { display: block; margin: 16px auto 0; }
+.place-list li.add-missing-row { padding: 6px 16px 12px; }
+.fb-tabs { margin: 8px 16px 4px; }
+
+/* ---------- Phone on its side ---------- */
+/* A landscape phone is wide but short. The sheets, the turn banner and the trip sheet stack in one column on the
+   left, clear of the camera cut-out (the safe area), and the map, the car and the round buttons get the rest.
+   Sheets are compacted so the route list keeps some room between the header and Go. The map is told about the
+   column too (sideColumn in app.js). */
+@media (orientation: landscape) and (max-height: 540px) {
+  :root {
+    --safe-left: env(safe-area-inset-left, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+    --side-x: calc(10px + var(--safe-left));
+    --side-w: clamp(340px, 46vw, 400px);
+    --side-end: calc(var(--side-x) + var(--side-w)); /* where the map starts */
+    --tall: calc(100dvh - 20px - var(--safe-top) - var(--safe-bottom));
+  }
+  .sheet {
+    left: var(--side-x); right: auto; width: var(--side-w); bottom: max(10px, var(--safe-bottom)); border-radius: var(--radius);
+    max-height: var(--tall); padding-bottom: 12px;
+  }
+  .sheet.tall, #suggest { max-height: var(--tall); }
+  .screen { left: 0; right: auto; width: calc(var(--side-end) + 30px); padding-left: var(--safe-left); box-shadow: var(--shadow); }
+  .grabber { margin: 2px auto 6px; }
+  .top-right, .map-tools, .report-fab { right: calc(14px + var(--safe-right)); }
+  .speedo { left: calc(14px + var(--safe-left)); }
+  .loc-banner { left: calc(14px + var(--safe-left)); right: calc(70px + var(--safe-right)); }
+  .maplibregl-ctrl-bottom-right { right: calc(84px + var(--safe-right)); }
+  /* Home: "Where to?" as wide as the column, not the whole screen. */
+  .bottom-bar { left: var(--safe-left); right: auto; width: calc(var(--side-w) + 20px); padding-bottom: max(10px, var(--safe-bottom)); }
+
+  /* Route preview: the same rows, tighter. */
+  .dest-text { padding-top: 0; }
+  .dest-text h2 { font-size: 19px; }
+  #dest-addr { margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .dest-head .icon-btn { width: 40px; height: 40px; }
+  .wrong-place { height: 26px; margin: 4px 0 0; }
+  .from-row { margin: 6px 0 6px; }
+  .from-btn { padding: 6px 12px; }
+  .seg { margin-top: 6px; }
+  .seg button { height: 34px; }
+  .travel-seg { margin: 0 0 6px; }
+  .route-list { margin-top: 6px; }
+  .route-opt { padding: 8px 12px; }
+  .sheet-actions { margin-top: 8px; }
+  .sheet-actions .btn { height: 46px; white-space: nowrap; }
+  #route-status:empty { display: none; }
+
+  /* Driving and riding: banner on top of the column, trip sheet at its foot. */
+  #drive-ui .drive-top, #ride-ui .drive-top { left: var(--side-x); right: auto; width: var(--side-w); max-width: none; }
+  .banner-main { gap: 12px; padding: 10px 14px; }
+  .turn, .turn svg { width: 50px; height: 50px; }
+  .turn-dist { font-size: 28px; }
+  .turn-street { font-size: 17px; -webkit-line-clamp: 1; }
+  .then { padding: 4px 14px; }
+  .eta-bar { left: var(--side-x); right: auto; width: var(--side-w); bottom: max(10px, var(--safe-bottom)); border-radius: 18px; padding-bottom: 0; }
+  .eta-main { padding: 2px 0 6px; }
+  .eta-col b { white-space: nowrap; }
+  .trip-dest { padding: 6px 14px 8px; }
+  .trip-dest small { -webkit-line-clamp: 1; }
+  /* Open, the menu would run off the top of a short screen: two columns of options. */
+  .eta-menu { display: grid; grid-template-columns: 1fr 1fr; padding: 4px 0 6px; }
+  .eta-menu > .trip-dest { grid-column: 1 / -1; }
+  .eta-menu > .menu-row { padding: 10px 14px; gap: 10px; font-size: 15px; min-width: 0; }
+  .eta-menu > .menu-row > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* The speedometer and the speed limit move out of the column, to the map's bottom-left corner; the buttons on the
+     right no longer have to clear the trip sheet. */
+  #drive-ui .speedo { left: calc(var(--side-end) + 14px); bottom: max(14px, var(--safe-bottom)); }
+  .limit { left: calc(var(--side-end) + 62px); bottom: calc(max(14px, var(--safe-bottom)) + 48px); }
+  #drive-ui .report-fab { bottom: max(14px, var(--safe-bottom)); }
+  .map-tools.drive { bottom: calc(max(14px, var(--safe-bottom)) + 76px); }
+  body.driving .maplibregl-ctrl-bottom-right { bottom: max(14px, var(--safe-bottom)); }
+  .alert-card { left: calc(var(--side-end) + 14px); right: calc(92px + var(--safe-right)); bottom: max(14px, var(--safe-bottom)); max-width: 400px; }
+  .ride-sheet { max-height: min(var(--tall), 62dvh); }
+  #ride-ui .map-tools { bottom: calc(14px + var(--safe-bottom)); }
+}

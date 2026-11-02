@@ -4,6 +4,7 @@
 // "My A2B" menu, sign in / sign up, settings, saved places, leaderboard and about.
 
 import { $, state, api, local, toast, esc, initials, saveSettings, setHomeWork, removePlace, renamePlace, armBack, speak } from './core.js';
+import { PLACE_ICONS } from './icons.js';
 import { stopSharing } from './probe.js';
 import { pickVoice } from './voice.js';
 import { appVersion } from './update.js';
@@ -11,6 +12,7 @@ import { VEHICLES, COLORS, DEFAULT_COLOR } from './vehicle3d.js';
 import { FUELS, SIZES, DEFAULT_FUEL, DEFAULT_SIZE } from './trip-cost.js';
 import { onlineLine } from './presence.js';
 import { tileCount, clearOfflineTiles, originUsage } from './offline.js';
+import { openReview, suggestionSummary, syncDriverPlaces } from './suggest.js';
 
 let ctx; // callbacks from app.js
 let authMode = 'signup';
@@ -94,6 +96,7 @@ const REASONS = {
   report: 'Sign up to report what you see. Other drivers can thank you, and you earn points.',
   vote: 'Sign up to confirm or dismiss reports from other drivers.',
   share: 'Sign up to share your drive and ETA with friends.',
+  suggest: 'Sign up to add missing places and fix wrong ones. You earn points when one is approved.',
 };
 
 export function openAuth(reason = null, mode = 'signup') {
@@ -319,6 +322,7 @@ export function openSettings() {
       ${toggleRow('voice', 'Voice directions')}
       ${toggleRow('alerts', 'Report alerts while driving', 'Police, crashes, hazards and closures ahead')}
       ${toggleRow('speed_warning', 'Speeding warning', 'Speedometer turns red above the posted limit')}
+      ${toggleRow('weather', 'Weather and rest tips', 'Rain on your route, what to bring, and when to rest')}
     </div>
     <div class="set-group"><h3>Voice</h3><div id="voice-list"></div></div>
     <div class="set-group"><h3>Navigation</h3>
@@ -337,6 +341,7 @@ export function openSettings() {
       <div class="set-row"><span>Vehicle<small>How you appear on the map</small></span><div class="choice" id="s-vehicle">${VEHICLES
         .map(([v, l]) => `<button data-v="${v}" class="${local.get('vehicle', 'chevron') === v ? 'on' : ''}">${l}</button>`)
         .join('')}</div></div>
+      ${toggleRow('night_vehicle_lights', 'Night vehicle lights', 'Soft vehicle-light glow in night mode. On by default.')}
       <div class="set-row swatch-row"><span>Colour</span><div class="swatches" id="s-vehicle-color">${COLORS
         .map(([c, l]) => `<button data-c="${c}" aria-label="${l}" title="${l}" class="${local.get('vehicleColor', DEFAULT_COLOR) === c ? 'on' : ''}" style="--c:${c}"></button>`)
         .join('')}</div></div>
@@ -367,7 +372,7 @@ export function openSettings() {
     </div>
     ${state.tester ? `<div class="set-group"><h3>Testing</h3>
       <button class="set-row" id="s-usage"><span>Usage<small>Who's on A2B now, and the last two weeks</small></span></button>
-      <button class="set-row" id="s-inbox"><span>Feedback<small>What drivers sent from Settings</small></span></button>
+      <button class="set-row" id="s-inbox"><span>Feedback<small>What drivers sent from Settings, and places they suggested</small></span></button>
       <label class="set-row"><span>Demo drive<small>Simulate GPS along the route. Handy for trying A2B at a desk.</small></span><input type="checkbox" class="switch" id="s-sim" ${state.simulate ? 'checked' : ''}></label>
       <div class="set-row${state.simulate ? '' : ' hidden'}" id="s-sim-speed-row"><span>Demo speed<small>How fast the demo car drives</small></span><div class="choice" id="s-sim-speed">${[1, 2, 4, 8]
         .map((v) => `<button data-v="${v}" class="${local.get('simSpeed', 1) === v ? 'on' : ''}">${v}×</button>`)
@@ -383,7 +388,9 @@ export function openSettings() {
         return;
       }
       if (c.dataset.set === 'traffic_probe' && !c.checked) stopSharing();
-      await saveSettings({ [c.dataset.set]: c.checked });
+      const saving = saveSettings({ [c.dataset.set]: c.checked });
+      if (c.dataset.set === 'night_vehicle_lights') ctx.setupVehicle();
+      await saving;
       if (c.dataset.set === 'voice') ctx.refreshSound();
       if (c.dataset.set === 'map_pois') ctx.drawPois();
     };
@@ -518,7 +525,7 @@ function openSavedPlaces() {
     ${list.length ? '' : '<p class="hint" style="padding:8px 18px">Tap the star on any destination, or long-press the map, to save it here.</p>'}
     <ul class="place-list">${list
       .map((p) => `<li data-id="${esc(p.id)}"><button class="place-row" data-go><span class="p-ic">⭐</span><span class="p-text"><b>${esc(p.name)}</b><small>${esc(p.address || '')}</small></span></button>
-        <button class="icon-btn" data-rename aria-label="Rename">✎</button><button class="icon-btn" data-del aria-label="Delete">✕</button></li>`)
+        <button class="icon-btn" data-rename aria-label="Rename ${esc(p.name)}">${PLACE_ICONS.edit}</button><button class="icon-btn danger" data-del aria-label="Delete ${esc(p.name)}">${PLACE_ICONS.trash}</button></li>`)
       .join('')}</ul>`);
   $('sp-add').onclick = () => {
     $('panel').classList.add('hidden');
@@ -584,32 +591,95 @@ function openFeedback() {
   setTimeout(() => text.focus(), 300);
 }
 
-// The owner's feedback inbox (GET /api/feedback is only answered for tester accounts). Done removes one.
-async function openInbox() {
-  const body = openPanel('Feedback', '<p class="hint" style="padding:12px 18px">Loading…</p>');
+// The owner's feedback inbox (GET /api/feedback is only answered for tester accounts). Close marks one handled and
+// moves it under Closed, tagged with when; Reopen brings it back. Nothing is deleted.
+async function openInbox(tab = 'messages') {
+  const panel = openPanel('Feedback', `${inboxTabs(tab)}<div id="fb-list"><p class="hint" style="padding:12px 18px">Loading…</p></div>`);
+  panel.querySelector('.fb-tabs').onclick = (e) => {
+    const t = e.target.closest('[data-tab]')?.dataset.tab;
+    if (t && t !== tab) openInbox(t);
+  };
+  const body = $('fb-list');
+  if (tab === 'places') return renderPlaceSuggestions(body);
+  let feedback;
   try {
-    const { feedback } = await api('/api/feedback');
-    const device = (ua = '') => (/iphone|ipad/i.test(ua) ? 'iPhone' : /android/i.test(ua) ? 'Android' : /mac/i.test(ua) ? 'Mac' : /windows/i.test(ua) ? 'Windows' : 'Other');
-    const when = (ms) => new Date(ms).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
-    body.innerHTML = feedback.length
-      ? feedback
-        .map((f) => `<div class="fb-item" data-id="${f.id}">
-          <p>${esc(f.message)}</p>
-          <small>${f.email ? `${esc(f.name)} · <a href="mailto:${esc(f.email)}?subject=${encodeURIComponent('Your A2B feedback')}">${esc(f.email)}</a>` : 'Guest'} · ${esc(when(f.created_at))} · ${esc(device(f.ua ?? ''))}${f.app ? ` · ${esc(f.app)}` : ''}</small>
-          <button class="btn ghost" data-done>Done</button>
-        </div>`)
-        .join('')
-      : '<p class="hint" style="padding:12px 18px">No feedback yet.</p>';
-    body.onclick = async (e) => {
-      const item = e.target.closest('[data-done]')?.closest('.fb-item');
-      if (!item) return;
-      try {
-        await api(`/api/feedback/${item.dataset.id}`, { method: 'DELETE' });
-        item.remove();
-        if (!body.querySelector('.fb-item')) body.innerHTML = '<p class="hint" style="padding:12px 18px">All done.</p>';
-      } catch (err) { toast(err.message); }
-    };
-  } catch (e) { body.innerHTML = `<p class="hint" style="padding:12px 18px">${esc(e.message)}</p>`; }
+    ({ feedback } = await api('/api/feedback'));
+  } catch (e) {
+    body.innerHTML = `<p class="hint" style="padding:12px 18px">${esc(e.message)}</p>`;
+    return;
+  }
+  const device = (ua = '') => (/iphone|ipad/i.test(ua) ? 'iPhone' : /android/i.test(ua) ? 'Android' : /mac/i.test(ua) ? 'Mac' : /windows/i.test(ua) ? 'Windows' : 'Other');
+  const when = (ms) => new Date(ms).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+  const item = (f) => `<div class="fb-item${f.closed_at ? ' closed' : ''}" data-id="${f.id}">
+    <p>${esc(f.message)}</p>
+    <small>${f.email ? `${esc(f.name)} · <a href="mailto:${esc(f.email)}?subject=${encodeURIComponent('Your A2B feedback')}">${esc(f.email)}</a>` : 'Guest'} · ${esc(when(f.created_at))} · ${esc(device(f.ua ?? ''))}${f.app ? ` · ${esc(f.app)}` : ''}</small>
+    <div class="fb-actions">${f.closed_at ? `<span class="fb-tag">Closed · ${esc(when(f.closed_at))}</span><button class="btn ghost" data-reopen>Reopen</button>` : '<button class="btn ghost" data-close>Close</button>'}</div>
+  </div>`;
+  const render = () => {
+    const open = feedback.filter((f) => !f.closed_at), closed = feedback.filter((f) => f.closed_at);
+    body.innerHTML = `${open.length ? open.map(item).join('') : `<p class="hint" style="padding:12px 18px">${closed.length ? 'All handled. 🎉' : 'No feedback yet.'}</p>`}
+      ${closed.length ? `<h3 class="list-head fb-head">Closed (${closed.length})</h3>${closed.map(item).join('')}` : ''}`;
+  };
+  render();
+  body.onclick = async (e) => {
+    const btn = e.target.closest('[data-close], [data-reopen]');
+    if (!btn) return;
+    const f = feedback.find((x) => String(x.id) === btn.closest('.fb-item').dataset.id);
+    const closed = btn.hasAttribute('data-close');
+    btn.disabled = true;
+    try {
+      await api(`/api/feedback/${f.id}`, { method: 'PATCH', body: { closed } });
+      f.closed_at = closed ? Date.now() : null;
+      render();
+    } catch (err) {
+      btn.disabled = false;
+      toast(err.message);
+    }
+  };
+}
+
+const inboxTabs = (tab) =>
+  `<div class="seg fb-tabs" role="tablist">${[['messages', 'Messages'], ['places', 'Places']]
+    .map(([t, l]) => `<button role="tab" data-tab="${t}" aria-selected="${t === tab}" class="${t === tab ? 'on' : ''}">${l}</button>`)
+    .join('')}</div>`;
+
+// Places drivers suggested (src/lib/suggestions.js): each opens on the map to approve or reject (public/suggest.js).
+// The last few reviewed are listed under them, and an approved one can be taken back out of search.
+async function renderPlaceSuggestions(body) {
+  let pending, reviewed;
+  try {
+    ({ pending, reviewed } = await api('/api/suggestions'));
+  } catch (e) {
+    body.innerHTML = `<p class="hint" style="padding:12px 18px">${esc(e.message)}</p>`;
+    return;
+  }
+  const when = (ms) => new Date(ms).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+  const item = (s) => `<div class="fb-item${s.status === 'pending' ? '' : ' closed'}" data-id="${s.id}">
+    <p><b>${esc(suggestionSummary(s))}</b>${s.note ? `<br>“${esc(s.note)}”` : ''}</p>
+    <small>${esc(s.by_name ?? 'Former driver')} · ${esc(when(s.created_at))}${s.address ? ` · ${esc(s.address)}` : ''}</small>
+    <div class="fb-actions">${s.status === 'pending' ? '<button class="btn ghost" data-review>Review on map</button>'
+      : `<span class="fb-tag">${esc({ approved: 'Approved', rejected: 'Rejected', undone: 'Taken out' }[s.status] ?? s.status)} · ${esc(when(s.reviewed_at))}</span>${s.status === 'approved' ? '<button class="btn ghost" data-undo>Take out</button>' : ''}`}</div>
+  </div>`;
+  body.innerHTML = `${pending.length ? pending.map(item).join('') : `<p class="hint" style="padding:12px 18px">No places waiting.</p>`}
+    ${reviewed.length ? `<h3 class="list-head fb-head">Reviewed</h3>${reviewed.map(item).join('')}` : ''}`;
+  body.onclick = async (e) => {
+    const btn = e.target.closest('[data-review], [data-undo]');
+    if (!btn) return;
+    const s = [...pending, ...reviewed].find((x) => String(x.id) === btn.closest('.fb-item').dataset.id);
+    if (btn.hasAttribute('data-review')) {
+      $('panel').classList.add('hidden');
+      return openReview(s, () => openInbox('places'));
+    }
+    btn.disabled = true;
+    try {
+      await api(`/api/suggestions/${s.id}`, { method: 'POST', body: { action: 'undo' } });
+      syncDriverPlaces(true);
+      renderPlaceSuggestions(body);
+    } catch (err) {
+      btn.disabled = false;
+      toast(err.message);
+    }
+  };
 }
 
 // The owner's usage dashboard (GET /api/stats is only answered for tester accounts). Refreshes while open.
@@ -628,7 +698,7 @@ async function openUsage() {
   const timer = setInterval(async () => (await render()) || clearInterval(timer), 30_000);
 }
 
-const TOMTOM_FREE = 20_000; // TomTom's free Routing API requests a month
+const TOMTOM_FREE = 20_000; // TomTom's free Routing API requests a month, and as many Geocoding API ones
 
 function usageHtml({ now, days, totals }) {
   const today = days.at(-1);
@@ -649,6 +719,7 @@ function usageHtml({ now, days, totals }) {
       ${stat(today.signups, 'sign-ups')}${stat(today.routes, 'routes')}${stat(today.searches, 'searches')}
     </div>
     <p class="hint" style="padding:6px 18px 0">Live traffic: ${today.tomtom ?? 0} TomTom lookups today, ${totals.tomtom_month ?? 0} this month (${TOMTOM_FREE.toLocaleString()} a month are free).</p>
+    <p class="hint" style="padding:4px 18px 0">Address search: ${today.addresses ?? 0} TomTom lookups today, ${totals.addresses_month ?? 0} this month (${TOMTOM_FREE.toLocaleString()} a month are free).</p>
     <h3>Last 14 days</h3>
     <div class="u-days">${[...days]
       .reverse()
@@ -671,10 +742,12 @@ function openAbout() {
     <p>Keep your eyes on the road. Only use the app when it is safe and legal to do so. Reports from other drivers can be wrong.</p>
     <p>Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>.
        Map tiles by <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>.
-       Routing by <a href="https://valhalla.github.io/valhalla/" target="_blank" rel="noopener">Valhalla</a>, search by <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a>, live traffic by <a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a>,
+       Routing by <a href="https://valhalla.github.io/valhalla/" target="_blank" rel="noopener">Valhalla</a>, search by <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a>, live traffic and house addresses by <a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a>,
+       weather by <a href="https://www.met.gov.my" target="_blank" rel="noopener">MET Malaysia</a> (data.gov.my), <a href="https://api.met.no" target="_blank" rel="noopener">MET Norway</a> and <a href="https://weatherkit.apple.com/legal-attribution.html" target="_blank" rel="noopener"> Weather</a>,
        train timetables from Prasarana and KTMB via <a href="https://data.gov.my" target="_blank" rel="noopener">data.gov.my</a>.
        Pump prices from <a href="https://data.gov.my/data-catalogue/fuelprice" target="_blank" rel="noopener">data.gov.my</a>.
-       Shops and places also from <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps Foundation</a> (Meta, Microsoft, Foursquare, AllThePlaces and others; <a href="/places/NOTICE.txt" target="_blank">licences</a>).</p>
+       Shops and places also from <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps Foundation</a> (Meta, Microsoft, Foursquare, AllThePlaces and others; <a href="/places/NOTICE.txt" target="_blank">licences</a>).
+       EV chargers also from <a href="https://openchargemap.org" target="_blank" rel="noopener">Open Charge Map</a> (<a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>).</p>
     <p>A2B is free and open source. <a href="https://github.com/thaqif0709/a2b" target="_blank" rel="noopener">Source code</a>, ideas and bug reports welcome, or send feedback from Settings.</p>
     <p class="about-credit">© 2026 Thaqif Syarafuddin bin Roslan and the A2B contributors.
        <a href="https://www.gnu.org/licenses/agpl-3.0.html" target="_blank" rel="noopener">GNU AGPL v3</a> with

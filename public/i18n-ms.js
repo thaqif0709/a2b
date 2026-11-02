@@ -4,7 +4,7 @@
 // Bahasa Melayu, keyed by the English the app is written in (see i18n.js). Everyday Malay, short enough for a
 // glance while driving. {name} and the like are filled in by the app and stay as they are.
 
-export const MS = {
+export default {
   // ---------- index.html: labels read out by screen readers ----------
   'Map': 'Peta',
   'Sound': 'Bunyi',

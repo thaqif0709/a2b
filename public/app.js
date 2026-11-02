@@ -196,7 +196,7 @@ boot();
 
 async function boot() {
   loadLocalSettings();
-  useLang(state.settings.lang);
+  const langReady = useLang(state.settings.lang); // under the splash; the Welcome card waits for it
   applyTheme(true);
   const last = local.get('lastPos');
   map = new maplibregl.Map({
@@ -255,7 +255,7 @@ async function boot() {
   refreshSound();
   // A shared-drive link goes straight to the drive; everyone else sees the welcome once, which then asks for location.
   if (/^\/drive\//.test(location.pathname)) startLocation();
-  else welcome(startLocation);
+  else langReady.then(() => welcome(startLocation));
   setInterval(() => loadReports(true), REPORT_REFRESH_MS);
   // Dead spots don't stop the drive: the loaded route keeps guiding, and everything needing the
   // network (rerouting, reports) resumes on its own when the signal is back.

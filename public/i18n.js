@@ -1,33 +1,52 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Thaqif Syarafuddin bin Roslan. A2B: https://github.com/thaqif0709/a2b (see NOTICE).
 
-// The app in the driver's language: English, as written in the code, or Bahasa Melayu (i18n-ms.js). A message is
-// looked up by its English text, so code reads as before and anything not yet translated stays in English:
+// The app in the driver's language. A message is looked up by its English text, so code reads as before and
+// anything not yet translated stays in English:
 //   tr('Where to?')                      tr('Continue to {name}?', { name })
 //   trPlural(n, '{n} driver', '{n} drivers')
 // index.html is translated as it stands (translatePage); text the app writes later goes through tr().
-// test/i18n.test.js checks that every message has its Malay.
+// test/i18n.test.js checks the translations.
 
-import { MS } from './i18n-ms.js';
+// The languages A2B speaks, each named in itself, with its word for "language" (shown under Settings › Language).
+// English is the code itself. Every other one has its words in public/i18n-<code>.js, fetched only by phones that
+// use it (the offline shell keeps them all). To add one: write its file like i18n-ms.js, list it here and in sw.js.
+export const LANGUAGES = [
+  { code: 'en', name: 'English', word: 'Language' },
+  { code: 'ms', name: 'Bahasa Melayu', word: 'Bahasa', locale: 'ms-MY', load: () => import('./i18n-ms.js') },
+];
 
-export const LANGS = ['en', 'ms'];
 let lang = 'en';
+let words = {}; // the current language's dictionary; empty in English
+let asked = 0;
 
 export const currentLang = () => lang;
 
-// The setting is 'auto', 'en' or 'ms'. Auto follows the phone: the first of its languages that A2B has.
+// The setting is 'auto' or a language code. Auto follows the phone: the first of its languages that A2B has.
 export function pickLang(setting, languages = globalThis.navigator?.languages ?? []) {
-  if (LANGS.includes(setting)) return setting;
+  const has = (code) => LANGUAGES.some((l) => l.code === code);
+  if (has(setting)) return setting;
   for (const l of languages) {
     const code = String(l).slice(0, 2).toLowerCase();
-    if (LANGS.includes(code)) return code;
+    if (has(code)) return code;
   }
   return 'en';
 }
 
-// Switches the whole page over; screens the app draws pick it up the next time they're drawn.
-export function useLang(setting) {
-  lang = pickLang(setting);
+// Fetches the language's words and switches the whole page over; screens the app draws pick it up the next time
+// they're drawn. If the words can't be had (offline before they were ever saved), the app stays as it is.
+export async function useLang(setting) {
+  const language = LANGUAGES.find((l) => l.code === pickLang(setting));
+  const ask = ++asked;
+  let dict = {};
+  try {
+    if (language.load) dict = (await language.load()).default;
+  } catch {
+    return;
+  }
+  if (ask !== asked) return; // switched again while this one was on its way
+  lang = language.code;
+  words = dict;
   if (typeof document === 'undefined') return;
   document.documentElement.lang = lang;
   translatePage();
@@ -36,11 +55,12 @@ export function useLang(setting) {
 const fill = (s, params) => s.replace(/\{(\w+)\}/g, (m, k) => (k in params ? String(params[k]) : m));
 
 export function tr(en, params) {
-  const s = (lang === 'ms' && MS[en]) || en;
+  const s = words[en] || en;
   return params ? fill(s, params) : s;
 }
 
-// English has one and many; Malay says "5 pemandu" and "1 pemandu" alike, so it has one entry, keyed by the many.
+// English has one and many. The others here say "5 pemandu" and "1 pemandu" alike, so they have one entry, keyed
+// by the many.
 export function trPlural(n, one, other, params = {}) {
   return tr(n === 1 && lang === 'en' ? one : other, { n, ...params });
 }
@@ -48,15 +68,17 @@ export function trPlural(n, one, other, params = {}) {
 // The server's messages are English sentences (see src/). One with a number in it, like "up to 5 places a day",
 // is looked up with the number as {n}.
 export function trServer(msg) {
-  if (lang !== 'ms' || !msg || MS[msg]) return tr(msg);
+  if (!msg || words[msg]) return tr(msg);
   const nums = [];
   const key = String(msg).replace(/\d+/g, (d) => (nums.push(d), '{n}'));
-  return MS[key] && nums.length === 1 ? fill(MS[key], { n: nums[0] }) : msg;
+  return words[key] && nums.length === 1 ? fill(words[key], { n: nums[0] }) : msg;
 }
 
-// For toLocaleTimeString and friends: Malay dates and times ("3:45 PTG") in Malay, the phone's own in English.
+// For toLocaleTimeString and friends: the language's own dates and times ("3:45 PTG" in Malay); in English, the
+// phone's own way.
 export function locale() {
-  if (lang === 'ms') return 'ms-MY';
+  const own = LANGUAGES.find((l) => l.code === lang)?.locale;
+  if (own) return own;
   return /^en/i.test(globalThis.navigator?.language ?? 'en') ? [] : 'en-MY';
 }
 

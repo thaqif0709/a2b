@@ -112,7 +112,7 @@ const SHIELD_LAYER = /shield|^highway_name_motorway$/;
 const SHIELD_SPACING = 700;
 
 // OpenFreeMap "bright", recoloured for night with plum roads and soft, light labels. Kept darker than the
-// route line (#d0569a) so the route still stands out the most.
+// route line (#ffbade) so the route still stands out the most.
 function brightPlumNight() {
   const bg = '#17131a';
   return [

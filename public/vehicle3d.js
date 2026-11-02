@@ -5,7 +5,7 @@
 // MapLibre custom layer, so it sits on the road in the map's own perspective. three.js is loaded on first use;
 // if it can't load or WebGL refuses, start() resolves false and the app keeps its flat arrow.
 
-const THREE_URL = 'https://unpkg.com/three@0.160.0/build/three.module.js';
+const THREE_URL = '/vendor/three-0.160.0/three.module.js'; // served from our own domain (README: Updating MapLibre and three.js)
 const SIZE_PX = { chevron: 44, car: 48, motorbike: 58, train: 78 }; // on-screen length, whatever the zoom
 export const VEHICLES = [['chevron', 'Chevron'], ['car', 'Car']];
 // Paint colours to choose from in Settings; the first, a brighter take on the app's plum, is the default.
@@ -25,7 +25,7 @@ let loading = null;
 
 // pose(): { pos: [lng, lat], heading } of the car as drawn this frame, or null to hide it. `kind` is a VEHICLES
 // value, or 'train' (in the line's colour) while riding.
-export async function start(map, kind, color, pose) {
+export async function start(map, kind, color, pose, { night = false } = {}) {
   try {
     THREE ??= await (loading ??= import(THREE_URL));
   } catch {
@@ -37,12 +37,14 @@ export async function start(map, kind, color, pose) {
   scene.add(new THREE.HemisphereLight('#ffffff', '#6b5a64', 1.6));
   const sun = new THREE.DirectionalLight('#ffffff', 2.2);
   sun.position.set(-0.6, 1.2, -0.4);
-  scene.add(sun, kind === 'car' ? car(color) : kind === 'motorbike' ? motorbike(color) : kind === 'train' ? train(color) : chevron(color), contactShadow(kind));
+  const vehicle = kind === 'car' ? car(color) : kind === 'motorbike' ? motorbike(color) : kind === 'train' ? train(color) : chevron(color);
+  if (night) addNightGlow(vehicle, kind, color);
+  scene.add(sun, vehicle, contactShadow(kind));
   const camera = new THREE.Camera();
   const rotateUp = new THREE.Matrix4().makeRotationX(Math.PI / 2);
   let renderer = null;
   let failed = false;
-  map.addLayer({
+  const layer = {
     id: 'vehicle-3d',
     type: 'custom',
     renderingMode: '3d',
@@ -53,6 +55,22 @@ export async function start(map, kind, color, pose) {
       } catch {
         failed = true;
       }
+    },
+    onRemove() {
+      // Models are rebuilt for theme, colour and settings changes. Release their GPU resources,
+      // including shared lamp textures, without destroying the map's WebGL context.
+      const geometries = new Set(), materials = new Set(), textures = new Set();
+      scene.traverse((object) => {
+        if (object.geometry) geometries.add(object.geometry);
+        for (const material of [object.material].flat().filter(Boolean)) {
+          materials.add(material);
+          if (material.map) textures.add(material.map);
+        }
+      });
+      geometries.forEach((geometry) => geometry.dispose());
+      materials.forEach((material) => material.dispose());
+      textures.forEach((texture) => texture.dispose());
+      renderer?.dispose();
     },
     render(gl, matrix) {
       const p = !failed && pose();
@@ -70,7 +88,12 @@ export async function start(map, kind, color, pose) {
       renderer.resetState();
       renderer.render(scene, camera);
     },
-  });
+  };
+  try {
+    map.addLayer(layer);
+  } catch {
+    return false; // the map's style hasn't loaded yet; app.js starts the vehicle again on 'style.load'
+  }
   return !failed;
 }
 
@@ -154,6 +177,7 @@ function car(color) {
   const lamp = (color, glow, z) => {
     for (const x of [-0.13, 0.13]) {
       const l = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.035, 0.02), material(color, { emissive: glow, emissiveIntensity: 0.7 }));
+      l.userData.vehicleLamp = z < 0 ? 'head' : 'tail';
       l.position.set(x, 0.16, z);
       g.add(l);
     }
@@ -187,8 +211,10 @@ function motorbike(color) {
   const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.1, 20, 14), material('#ffffff', { roughness: 0.3, emissive: '#ffffff', emissiveIntensity: 0.2 }));
   helmet.position.set(0, 0.74, 0.02);
   const head = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.05, 0.02), material('#fff6c8', { emissive: '#fff1a8', emissiveIntensity: 0.7 }));
+  head.userData.vehicleLamp = 'head';
   head.position.set(0, 0.3, -0.43);
   const tail = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.04, 0.02), material('#ff3b47', { emissive: '#c4121d', emissiveIntensity: 0.7 }));
+  tail.userData.vehicleLamp = 'tail';
   tail.position.set(0, 0.3, 0.42);
   g.add(body, seat, bars, torso, helmet, head, tail);
   return g;
@@ -220,6 +246,7 @@ function train(color) {
   const lamp = (c, glow, z) => {
     for (const x of [-0.07, 0.07]) {
       const l = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.035, 0.02), material(c, { emissive: glow, emissiveIntensity: 0.8 }));
+      l.userData.vehicleLamp = z < 0 ? 'head' : 'tail';
       l.position.set(x, 0.12, z);
       g.add(l);
     }
@@ -243,4 +270,45 @@ function contactShadow(kind) {
   m.rotation.x = -Math.PI / 2;
   m.position.y = 0.005;
   return m;
+}
+
+// Soft additive halos use a tiny shared texture, not full-map bloom or extra light/shadow passes.
+function addNightGlow(vehicle, kind, color) {
+  const canvas = document.createElement('canvas');
+  canvas.width = canvas.height = 128;
+  const context = canvas.getContext('2d');
+  const gradient = context.createRadialGradient(64, 64, 0, 64, 64, 64);
+  gradient.addColorStop(0, 'rgba(255,255,255,1)');
+  gradient.addColorStop(0.17, 'rgba(255,255,255,0.6)');
+  gradient.addColorStop(0.42, 'rgba(255,255,255,0.15)');
+  gradient.addColorStop(1, 'rgba(255,255,255,0)');
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 128, 128);
+  const texture = new THREE.CanvasTexture(canvas);
+  if (kind === 'chevron') {
+    const glow = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 1.9), new THREE.MeshBasicMaterial({
+      map: texture, color, transparent: true, opacity: 0.7, depthWrite: false, blending: THREE.AdditiveBlending,
+    }));
+    glow.name = 'night-chevron-glow';
+    glow.rotation.x = -Math.PI / 2;
+    glow.position.y = 0.005;
+    vehicle.add(glow);
+    return;
+  }
+  const lamps = [];
+  vehicle.traverse((object) => { if (object.userData.vehicleLamp) lamps.push(object); });
+  for (const lamp of lamps) {
+    const tail = lamp.userData.vehicleLamp === 'tail';
+    lamp.material.emissiveIntensity = tail ? 1.9 : 2.4;
+    const halo = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: texture, color: tail ? '#ff2338' : '#fff3c8', transparent: true, opacity: 0.85,
+      depthWrite: false, blending: THREE.AdditiveBlending,
+    }));
+    halo.name = tail ? 'night-tail-glow' : 'night-head-glow';
+    halo.position.copy(lamp.position);
+    // Place the halo just outside the bevelled body so the shell does not hide it.
+    halo.position.z += tail ? 0.06 : -0.06;
+    halo.scale.setScalar(tail ? 0.32 : 0.4);
+    vehicle.add(halo);
+  }
 }

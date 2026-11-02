@@ -93,6 +93,9 @@ npm test
 npm run deploy                                  # predeploy prints "Place data: Overture …, N places"
 ```
 
+- The predeploy step stops the deploy if the live database is missing a migration (`scripts/check-migrations.mjs`).
+  Apply it, then deploy again. `SKIP_MIGRATION_CHECK=1` skips the check (only for rolling back code).
+
 - `public/places/` (shop search) isn't in git. On a fresh checkout build it first:
   `pip install duckdb && npm run places`. Deploying without it removes shop search from the live app.
 - After deploying, check the live site: fetch a changed file (add `?v=<timestamp>`; Cloudflare's cache can serve

@@ -321,6 +321,7 @@ export function openSettings() {
       ${toggleRow('voice', 'Voice directions')}
       ${toggleRow('alerts', 'Report alerts while driving', 'Police, crashes, hazards and closures ahead')}
       ${toggleRow('speed_warning', 'Speeding warning', 'Speedometer turns red above the posted limit')}
+      ${toggleRow('weather', 'Weather and rest tips', 'Rain on your route, what to bring, and when to rest')}
     </div>
     <div class="set-group"><h3>Voice</h3><div id="voice-list"></div></div>
     <div class="set-group"><h3>Navigation</h3>
@@ -339,6 +340,7 @@ export function openSettings() {
       <div class="set-row"><span>Vehicle<small>How you appear on the map</small></span><div class="choice" id="s-vehicle">${VEHICLES
         .map(([v, l]) => `<button data-v="${v}" class="${local.get('vehicle', 'chevron') === v ? 'on' : ''}">${l}</button>`)
         .join('')}</div></div>
+      ${toggleRow('night_vehicle_lights', 'Night vehicle lights', 'Soft vehicle-light glow in night mode. On by default.')}
       <div class="set-row swatch-row"><span>Colour</span><div class="swatches" id="s-vehicle-color">${COLORS
         .map(([c, l]) => `<button data-c="${c}" aria-label="${l}" title="${l}" class="${local.get('vehicleColor', DEFAULT_COLOR) === c ? 'on' : ''}" style="--c:${c}"></button>`)
         .join('')}</div></div>
@@ -377,7 +379,9 @@ export function openSettings() {
         return;
       }
       if (c.dataset.set === 'traffic_probe' && !c.checked) stopSharing();
-      await saveSettings({ [c.dataset.set]: c.checked });
+      const saving = saveSettings({ [c.dataset.set]: c.checked });
+      if (c.dataset.set === 'night_vehicle_lights') ctx.setupVehicle();
+      await saving;
       if (c.dataset.set === 'voice') ctx.refreshSound();
       if (c.dataset.set === 'map_pois') ctx.drawPois();
     };
@@ -721,6 +725,7 @@ function openAbout() {
     <p>Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>.
        Map tiles by <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>.
        Routing by <a href="https://valhalla.github.io/valhalla/" target="_blank" rel="noopener">Valhalla</a>, search by <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a>, live traffic and house addresses by <a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a>,
+       weather by <a href="https://www.met.gov.my" target="_blank" rel="noopener">MET Malaysia</a> (data.gov.my), <a href="https://api.met.no" target="_blank" rel="noopener">MET Norway</a> and <a href="https://weatherkit.apple.com/legal-attribution.html" target="_blank" rel="noopener"> Weather</a>,
        train timetables from Prasarana and KTMB via <a href="https://data.gov.my" target="_blank" rel="noopener">data.gov.my</a>.
        Shops and places also from <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps Foundation</a> (Meta, Microsoft, Foursquare, AllThePlaces and others; <a href="/places/NOTICE.txt" target="_blank">licences</a>).
        EV chargers also from <a href="https://openchargemap.org" target="_blank" rel="noopener">Open Charge Map</a> (<a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>).</p>

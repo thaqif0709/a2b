@@ -227,6 +227,20 @@ export const TYPES = {
   ev: { label: 'EV chargers', words: ['ev charg(?:ers?|ing(?: stations?)?)', 'electric (?:car |vehicle )?charg(?:ers?|ing)', 'charging stations?', 'chargers?', 'pengecas(?: ev)?', 'stesen (?:cas|pengecas)', 'cas ev', 'ev'] },
   convenience: { label: 'Convenience stores', words: ['convenience stores?', 'convenience shops?', 'kedai serbaneka', 'kedai runcit', 'convenience', 'serbaneka', 'mini ?marts?'] },
 };
+
+// The kinds of place a search finds nearest first, as buttons under the search box (app.js). Each searches for words
+// a search already recognises: TYPES' label for those above, and "Parking", which the server answers with car parks
+// (src/lib/parking.js).
+export const SEARCH_CATEGORIES = [
+  { type: 'fuel', label: 'Petrol' },
+  { type: 'parking', label: 'Parking' },
+  { type: 'ev', label: 'EV charging' },
+  { type: 'hospital', label: 'Hospital' },
+  { type: 'clinic', label: 'Clinic' },
+  { type: 'police', label: 'Police' },
+  { type: 'convenience', label: 'Convenience' },
+].map((c) => ({ ...c, query: TYPES[c.type]?.label ?? 'Parking' }));
+
 const TYPE_RES = Object.entries(TYPES).map(([type, t]) => [type, new RegExp(`\\b(?:${t.words.join('|')})\\b`, 'gi')]);
 const FILLER = /\b(?:near(?:by|est)?|closest|at|in|around|by|the|a|an|me|my|here|dekat|berdekatan|terdekat|di|kat|sini|yang)\b/gi;
 const TYPE_RADIUS_KM = 25;

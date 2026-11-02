@@ -55,6 +55,9 @@ globalThis.fetch = async (url, init = {}) => {
     const address = { streetNumber: '129', streetName: 'Jalan BK 5/6', freeformAddress: '129, Jalan BK 5/6, Bandar Kinrara, 47180 Puchong, Selangor', countrySubdivision: 'Selangor' };
     return Response.json({ results: [{ type: 'Point Address', address, position: { lat: 3.0414207, lon: 101.6477069 } }] });
   }
+  if (u.includes('api.data.gov.my/weather/forecast')) return Response.json([]);
+  if (u.includes('api.data.gov.my/weather/warning')) return Response.json([]);
+  if (u.includes('api.met.no')) return Response.json({ properties: { timeseries: [] } });
   if (u.includes('api.tomtom.com')) {
     tomtomCalls++;
     lastTomtomMode = new URL(u).searchParams.get('travelMode');
@@ -173,7 +176,7 @@ function client(device) {
 // open even when A2B is full). Everything else (accounts, places, reports, trips) doesn't.
 function needsSpot(method, path) {
   if (path === '/api/presence') return false;
-  if (method === 'GET' && (path.startsWith('/api/search') || path.startsWith('/api/address') || path.startsWith('/api/reverse') || path.startsWith('/api/parking') || path.startsWith('/api/chargers'))) return true;
+  if (method === 'GET' && (path.startsWith('/api/search') || path.startsWith('/api/address') || path.startsWith('/api/reverse') || path.startsWith('/api/parking') || path.startsWith('/api/chargers') || path.startsWith('/api/weather'))) return true;
   return method === 'POST' && (path === '/api/route' || path === '/api/transit');
 }
 
@@ -311,6 +314,10 @@ test('saved and recent places', async () => {
   assert.equal((await bob('DELETE', `/api/places/${saved.body.place.id}`)).status, 200);
   r = await alice('GET', '/api/places');
   assert.equal(r.body.saved[0].name, 'My gym', "Bob can't delete Alice's place");
+  assert.equal((await alice('DELETE', '/api/places?kind=recent')).status, 200);
+  r = await alice('GET', '/api/places');
+  assert.equal(r.body.recent.length, 0, 'bulk clear empties recent history');
+  assert.equal((await alice('DELETE', '/api/places?kind=foo')).status, 400);
   assert.equal((await client()('GET', '/api/places')).status, 401);
 });
 
@@ -1132,6 +1139,19 @@ test('EV chargers: the whole list, fetched from OpenStreetMap by the nightly job
   assert.equal(overpassCalls, calls + 1, 'not again within the week');
 });
 
+test('weather along a route needs a spot and sensible points', async () => {
+  const anon = client('weather-no-spot');
+  assert.equal((await anon('GET', '/api/weather?pts=101.69,3.15,1')).status, 503, 'no spot yet');
+  const c = client();
+  assert.equal((await c('GET', '/api/weather')).status, 400);
+  assert.equal((await c('GET', '/api/weather?pts=101.69,3.15,1')).status, 400, 'a time long past');
+  const at = Math.round(Date.now() / 1000) + 600;
+  const res = await c('GET', `/api/weather?pts=101.69,3.15,${at};999,3.15,${at}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.points.length, 1, 'the impossible point is dropped');
+  assert.deepEqual(res.body.warnings, []);
+});
+
 test('trips by train need a spot, a start and a destination', async () => {
   assert.equal((await client('transit-no-spot')('POST', '/api/transit', { from: [101.6865, 3.134], to: [101.7116, 3.1579] })).status, 503);
   const c = client();
@@ -1241,4 +1261,18 @@ test('train reports: riders report on a line, others see them on it and on trips
   assert.equal(v.body.removed, true);
   assert.equal((await client()('GET', `/api/train-reports?lines=${KJ}`)).body.reports.length, 0);
   assert.equal((await dan('POST', `/api/train-reports/${id}/vote`, { vote: 'still' })).status, 404);
+});
+
+test('night vehicle lights persist across sessions and accept only boolean preferences', async () => {
+  const first = client();
+  const account = { email: 'night-lights@example.test', password: 'night-lights-test-password', name: 'Night lights test', settings: { night_vehicle_lights: false } };
+  const signup = await first('POST', '/api/auth/signup', account);
+  assert.equal(signup.status, 201);
+  assert.equal(signup.body.user.settings.night_vehicle_lights, false);
+  const second = client();
+  assert.equal((await second('POST', '/api/auth/login', account)).status, 200);
+  assert.equal((await second('GET', '/api/me')).body.user.settings.night_vehicle_lights, false);
+  assert.equal((await second('PATCH', '/api/me', { settings: { night_vehicle_lights: true } })).body.user.settings.night_vehicle_lights, true);
+  await second('PATCH', '/api/me', { settings: { night_vehicle_lights: 'false' } });
+  assert.equal((await first('GET', '/api/me')).body.user.settings.night_vehicle_lights, true, 'invalid values must not overwrite the saved boolean');
 });

@@ -97,10 +97,11 @@ test('the language follows the setting, or else the phone', () => {
   assert.equal(pickLang('auto', ['en-MY', 'ms-MY']), 'en');
   assert.equal(pickLang('auto', ['ja-JP', 'ms']), 'ms');
   assert.equal(pickLang('auto', ['ja-JP']), 'en');
+  assert.equal(pickLang('auto', ['zh-Hant-TW', 'en']), 'zh');
   assert.equal(pickLang(undefined, []), 'en');
 });
 
-test('tr, trPlural and trServer in English and Malay', async () => {
+test('tr, trPlural and trServer in English, Malay and Chinese', async () => {
   try {
     await useLang('en');
     assert.equal(tr('Where to?'), 'Where to?');
@@ -118,6 +119,12 @@ test('tr, trPlural and trServer in English and Malay', async () => {
     assert.equal(trServer('You can suggest up to 5 places a day. Thank you!'), 'Anda boleh mencadangkan sehingga 5 tempat sehari. Terima kasih!');
     assert.equal(trServer('No path could be found for input'), 'No path could be found for input');
     assert.equal(locale(), 'ms-MY');
+
+    await useLang('zh');
+    assert.equal(tr('Where to?'), '去哪里？');
+    assert.equal(trPlural(1, '{n} other person is waiting too. You\'ll get in when a spot opens.', "{n} other people are waiting too. You'll get in when a spot opens."), '还有 1 人在等待。有空位时你就能进入。');
+    assert.equal(trServer('You can suggest up to 5 places a day. Thank you!'), '你每天最多可以建议 5 个地点。谢谢！');
+    assert.equal(locale(), 'zh-MY');
   } finally {
     await useLang('en');
   }

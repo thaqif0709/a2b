@@ -9,10 +9,10 @@ import { TrainGuide, markerFor, walkText } from './train-guide.js';
 import { Glide } from './motion.js';
 import { Follow, shouldSend, nextPollDelay } from './follow.js';
 import { sheetGesture, settle, rubberBand } from './sheet-drag.js';
-import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES, addTypeSource, withoutBaseDuplicates } from './places.js';
+import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES, addTypeSource, withoutBaseDuplicates, SEARCH_CATEGORIES } from './places.js';
 import { addressQuery, addressToLookUp, withAddresses } from './address.js';
 import { start as startVehicle, DEFAULT_COLOR, vehicleFor } from './vehicle3d.js';
-import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PLACE_ICONS, soundIcon } from './icons.js';
+import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PLACE_ICONS, CATEGORY_ICONS, soundIcon } from './icons.js';
 import {
   $, state, api, local, toast, esc, timeAgo, speak, loadLocalSettings, saveSettings, loadPlaces, addPlace, removePlace, renamePlace,
   isSaved, setHomeWork, armBack, sideColumnEnd,
@@ -1118,6 +1118,20 @@ function wireUi() {
       if (q.length >= 2) runSearch(q, true);
     }
   };
+  // A category button searches for that kind of place, as typing it would: the nearest ones (see searchByType), or
+  // the car parks around you.
+  $('search-cats').replaceChildren(...SEARCH_CATEGORIES.map((c) => {
+    const icon = CATEGORY_ICONS[c.type];
+    const b = el('button', 'cat', `<span class="cat-ic" style="background:${icon.color}">${icon.svg}</span>${esc(c.label)}`);
+    b.type = 'button';
+    b.onclick = () => {
+      $('search-input').value = c.query;
+      $('search-clear').classList.remove('hidden');
+      $('search-input').blur(); // the list, not the keyboard
+      runSearch(c.query);
+    };
+    return b;
+  }));
   $('search-clear').onclick = () => {
     $('search-input').value = '';
     $('search-clear').classList.add('hidden');
@@ -1255,6 +1269,8 @@ function openSearchFor(target) {
   $('search-target').textContent = label ?? '';
   $('search-target').classList.toggle('hidden', !label);
   $('search-input').placeholder = target ? 'Search for an address' : 'Where to?';
+  // Petrol or a clinic makes sense to drive to or stop at on the way, not as Home, Work or a trip's start.
+  $('search-cats').classList.toggle('hidden', Boolean(target) && target !== 'stop');
   showSearchHome();
   // Focus now, inside the tap: iPhones only bring the keyboard up for a focus made during the tap itself, and
   // ignored the old delayed one. The delayed one stays as a fallback for browsers that need a frame first.

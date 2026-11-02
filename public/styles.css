@@ -232,9 +232,11 @@ textarea.field { height: auto; padding: 12px 14px; resize: vertical; font: inher
   content: ''; position: absolute; inset: 0; transform: translateX(-100%);
   background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--bg) 55%, transparent), transparent); animation: shimmer 1.2s ease-in-out infinite;
 }
-#search-home, #results { overflow: auto; flex: 1; padding-bottom: calc(20px + var(--safe-bottom)); }
+/* Up and down only: with both axes, iPhone Safari can hand a sideways swipe on the category row (.cats) to this list,
+   which has nothing to scroll sideways, so the row doesn't move. */
+#search-home, #results { overflow-x: hidden; overflow-y: auto; flex: 1; padding-bottom: calc(20px + var(--safe-bottom)); }
 /* Kinds of place to find the nearest of, in one row that scrolls sideways, above Home and Work. */
-.cats { display: flex; gap: 8px; overflow-x: auto; padding: 14px 14px 0; scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+.cats { display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden; padding: 14px 14px 0; scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; touch-action: pan-x pan-y; }
 .cats::-webkit-scrollbar { display: none; }
 .cat { flex: none; display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px 0 5px; border-radius: 20px; background: var(--bg-2); font-weight: 600; font-size: 15px; white-space: nowrap; }
 .cat:active { filter: brightness(0.94); }

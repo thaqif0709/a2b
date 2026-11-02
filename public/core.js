@@ -6,7 +6,7 @@
 export const $ = (id) => document.getElementById(id);
 
 export const DEFAULT_SETTINGS = {
-  voice: true, alerts: true, speed_warning: true, units: 'metric', theme: 'auto', avoid_tolls: false, avoid_highways: false, avoid_ferries: false, traffic_probe: false, map_pois: true, night_vehicle_lights: true,
+  voice: true, alerts: true, speed_warning: true, units: 'metric', theme: 'auto', avoid_tolls: false, avoid_highways: false, avoid_ferries: false, traffic_probe: false, map_pois: true, night_vehicle_lights: true, weather: true,
 };
 
 export const state = {

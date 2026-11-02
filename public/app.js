@@ -32,6 +32,7 @@ import { shouldCheck as shouldCheckFaster, pickFaster, offerText, checkBody, OFF
 import { signPlaces } from './signs.js';
 import { mapPlace } from './map-places.js';
 import { initSuggest, openSuggest, closeSuggest, suggesting, syncDriverPlaces } from './suggest.js';
+import { weatherPoints, weatherQuery, describeTrip, wetAhead, spokenWeather, restReminder, drivesAtNight, REST_EVERY_S } from './weather.js';
 
 // Which map look to use for day or night (see map-themes.js). 'mapTheme' in local storage overrides it.
 function mapThemeId(t = themeNow) {
@@ -104,6 +105,8 @@ let offTrail = []; // where the car has been since it left the current route
 const tollsSpoken = new Set(); // toll plazas (route + index) already announced this drive
 const camerasWarned = new Set(); // fixed speed cameras (route + index) already announced this drive
 const schoolsWarned = new Set(); // school zones (route + index) already announced this drive
+let weather = null; // { route, points, answer } for the route on screen or being driven (see weather.js)
+const weatherSpoken = new Set(); // wet stretches (route + point) already announced this drive
 const cameraPins = [];
 
 // ================= Boot =================
@@ -683,6 +686,8 @@ let restRows = null; // rest-stops.json's rows once loaded
 let restAlong = null; // { nav, list }: this route's stops
 let breakClock = null;
 const restSpoken = new Set();
+let sinceBreakS = 0; // seconds at the wheel since the last break, from the latest fix
+let restReminded = null; // `${break}:${every 2 hours}` the break reminder was last given for, here or by checkWeather
 
 function loadRestStops() {
   if (restRows) return;
@@ -694,7 +699,7 @@ function loadRestStops() {
 
 function checkRest(fix) {
   const chip = $('rest-chip');
-  const sinceBreak = breakClock?.update(Date.now(), fix.speed) ?? 0;
+  const sinceBreak = (sinceBreakS = breakClock?.update(Date.now(), fix.speed) ?? 0);
   if (!restRows || !nav || !live) return;
   if (restAlong?.nav !== nav) restAlong = { nav, list: restStopsAlong(nav.coords, nav.cum, restRows) };
   const next = !stops.length && nextRestStop(live.along, restAlong.list, { sinceBreak, longDrive: nav.total >= LONG_DRIVE_M });
@@ -710,6 +715,7 @@ function checkRest(fix) {
   const key = `${breakClock.since}:${stop.name}`;
   if (remind && !restSpoken.has(key)) {
     restSpoken.add(key);
+    restReminded = restDue();
     const hours = Math.floor(sinceBreak / 3600);
     const which = { 'R&R': 'An R&R', 'Lay-by': 'A lay-by' }[stop.name] ?? stop.name;
     speak(`You've been driving for ${hours > 1 ? `over ${hours} hours` : 'a while'}. ${which} is ${spokenDistance(ahead, units)} ahead, if you'd like a break.`);
@@ -1645,6 +1651,7 @@ async function openPreview(place) {
   $('browse-ui').classList.add('hidden');
   $('preview').classList.remove('hidden', 'peek');
   $('peek-summary').textContent = '';
+  renderWeather(null);
   $('dest-name').textContent = place.name;
   $('dest-addr').textContent = place.address || '';
   // A wrong place can be fixed; a dropped pin or typed coordinates are just a spot.
@@ -1690,6 +1697,7 @@ async function openPreview(place) {
     renderPeekSummary();
     drawRoutes();
     fitRoutes();
+    loadWeather(routes[selected]);
     $('btn-go').disabled = false;
     if (resuming && !origin) return resumeStart(); // carrying on with a trip the phone cut off
     if (!origin) autoGo.restart(); // a drive from somewhere else doesn't start by itself
@@ -2332,6 +2340,73 @@ function routeNote(rs) {
   return '';
 }
 
+// The weather on the way and on arrival for a route, leaving now, plus rest tips for a long or night drive (see
+// weather.js). The weather is extra: a failure or a full A2B just leaves it out. Each route's answer is kept, so
+// switching between routes doesn't ask again.
+async function loadWeather(route) {
+  if (!route || state.settings.weather === false) return renderWeather(null);
+  if (weather?.route === route) return renderWeather(weather);
+  route.weather ??= (async () => {
+    const points = weatherPoints(route);
+    const answer = points.length ? await api(`/api/weather?${weatherQuery(points)}`).catch(() => null) : null;
+    return { route, points, answer };
+  })();
+  const w = await route.weather;
+  if (routes[selected] === route || nav?.route === route) {
+    weather = w;
+    if (mode === 'preview') renderWeather(w);
+  }
+}
+
+function renderWeather(w) {
+  const box = $('route-weather');
+  const trip = w && describeTrip(w.answer, w.points, { start: Date.now(), seconds: w.route.duration }, {
+    clock: (at) => formatClock(new Date(at)),
+    duration: formatDuration,
+  });
+  box.classList.toggle('hidden', !trip);
+  if (!trip) return (box.innerHTML = '');
+  const credit = trip.sources.map((src) => `<a href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.name)}</a>`).join(' · ');
+  box.dataset.sky = trip.sky;
+  box.innerHTML = `<span class="w-ic" aria-hidden="true">${WEATHER_ICONS[trip.sky] ?? WEATHER_ICONS.clear}</span>
+    <div class="w-text">${trip.lines.map((l, i) => `<p${i ? '' : ' class="w-main"'}>${esc(l)}</p>`).join('')}
+    ${trip.tips.length ? `<ul class="w-tips">${trip.tips.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}${credit ? `<small>${credit}</small>` : ''}</div>`;
+}
+
+const WEATHER_ICONS = {
+  clear: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  cloudy: '<svg viewBox="0 0 24 24"><path d="M7 18a4.5 4.5 0 1 1 .9-8.9A6 6 0 0 1 19.5 11 3.5 3.5 0 0 1 18.5 18Z" fill="currentColor"/></svg>',
+  rain: '<svg viewBox="0 0 24 24"><path d="M7 14a4.5 4.5 0 1 1 .9-8.9A6 6 0 0 1 19.5 7 3.5 3.5 0 0 1 18.5 14Z" fill="currentColor"/><path d="m8 17-1 3M12.5 17l-1 3M17 17l-1 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  storm: '<svg viewBox="0 0 24 24"><path d="M7 13a4.5 4.5 0 1 1 .9-8.9A6 6 0 0 1 19.5 6 3.5 3.5 0 0 1 18.5 13Z" fill="currentColor"/><path d="m12.5 13-3 5h4l-2 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
+WEATHER_ICONS['heavy-rain'] = WEATHER_ICONS.rain;
+WEATHER_ICONS.haze = WEATHER_ICONS.windy = WEATHER_ICONS.cloudy;
+WEATHER_ICONS.rest = '<svg viewBox="0 0 24 24"><path d="M5 9h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5Z" fill="currentColor"/><path d="M16 10.5h1.5a2.5 2.5 0 0 1 0 5H16M8 3.5c-.8 1 .8 2 0 3M12 3.5c-.8 1 .8 2 0 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+
+// Which 2-hour stretch since the last break this is, e.g. "1730000000000:1" after 2 hours without one; null before.
+const restDue = () => (breakClock && sinceBreakS >= REST_EVERY_S ? `${breakClock.since}:${Math.floor(sinceBreakS / REST_EVERY_S)}` : null);
+
+// While driving: one spoken heads-up a few km before rain or a storm the forecast puts on the way, and a reminder
+// to rest after every 2 hours at the wheel without a break. The R&R chip names a stop for that (checkRest, which
+// runs first); this says it when there's none to name, so it's said once either way. After a reroute, the new
+// route's weather is fetched (from the server's hourly cache, so it's cheap).
+function checkWeather() {
+  if (state.settings.weather === false || !nav || !live) return;
+  const due = restDue();
+  if (due && due !== restReminded) {
+    restReminded = due;
+    const rest = restReminder(sinceBreakS, 0, drivesAtNight(Date.now(), 0));
+    speak(rest);
+    toast(rest, 8000);
+  }
+  if (weather?.route !== nav.route) return void loadWeather(nav.route);
+  const next = wetAhead(weather.answer, weather.points, live.along);
+  const key = next && `${nav.total}:${next.i}`;
+  if (!next || weatherSpoken.has(key)) return;
+  weatherSpoken.add(key);
+  speak(spokenWeather(next));
+}
+
 // `check`: a faster-route check's checkBody (faster-route.js), so the server can skip what an unwanted answer needs.
 async function requestRoutes(from, to, heading, via = [], { check = null } = {}) {
   const s = state.settings;
@@ -2540,6 +2615,7 @@ function selectRoute(i) {
   renderPeekSummary();
   drawRoutes();
   drawRouteLabels();
+  loadWeather(routes[selected]);
   autoGo.restart();
 }
 
@@ -2686,6 +2762,8 @@ function startDrive() {
   tollsSpoken.clear();
   camerasWarned.clear();
   schoolsWarned.clear();
+  weatherSpoken.clear();
+  restReminded = null;
   $('toll-chip').classList.add('hidden');
   $('rest-chip').classList.add('hidden');
   breakClock = new BreakClock(Date.now());
@@ -2775,12 +2853,13 @@ function driveTick(fix) {
   drawDriveLine();
   drawManeuverArrow();
   if (live.prompt) speak(live.prompt);
-  // Tolls, R&Rs, speed cameras, school zones, road reports ahead and faster routes in traffic are for drivers.
+  // Tolls, R&Rs, speed cameras, school zones, weather ahead, road reports ahead and faster routes in traffic are for drivers.
   if (travel !== 'walk') {
     checkTolls();
     checkRest(fix);
     checkCameras();
     checkSchools();
+    checkWeather();
     checkAlerts();
     checkFaster();
   }

@@ -80,7 +80,7 @@ test('each translation keeps the same {placeholders} and has each key once', () 
   for (const [code, dict] of DICTS) {
     for (const [en, said] of Object.entries(dict)) assert.deepEqual(holes(said), holes(en), `${code}: ${en}`);
     const src = read(`public/i18n-${code}.js`);
-    const keys = [...src.matchAll(/^\s*(['"])((?:\\.|(?!\1).)*)\1:(?:\s|$)/gm)].length;
+    const keys = [...src.matchAll(/(?:^|[{,])\s*(['"])((?:\\.|(?!\1).)*)\1\s*:/gm)].length;
     assert.equal(keys, Object.keys(dict).length, `${code}: no key is written twice`);
   }
 });
@@ -95,8 +95,8 @@ test('the language follows the setting, or else the phone', () => {
   assert.equal(pickLang('en', ['ms-MY']), 'en');
   assert.equal(pickLang('auto', ['ms-MY', 'en-GB']), 'ms');
   assert.equal(pickLang('auto', ['en-MY', 'ms-MY']), 'en');
-  assert.equal(pickLang('auto', ['zh-CN', 'ms']), 'ms');
-  assert.equal(pickLang('auto', ['zh-CN']), 'en');
+  assert.equal(pickLang('auto', ['ja-JP', 'ms']), 'ms');
+  assert.equal(pickLang('auto', ['ja-JP']), 'en');
   assert.equal(pickLang(undefined, []), 'en');
 });
 

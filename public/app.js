@@ -9,10 +9,10 @@ import { TrainGuide, markerFor, walkText } from './train-guide.js';
 import { Glide } from './motion.js';
 import { Follow, shouldSend, nextPollDelay } from './follow.js';
 import { sheetGesture, settle, rubberBand } from './sheet-drag.js';
-import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES, addTypeSource, withoutBaseDuplicates } from './places.js';
+import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES, addTypeSource, withoutBaseDuplicates, SEARCH_CATEGORIES } from './places.js';
 import { addressQuery, addressToLookUp, withAddresses } from './address.js';
 import { start as startVehicle, DEFAULT_COLOR, vehicleFor } from './vehicle3d.js';
-import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PLACE_ICONS, soundIcon } from './icons.js';
+import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PLACE_ICONS, CATEGORY_ICONS, soundIcon } from './icons.js';
 import {
   $, state, api, local, toast, esc, timeAgo, speak, loadLocalSettings, saveSettings, loadPlaces, addPlace, removePlace, renamePlace,
   isSaved, setHomeWork, armBack, sideColumnEnd,
@@ -27,6 +27,7 @@ import { prefetchRouteTiles } from './offline.js';
 import { isSchoolTime, schoolAhead, schoolLimit } from './school-zones.js';
 import { DeadReckoner, shouldEstimate, nearTunnel, pointAt, BAD_ACCURACY_M } from './dead-reckoning.js';
 import { matchesWordStarts } from './text.js';
+import { restStopsAlong, nextRestStop, BreakClock } from './rest-stops.js';
 import { shouldCheck as shouldCheckFaster, pickFaster, offerText, checkBody, OFFER_FOR_MS, KEEP_FOR_MS } from './faster-route.js';
 import { signPlaces } from './signs.js';
 import { mapPlace } from './map-places.js';
@@ -679,6 +680,46 @@ function checkTolls() {
   }
 }
 
+// While driving a long way: a chip for each R&R coming up on your side of the road, and after two hours without a
+// break, the next one suggested (spoken once). Tap the chip to stop there. See rest-stops.js.
+const LONG_DRIVE_M = 50_000;
+let restRows = null; // rest-stops.json's rows once loaded
+let restAlong = null; // { nav, list }: this route's stops
+let breakClock = null;
+const restSpoken = new Set();
+
+function loadRestStops() {
+  if (restRows) return;
+  fetch('/rest-stops.json')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => (restRows = d?.stops ?? null))
+    .catch(() => {});
+}
+
+function checkRest(fix) {
+  const chip = $('rest-chip');
+  const sinceBreak = breakClock?.update(Date.now(), fix.speed) ?? 0;
+  if (!restRows || !nav || !live) return;
+  if (restAlong?.nav !== nav) restAlong = { nav, list: restStopsAlong(nav.coords, nav.cum, restRows) };
+  const next = !stops.length && nextRestStop(live.along, restAlong.list, { sinceBreak, longDrive: nav.total >= LONG_DRIVE_M });
+  if (!next) return chip.classList.add('hidden');
+  const { stop, ahead, remind } = next;
+  const units = state.settings.units;
+  chip.innerHTML = `<b>${stop.kind === 's' ? 'R&amp;R' : 'REST'}</b><span>${remind ? 'Time for a break? ' : ''}${esc(stop.name === 'R&R' ? 'Rest and service area' : stop.name)}<small>${formatDistance(ahead, units)} ahead · Tap to stop here</small></span>`;
+  chip.onclick = () => {
+    chip.classList.add('hidden');
+    addStop({ name: stop.name, address: stop.kind === 's' ? 'R&R' : 'Lay-by', lat: stop.lat, lng: stop.lng });
+  };
+  chip.classList.remove('hidden');
+  const key = `${breakClock.since}:${stop.name}`;
+  if (remind && !restSpoken.has(key)) {
+    restSpoken.add(key);
+    const hours = Math.floor(sinceBreak / 3600);
+    const which = { 'R&R': 'An R&R', 'Lay-by': 'A lay-by' }[stop.name] ?? stop.name;
+    speak(`You've been driving for ${hours > 1 ? `over ${hours} hours` : 'a while'}. ${which} is ${spokenDistance(ahead, units)} ahead, if you'd like a break.`);
+  }
+}
+
 // While driving: a spoken warning and a card at about 800 m before each fixed speed camera, with its limit.
 function checkCameras() {
   if (!state.settings.alerts) return;
@@ -1122,6 +1163,20 @@ function wireUi() {
       if (q.length >= 2) runSearch(q, true);
     }
   };
+  // A category button searches for that kind of place, as typing it would: the nearest ones (see searchByType), or
+  // the car parks around you.
+  $('search-cats').replaceChildren(...SEARCH_CATEGORIES.map((c) => {
+    const icon = CATEGORY_ICONS[c.type];
+    const b = el('button', 'cat', `<span class="cat-ic" style="background:${icon.color}">${icon.svg}</span>${esc(c.label)}`);
+    b.type = 'button';
+    b.onclick = () => {
+      $('search-input').value = c.query;
+      $('search-clear').classList.remove('hidden');
+      $('search-input').blur(); // the list, not the keyboard
+      runSearch(c.query);
+    };
+    return b;
+  }));
   $('search-clear').onclick = () => {
     $('search-input').value = '';
     $('search-clear').classList.add('hidden');
@@ -1259,6 +1314,8 @@ function openSearchFor(target) {
   $('search-target').textContent = label ?? '';
   $('search-target').classList.toggle('hidden', !label);
   $('search-input').placeholder = target ? 'Search for an address' : 'Where to?';
+  // Petrol or a clinic makes sense to drive to or stop at on the way, not as Home, Work or a trip's start.
+  $('search-cats').classList.toggle('hidden', Boolean(target) && target !== 'stop');
   showSearchHome();
   // Focus now, inside the tap: iPhones only bring the keyboard up for a focus made during the tap itself, and
   // ignored the old delayed one. The delayed one stays as a fallback for browsers that need a frame first.
@@ -2385,14 +2442,16 @@ function routeAtTap(e) {
 // map, and pushed back up. It follows the finger like an iPhone sheet: while dragging, its height tracks
 // the finger (the route list shrinks, the header and Go stay put); a flick or a long enough drag settles it.
 function setupSheetDrag() {
-  collapsibleSheet($('preview'), $('route-list'), () => mode === 'preview' && routes.length && fitRoutes());
+  // Pulling the route sheet down to see the map is looking around, like moving the map: wait for Go.
+  collapsibleSheet($('preview'), $('route-list'), () => mode === 'preview' && routes.length && fitRoutes(), { pulled: () => autoGo.stop() });
   collapsibleSheet($('parking'), $('parking-list'), fitParking);
 }
 
 // A sheet that can be pulled down to a slim bar to see the map, and pushed back up. It follows the finger
 // like an iPhone sheet: while dragging, its height tracks the finger (the list shrinks, the header stays
-// put); a flick or a long enough drag settles it. settled() runs once it has, e.g. to refit the map.
-function collapsibleSheet(sheet, list, settled) {
+// put); a flick or a long enough drag settles it. settled() runs once it has, e.g. to refit the map. pulled() runs
+// as soon as the driver drags the sheet or taps its grabber to fold it down.
+function collapsibleSheet(sheet, list, settled, { pulled = () => {} } = {}) {
   let fullH = 0, peekH = 0, startH = 0, timer = null;
   const peeked = () => sheet.classList.contains('peek');
   // Both heights, measured by flipping the layout for a moment (no paint happens in between).
@@ -2417,13 +2476,17 @@ function collapsibleSheet(sheet, list, settled) {
     sheet.style.height = `${peek ? peekH : fullH}px`;
     timer = setTimeout(done, 300);
   };
-  sheet.querySelector('.grabber').onclick = () => set(!peeked());
+  sheet.querySelector('.grabber').onclick = () => {
+    if (!peeked()) pulled();
+    set(!peeked());
+  };
   sheetGesture(sheet, {
     // Not from inside a list that scrolls: that drag scrolls it (the header still pulls the sheet). Taking it as a
     // pull let the sheet snap back on release and the list never moved.
     start: (e) => !(e.target.closest(`#${list.id}`) && (list.scrollTop > 0 || list.scrollHeight > list.clientHeight + 1)),
     move: (dy) => {
       if (!sheet.classList.contains('dragging')) {
+        pulled();
         measure();
         startH = peeked() ? peekH : fullH;
         sheet.classList.remove('peek');
@@ -2498,7 +2561,8 @@ function renderRouteOptions() {
 }
 
 // Like Waze, the route sheet sets off on the chosen route by itself after a short wait. Picking another route
-// starts the wait again for that one; moving the map, Leave later or closing the sheet stops it.
+// starts the wait again for that one; moving the map, pulling the sheet down, Leave later or closing the sheet
+// stops it. Once stopped it stays stopped until another route is picked with the sheet up, or Go is tapped.
 const AUTO_GO_S = 8;
 const autoGo = (() => {
   let timer = null, left = 0;
@@ -2518,6 +2582,7 @@ const autoGo = (() => {
     buttonDisabled: go().disabled,
     pageHidden: document.hidden,
     blockingOverlayOpen: ['later', 'panel', 'search', 'auth'].some((id) => !$(id).classList.contains('hidden')),
+    sheetCollapsed: ['peek', 'dragging'].some((c) => $('preview').classList.contains(c)),
     closuresIgnored: routes.closuresIgnored,
   });
   const restart = () => {
@@ -2693,6 +2758,11 @@ function startDrive() {
   weatherSpoken.clear();
   restsSaid = 0;
   $('toll-chip').classList.add('hidden');
+  $('rest-chip').classList.add('hidden');
+  breakClock = new BreakClock(Date.now());
+  restAlong = null;
+  restSpoken.clear();
+  loadRestStops();
   resetFaster();
   $('school-chip').classList.add('hidden');
   map.getSource('school-pin')?.setData(emptyFc());
@@ -2776,9 +2846,10 @@ function driveTick(fix) {
   drawDriveLine();
   drawManeuverArrow();
   if (live.prompt) speak(live.prompt);
-  // Tolls, speed cameras, school zones, weather ahead, road reports ahead and faster routes in traffic are for drivers.
+  // Tolls, R&Rs, speed cameras, school zones, weather ahead, road reports ahead and faster routes in traffic are for drivers.
   if (travel !== 'walk') {
     checkTolls();
+    checkRest(fix);
     checkCameras();
     checkSchools();
     checkWeather();
@@ -3247,6 +3318,7 @@ async function endDrive(arrived) {
   drawTrail();
   resetFaster();
   $('toll-chip').classList.add('hidden');
+  $('rest-chip').classList.add('hidden');
   $('school-chip').classList.add('hidden');
   map.getSource('school-pin')?.setData(emptyFc());
   pinnedSchool = null;

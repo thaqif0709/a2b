@@ -233,6 +233,13 @@ textarea.field { height: auto; padding: 12px 14px; resize: vertical; font: inher
   background: linear-gradient(90deg, transparent, color-mix(in srgb, var(--bg) 55%, transparent), transparent); animation: shimmer 1.2s ease-in-out infinite;
 }
 #search-home, #results { overflow: auto; flex: 1; padding-bottom: calc(20px + var(--safe-bottom)); }
+/* Kinds of place to find the nearest of, in one row that scrolls sideways, above Home and Work. */
+.cats { display: flex; gap: 8px; overflow-x: auto; padding: 14px 14px 0; scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; }
+.cats::-webkit-scrollbar { display: none; }
+.cat { flex: none; display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px 0 5px; border-radius: 20px; background: var(--bg-2); font-weight: 600; font-size: 15px; white-space: nowrap; }
+.cat:active { filter: brightness(0.94); }
+.cat-ic { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; color: #fff; flex: none; }
+.cat-ic svg { width: 18px; height: 18px; }
 .quick { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 14px; }
 .quick-tile { display: flex; gap: 10px; align-items: center; padding: 12px; border-radius: 14px; background: var(--bg-2); text-align: left; min-width: 0; }
 .quick-tile b { display: block; }
@@ -427,6 +434,8 @@ body.walking #speedo, body.walking #limit, body.walking #toll-chip, body.walking
 .toll-chip span { min-width: 0; line-height: 1.25; }
 .toll-chip span, .toll-chip small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .toll-chip small { display: block; color: var(--muted); font-size: 11.5px; font-weight: 500; }
+.rest-chip { margin-top: 6px; border: 0; font: inherit; font-size: 13px; font-weight: 600; text-align: left; cursor: pointer; }
+.rest-chip b { background: #2f9e44; color: #fff; }
 .faster-card {
   display: flex; align-items: center; gap: 8px; width: min(100%, 360px); padding: 8px 8px 8px 14px; border-radius: 16px; background: var(--bg); color: var(--text);
   box-shadow: var(--shadow); font-size: 14px;

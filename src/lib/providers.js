@@ -9,6 +9,7 @@ import { normalizeText, matches } from '../../public/text.js';
 
 export { normalizeText, matches };
 import { pointAlong } from '../../public/nav.js';
+import { compactSign, withSign } from '../../public/signs.js';
 import { tollIndexes } from './tolls.js';
 
 const UA = 'a2b-navigation/0.1 (+https://a2b-beta.pages.dev)';
@@ -180,7 +181,9 @@ const MANEUVER = {
 
 export const MAX_EXCLUDE = 50; // the public Valhalla server's limit on avoided spots
 
-// travel: 'drive' (the default) or 'walk', which takes footpaths and pedestrian crossings and ignores one-way streets.
+// travel: 'drive' (the default), 'motorcycle' (Valhalla's motorcycle costing; tolls aren't avoided, since most
+// Malaysian plazas are free for motorcycles) or 'walk', which takes footpaths and pedestrian crossings and ignores
+// one-way streets.
 export function buildRouteRequest({ from, to, via = [], avoid = {}, units = 'metric', lang = 'en-US', heading, exclude = [], travel = 'drive' }) {
   const start = { lat: from[1], lon: from[0] };
   if (Number.isFinite(heading)) {
@@ -191,16 +194,21 @@ export function buildRouteRequest({ from, to, via = [], avoid = {}, units = 'met
     locations: [start, ...via.map(([lng, lat]) => ({ lat, lon: lng, type: 'break' })), { lat: to[1], lon: to[0] }],
     ...(travel === 'walk'
       ? { costing: 'pedestrian', costing_options: { pedestrian: { use_ferry: avoid.ferries ? 0 : 0.5 } } }
-      : {
-          costing: 'auto',
-          costing_options: {
-            auto: {
-              use_tolls: avoid.tolls ? 0 : 0.5,
-              use_highways: avoid.highways ? 0 : 1,
-              use_ferry: avoid.ferries ? 0 : 0.5,
+      : travel === 'motorcycle'
+        ? {
+            costing: 'motorcycle',
+            costing_options: { motorcycle: { use_tolls: 1, use_highways: avoid.highways ? 0 : 1, use_ferry: avoid.ferries ? 0 : 0.5 } },
+          }
+        : {
+            costing: 'auto',
+            costing_options: {
+              auto: {
+                use_tolls: avoid.tolls ? 0 : 0.5,
+                use_highways: avoid.highways ? 0 : 1,
+                use_ferry: avoid.ferries ? 0 : 0.5,
+              },
             },
-          },
-        }),
+          }),
     exclude_locations: exclude.slice(0, MAX_EXCLUDE).map(([lng, lat]) => ({ lat, lon: lng })),
     alternates: via.length ? 0 : 2, // Valhalla only offers alternatives between two points
     units: units === 'imperial' ? 'miles' : 'kilometers',
@@ -281,15 +289,20 @@ export function normalizeTrip(trip, units = 'metric') {
   };
 }
 
+// Ramps, exits, forks and merges: the turns that have expressway signs worth showing (see public/signs.js).
+const SIGNED = new Set([17, 18, 19, 20, 21, 22, 23, 24, 25, 37, 38]);
+
 function step(m, unit, offset) {
+  const sign = SIGNED.has(m.type) ? compactSign(m.sign) : null;
   return {
     type: MANEUVER[m.type] ?? 'straight',
     instruction: m.instruction,
-    alert: m.verbal_transition_alert_instruction || m.verbal_succinct_transition_instruction || m.instruction,
-    pre: m.verbal_pre_transition_instruction || m.instruction,
+    alert: withSign(m.verbal_transition_alert_instruction || m.verbal_succinct_transition_instruction || m.instruction, sign),
+    pre: withSign(m.verbal_pre_transition_instruction || m.instruction, sign),
     post: m.verbal_post_transition_instruction || null,
     street: (m.street_names ?? m.begin_street_names ?? [])[0] || '',
     exit: m.roundabout_exit_count ?? null,
+    ...(sign && { sign }),
     lanes: lanes(m.lanes),
     begin: m.begin_shape_index + offset,
     end: m.end_shape_index + offset,
@@ -307,12 +320,17 @@ export function lanes(list) {
   return out.some((l) => l.use) ? out : null;
 }
 
-// Posted speed limits and toll booths along a route, from OpenStreetMap via Valhalla's trace_attributes.
-// limits: runs [[first shape index, km/h or null], ...], one entry per change; tolls: shape indexes of toll plazas.
+// Posted speed limits, toll booths and tunnels along a route, from OpenStreetMap via Valhalla's trace_attributes.
+// limits: runs [[first shape index, km/h or null], ...], one entry per change; tolls: shape indexes of toll plazas;
+// tunnels: [[first, last shape index], ...], where GPS drops out (public/dead-reckoning.js keeps the car moving).
 export async function fetchRouteAttributes(env, shapes, coords) {
   const perLeg = await Promise.all(shapes.map(({ shape }) => fetchLegEdges(env, shape)));
-  const runs = [], tolls = [];
+  const runs = [], tolls = [], tunnels = [];
   perLeg.forEach((edges, i) => {
+    for (const [a, b] of tunnelRuns(edges ?? [], shapes[i].offset)) {
+      if (tunnels.length && a - tunnels.at(-1)[1] <= 1) tunnels.at(-1)[1] = Math.max(tunnels.at(-1)[1], b);
+      else tunnels.push([a, b]);
+    }
     for (const [at, v] of (edges && speedLimitRuns(edges)) ?? [[0, null]]) {
       if (!runs.length || runs.at(-1)[1] !== v) runs.push([at + shapes[i].offset, v]);
     }
@@ -320,7 +338,19 @@ export async function fetchRouteAttributes(env, shapes, coords) {
       if (!tolls.length || distance(coords[tolls.at(-1)], coords[at]) > 300) tolls.push(at);
     }
   });
-  return { limits: runs.some((r) => r[1] != null) ? runs : null, tolls };
+  return { limits: runs.some((r) => r[1] != null) ? runs : null, tolls, tunnels };
+}
+
+// Shape index ranges of the tunnel edges, joined where one runs into the next (a long tunnel is several edges).
+export function tunnelRuns(edges, offset = 0) {
+  const runs = [];
+  for (const e of edges) {
+    if (!e.tunnel || e.begin_shape_index == null) continue;
+    const a = e.begin_shape_index + offset, b = (e.end_shape_index ?? e.begin_shape_index) + offset;
+    if (runs.length && a - runs.at(-1)[1] <= 1) runs.at(-1)[1] = Math.max(runs.at(-1)[1], b);
+    else runs.push([a, b]);
+  }
+  return runs;
 }
 
 async function fetchLegEdges(env, shape) {
@@ -332,7 +362,7 @@ async function fetchLegEdges(env, shape) {
       encoded_polyline: shape,
       shape_match: 'edge_walk',
       costing: 'auto',
-      filters: { attributes: ['edge.speed_limit', 'edge.begin_shape_index', 'edge.end_shape_index', 'node.type'], action: 'include' },
+      filters: { attributes: ['edge.speed_limit', 'edge.tunnel', 'edge.begin_shape_index', 'edge.end_shape_index', 'node.type'], action: 'include' },
     }),
     signal: AbortSignal.timeout(4000),
   });

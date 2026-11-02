@@ -40,12 +40,18 @@ Keep the screen on while you drive (A2B keeps it awake). Only use it when it's s
 
 | Feature | What it does |
 | --- | --- |
-| 🔎 **Search** | Places from OpenStreetMap plus shops from Overture Maps, searched near you. Landmarks come first, and paste coordinates (`3.15, 101.71`) to go anywhere. Search a kind of place in English or Malay ("petrol", "stesen minyak", "hospital", "klinik", "balai polis", "convenience store", "petrol near klcc") for the nearest ones. |
-| ⛽ **On the map** | Petrol stations, hospitals, clinics and convenience stores show on the map when zoomed in. Tap one, or any station (LRT, MRT, KTM, monorail, bus) or landmark the map shows, for routes there. |
+| 🔎 **Search** | Places from OpenStreetMap plus shops from Overture Maps, searched near you. Landmarks come first, and paste coordinates (`3.15, 101.71`) to go anywhere. Search a kind of place in English or Malay ("petrol", "stesen minyak", "hospital", "klinik", "balai polis", "convenience store", "ev charger", "pengecas", "petrol near klcc") for the nearest ones. Places you pick are kept as your search history, on the phone without an account (Clear wipes it). Can't find a place, or it's in the wrong spot? With an account, add it or fix it by moving the map under a pin; once a tester approves it, every phone finds it (and the driver gets 10 points). |
+| ⛽ **On the map** | Petrol stations, EV chargers, hospitals, clinics and convenience stores show on the map when zoomed in. Tap one, or any station (LRT, MRT, KTM, monorail), bus stop, car park or landmark the map shows, named or not, for routes there. |
 | 🛣️ **Routes** | Up to three routes with drive time in live traffic (jams coloured on the line), arrival, tolls and reported traffic. Tap a route on the map to pick it; the chosen one starts by itself after 8 seconds. |
+| ⚡ **Faster route found** | While you drive, A2B looks again now and then; when another way is clearly quicker (5+ minutes and 10%), it offers it on a card and says so. Switch or keep, or it goes away by itself. |
+| 🏍️ **Motorbike** | Switch the route options to Motorbike for routes a motorcycle can take, with the same cameras, limits and reports, and no toll to pay at plazas that are free for motorcycles. While riding, your position shows as a motorbike and rider in your colour. |
+| 🟩 **Exit signs** | Expressway exits show their overhead sign on the turn banner, green as on the road: the exit number, the road it leads onto and where it goes ("EXIT 218 · 241 · Seremban / Labu"), and the voice names them too. |
 | 🚶 **Walking** | Switch the route options to Walk for footpaths and pedestrian crossings, with the same spoken directions. |
 | 🚆 **By train** | Switch a route to Train for trips on the LRT, MRT, Monorail, BRT and KTM Komuter: the walk to the station, which line (in its colour) and which way, how often trains run, where to change and the walk at the end, drawn on the map. Live departure times open in Google Maps. |
+| 🚇 **Train guidance** | Start a train trip to be guided through it: the walk to the station, which train, the next station as you go (estimated from the timetable underground, where GPS drops out), "Next stop: Masjid Jamek. Get off here." with a buzz, and where to change. A 3D train in the line's colour shows where you are on the line. Works while A2B is open on screen. |
 | 🗣️ **Turn by turn** | Spoken directions, the next turn and the one after, lane guidance, roundabout exits, a turn arrow on the map, and rerouting when you go off route. |
+| 🚇 **Tunnel mode** | When the GPS drops out in a tunnel (SMART Tunnel, Penchala Link, KL's underpasses) or anywhere while moving, the car keeps going along the route at its last speed, so the next turn still comes. "No GPS · Estimating" shows until the signal is back, for up to 90 s or 2.5 km. |
+| 🏫 **School zones** | At school times (6:30–7:45, 12:30–2:30, 5:45–6:45 on school days, Sunday to Thursday in Kedah, Kelantan and Terengganu), "School zone ahead. Slow down to 30." about 300 m before each school on the route, with a "30 km/h zone" chip and a pin on the school until you're past. School holidays aren't known, so it still warns on those days. |
 | 📸 **Speed cameras** | Fixed AES and AWAS cameras on your route, with a voice warning and the limit about 800 m before each. |
 | 💰 **Tolls** | Toll plazas along the route, with the car price and ways to pay (Touch 'n Go, RFID, SmartTAG) where mapped. |
 | 🅿️ **Parking** | Car parks near your destination, paid or free, with type and spaces. Pick one and the drive reroutes there. Or search "parking", "parking klcc" or "letak kereta pavilion". |
@@ -108,8 +114,38 @@ The database tables are created on the first request (or run `npm run db:migrate
   them, the weather comes from MET Malaysia.
 - `TESTER_EMAILS` (a secret: `npx wrangler secret put TESTER_EMAILS`): accounts that get the testing tools and the
   usage dashboard.
+- `OCM_KEY` (a secret, optional): an [Open Charge Map](https://openchargemap.org/site/develop/api) API key, free, for
+  more EV chargers than OpenStreetMap has.
 
 To use your own domain, add it under *Workers & Pages → a2b → Settings → Domains & Routes*.
+
+**Updating MapLibre and three.js.** The map library ([MapLibre GL JS](https://maplibre.org)) and the 3D vehicle
+library ([three.js](https://threejs.org)) are served from `public/vendor/<name>-<version>/`, not from a CDN, so a
+network that blocks or stalls the CDN can't stop the app from opening. They don't update by themselves. To move to
+a new version:
+
+1. Download the new files from npm, which checks them against the registry's checksums:
+
+   ```bash
+   npm pack maplibre-gl@<version>    # and/or three@<version>
+   tar -xzf maplibre-gl-<version>.tgz
+   ```
+
+2. Copy them into a new folder named `<name>-<version>` (not `<name>@<version>`: Cloudflare redirects `@` to `%40`,
+   an extra round trip for every file), with the licence, and delete the old folder:
+   - MapLibre: `package/dist/maplibre-gl.js`, `package/dist/maplibre-gl.css` and `package/LICENSE.txt` into
+     `public/vendor/maplibre-gl-<version>/`
+   - three.js: `package/build/three.module.js` and `package/LICENSE` (as `LICENSE.txt`) into
+     `public/vendor/three-<version>/`
+3. Change the version in every place that names it:
+   - MapLibre: the `<link>` and `<script>` in `public/index.html`, and `MAPLIBRE` in `public/sw.js`
+   - three.js: `THREE_URL` in `public/vehicle3d.js`, and `VENDOR` in `public/sw.js`
+4. Bump `CACHE` in `public/sw.js` (e.g. `a2b-v41` → `a2b-v42`), so phones pick up the new files and drop the old ones.
+5. Check the release notes for breaking changes, run `npm test`, try the map, a route and a drive in a browser,
+   then deploy as usual.
+
+Never point the app back at a CDN URL: the Content-Security-Policy in `public/_headers` only allows the app's own
+scripts, so a CDN script is blocked.
 
 </details>
 
@@ -124,14 +160,18 @@ Everything A2B uses is free and needs no key:
 | Routing, speed limits, toll booths | [Valhalla public server](https://valhalla1.openstreetmap.de) (`ROUTING_URL`) | Community-run, fair use. |
 | Search | [Photon](https://photon.komoot.io) (`GEOCODER_URL`) | Community-run, fair use. |
 | Live traffic (optional) | [TomTom Routing API](https://developer.tomtom.com) (`TOMTOM_KEY` secret) | Times each route with today's traffic; free up to a monthly quota. Without a key, routes use typical speeds. Answers aren't stored. |
+| House addresses (optional) | [TomTom Geocoding API](https://developer.tomtom.com) (same `TOMTOM_KEY`, with the Search API enabled) | Asked only for a search that looks like an address ("129, BK 5/6, Puchong") that Photon and the shop files don't have, at most `ADDRESS_LOOKUPS_PER_DAY` (600) a day. Answers aren't stored. |
 | Weather (optional) | [Apple WeatherKit REST API](https://developer.apple.com/weatherkit/) (`WEATHERKIT_*` secrets, below) | Hourly forecasts for the exact spot; included with an Apple Developer Program membership (500,000 calls a month). Each ~11 km square is fetched at most once an hour. |
 | Weather | [MET Malaysia open data](https://developer.data.gov.my/realtime-api/weather) | 7-day forecasts for ~420 towns and live warnings. Used without WeatherKit, or when it fails; fetched once an hour for the whole country. Town positions are in `src/lib/met-towns.json` (`npm run met-towns`). |
 | Humidity at the destination | [MET Norway Locationforecast](https://api.met.no/weatherapi/locationforecast/2.0/documentation) | Free, also for commercial use, with credit. Only when the forecast has no humidity (MET Malaysia's doesn't), for what-to-wear tips. Each ~11 km square at most once an hour. |
 | Train timetables (LRT, MRT, Monorail, BRT, KTM Komuter) | [data.gov.my GTFS](https://developer.data.gov.my/realtime-api/gtfs-static) (Prasarana, KTMB) | Built with `npm run transit` into `src/lib/transit-data.json`, kept in git. Each feed runs to an end date the build prints; rebuild before then. Walks to and from stations use the routing server's walking routes. |
 | Toll plaza and car park details | [OpenStreetMap API](https://wiki.openstreetmap.org/wiki/API) | Looked up once and cached. |
-| Shops and places | [Overture Maps](https://overturemaps.org) | Built into small files the phone searches (`npm run places`). |
+| Shops and places | [Overture Maps](https://overturemaps.org) | Built into small files the phone searches (`npm run places`), by name and by street. |
+| Places drivers added or fixed | A2B drivers, approved by a tester | Kept in the database; phones download what changed since they last asked. |
 | Roads under construction | [Overture Maps](https://overturemaps.org) (OpenStreetMap roads) | Built with `npm run construction`, kept in git. |
 | Fixed speed cameras (AES, AWAS) | OpenStreetMap, found through Photon | Built with `npm run cameras` into `public/cameras.json`, kept in git. |
+| Schools | OpenStreetMap, through the [Overpass API](https://overpass-api.de) | Built with `npm run schools` into `public/schools.json` (kindergartens, tuition centres and colleges left out), kept in git. |
+| EV chargers | OpenStreetMap ([Overpass API](https://overpass-api.de)), [Open Charge Map](https://openchargemap.org) (`OCM_KEY` secret, optional), Overture Maps | Kept in the database and refreshed weekly by the nightly job (the first list arrives with its first run after deploying). Open Charge Map's openly licensed chargers (CC BY-SA 4.0) are added when a free key is set (`npx wrangler secret put OCM_KEY`). |
 
 The community servers ask for fair use, which is why the beta caps how many people use it at once. For more
 traffic, point `ROUTING_URL` and `GEOCODER_URL` at your own [Valhalla](https://github.com/valhalla/valhalla) and
@@ -177,6 +217,7 @@ public/                 the web app
   geo.js, icons.js      maths, formatting, turn arrows and pins
   report-types.js       report types, lifetimes and points (shared with the server)
   sw.js, manifest       installable app, offline shell
+  vendor/               MapLibre GL JS and three.js, served from our own domain (see "Updating MapLibre and three.js")
 src/
   worker.js             the API
   lib/providers.js      search (Photon) and routing (Valhalla), speed limits, reports along a route
@@ -261,8 +302,10 @@ over the internet included, you must offer them its source code under the same l
 
 Map data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL). Places and roads under
 construction from the [Overture Maps Foundation](https://overturemaps.org) (see `public/places/NOTICE.txt` once built).
+Map drawn with [MapLibre GL JS](https://maplibre.org) (BSD 3-Clause) and the 3D vehicle with [three.js](https://threejs.org)
+(MIT); their licences are in `public/vendor/`.
 Map tiles by [OpenFreeMap](https://openfreemap.org), routing by [Valhalla](https://github.com/valhalla/valhalla),
-search by [Photon](https://github.com/komoot/photon), live traffic by [TomTom](https://www.tomtom.com). Train
+search by [Photon](https://github.com/komoot/photon), live traffic and house addresses by [TomTom](https://www.tomtom.com). Train
 timetables from Prasarana and KTMB through [data.gov.my](https://data.gov.my) (CC BY 4.0). Weather
 forecasts and warnings from [MET Malaysia](https://www.met.gov.my) through [data.gov.my](https://data.gov.my) (CC BY
 4.0), humidity from [MET Norway](https://api.met.no) (CC BY 4.0), and from

@@ -17,9 +17,10 @@
     "db:migrate:remote": "wrangler d1 migrations apply a2b --remote",
     "test": "node --no-warnings --test test/*.test.js",
     "places": "python3 scripts/build-places.py",
-    "predeploy": "node scripts/check-places.mjs && node scripts/app-version.mjs",
+    "predeploy": "node scripts/check-migrations.mjs && node scripts/check-places.mjs && node scripts/check-transit.mjs && node scripts/app-version.mjs",
     "construction": "python3 scripts/build-construction.py",
     "cameras": "node scripts/build-cameras.mjs",
+    "schools": "node scripts/build-schools.mjs",
     "met-towns": "node scripts/build-met-towns.mjs",
     "transit": "python3 scripts/build-transit.py"
   },

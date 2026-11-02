@@ -7,8 +7,9 @@ Downloads Overture's places for one country, keeps the reasonably confident ones
 writes them as small JSON files into public/places/: one file per area of 0.5 x 0.5 degrees (about
 55 x 55 km) and first letter of a word in the place's name. Searching "nandos" near you downloads only
 the "n" file for your area and the areas next to it, and searches it on the phone, so this costs nothing
-to host and uses no database. Each area also gets a file per kind of place people look for nearby (petrol
-stations, hospitals, clinics, police stations, convenience stores; see TYPES), for searches like "petrol"
+to host and uses no database. A place is also filed under the words of its street ("bk" for "5 Jalan BK 5/6"),
+so searching an address finds the shops on that street (see public/address.js). Each area also gets a file per kind of place people look for nearby (petrol
+stations, hospitals, clinics, police stations, convenience stores, EV chargers; see TYPES), for searches like "petrol"
 that name a kind of place rather than a place: most petrol stations are just called "Petronas" or "Shell".
 
 OpenStreetMap-sourced places are left out: A2B already searches OpenStreetMap through Photon, and leaving
@@ -55,6 +56,7 @@ TYPES = {
         or (cat in ('hospital', 'health_care', 'medical_service') and bool(CLINIC_NAME.search(name)))),
     'police': lambda name, cat: cat == 'police_station',
     'convenience': lambda name, cat: cat == 'convenience_store',
+    'ev': lambda name, cat: cat == 'ev_charging_station',  # the server adds OpenStreetMap's and Open Charge Map's
 }
 
 # Rough bounding boxes, so Overture only has to scan the right parts of its files.
@@ -111,11 +113,32 @@ def main():
 
     shards = {}  # 'area/prefix' -> [(place, words)]
     typed = {}  # 'area/@kind' -> [(place, words)]
+    kept = 0
     for name, lng, lat, street, locality, category, _conf in rows:
+        kept += 1
         area = f'{math.floor(lat / AREA)}_{math.floor(lng / AREA)}'
         address = ', '.join(dict.fromkeys(p.strip() for p in (street, locality) if p and p.strip()))[:70]
         place = [name.strip()[:70], round(lng, 5), round(lat, 5), address, category or '']
         name_words = words(name)
+        name_words += [w for w in street_index_words(street) if w not in name_words]  # address search
+        # Overture carries check-in pages where people tagged "KLCC" while sitting in another city or a few
+        # km away. Keep only those within the real Kuala Lumpur City Centre cluster (about 1.75 km), so a
+        # rebuild doesn't re-add them to the static search files.
+        if 'klcc' in name.lower().replace('.', ''):
+            dkm = math.hypot((lng - 101.712) * 111.0 * math.cos(math.radians((lat + 3.158) / 2)),
+                              (lat - 3.158) * 111.0)
+            if dkm > 1.75:
+                kept -= 1
+                continue
+        # Overture sometimes pins "1 Utama"/"One Utama" in the wrong place (a far-off row was landing
+        # in the results). Keep only pins near the real mall cluster in Bandar Utama.
+        utama = name.lower().replace('.', '')
+        if '1 utama' in utama or 'one utama' in utama:
+            dkm = math.hypot((lng - 101.615) * 111.0 * math.cos(math.radians((lat + 3.150) / 2)),
+                              (lat - 3.150) * 111.0)
+            if dkm > 2.0:
+                kept -= 1
+                continue
         for letter in sorted({shard_letter(w) for w in name_words}):
             shards.setdefault(f'{area}/{letter}', []).append((place, name_words))
         for kind, test in TYPES.items():
@@ -147,7 +170,7 @@ def main():
         'built': time.strftime('%Y-%m-%d'),
         'area': AREA,
         'minConfidence': args.min_confidence,
-        'count': len(rows),
+        'count': kept,
         'areas': sorted(areas),
         'attribution': 'Places: Overture Maps Foundation (Meta, Microsoft, Foursquare, AllThePlaces and others)',
     }
@@ -175,6 +198,56 @@ def normalize(text):
 
 def words(text):
     return [w for w in re.split(r'[\W_]+', normalize(text)) if w]
+
+
+# The word of a place's street it is also filed under, by the same rules as public/address.js (streetText, findStreet
+# and streetIndexWords): the last word of the street's name, "bk" for "5 Jalan BK 5/6", "razak" for "Jalan Tun Razak",
+# or the first number of a street of numbers only ("14" for "Jalan 14/22"). One word of the street, not every word of
+# the address, keeps the files small: about 17% more data (Overture 2026-10-21: 184 MB -> 215 MB).
+STREET_WORDS = {
+    'jalan': 'jalan', 'jln': 'jalan', 'jl': 'jalan', 'lorong': 'lorong', 'lrg': 'lorong', 'persiaran': 'persiaran',
+    'lebuh': 'lebuh', 'lebuhraya': 'lebuhraya', 'lingkaran': 'lingkaran', 'lengkok': 'lengkok', 'changkat': 'changkat',
+}
+KEYWORDS = set(STREET_WORDS.values())
+CODE = re.compile(r'^\d+[a-z]?/[a-z\d]+$')
+MAX_STREET_WORDS = 6
+
+
+def street_text(text):
+    text = unicodedata.normalize('NFD', text or '')
+    text = ''.join(c for c in text if not unicodedata.combining(c)).lower()
+    text = re.sub(r"['\u2019`.]", '', text)
+    text = re.sub(r'(\d[a-z]?)\s*/\s*(?=[a-z\d])', r'\1/', text)
+    text = re.sub(r'[^\w/]+|_', ' ', text)
+    text = re.sub(r'([^\W\d_])(?=\d)', r'\1 ', text)
+    out = []
+    for w in text.split():
+        out += [w] if CODE.match(w) else [x for x in w.split('/') if x]
+    return [STREET_WORDS.get(w, w) for w in out]
+
+
+def find_street(ws):
+    kw = next((i for i, w in enumerate(ws) if w in KEYWORDS), -1)
+    code = next((i for i, w in enumerate(ws) if i > 0 and CODE.match(w) and ws[i - 1].isalpha() and (kw < 0 or i > kw)), -1)
+    start = kw if kw >= 0 else code - 1
+    if start < 0:
+        return None
+    end = code + 1 if code > start else len(ws)
+    pc = next((i for i, w in enumerate(ws) if i > start and re.fullmatch(r'\d{5}', w)), -1)
+    if 0 < pc < end:
+        end = pc
+    end = min(end, start + MAX_STREET_WORDS)
+    return ws[start:end] if end - start >= 2 else None
+
+
+def street_index_words(address):
+    for part in re.split(r'[,;\n]+', address or ''):
+        street = find_street(street_text(part))
+        if street:
+            ws = [x for w in street for x in w.split('/') if x]
+            named = [w for w in ws if w.isalpha() and w not in KEYWORDS]
+            return named[-1:] or [w for w in ws if w[0].isdigit()][:1]
+    return []
 
 
 def split_big(shards):

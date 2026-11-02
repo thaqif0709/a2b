@@ -14,8 +14,8 @@ const REPORT_COOLDOWN = 60_000; // one report a minute per driver: fast enough o
 const REPORT_RADIUS_M = 10_000; // a report should come from near it: within this of the driver's known position
 
 // Each "still there" adds a quarter of the type's life, but a report never lives more than 2 lifetimes from now.
-export function extendedExpiry(type, currentExpiry, now = Date.now()) {
-  const life = REPORT_TYPES[type].life * MIN;
+export function extendedExpiry(type, currentExpiry, now = Date.now(), types = REPORT_TYPES) {
+  const life = types[type].life * MIN;
   return Math.min(Math.max(currentExpiry, now) + life / 4, now + life * 2);
 }
 

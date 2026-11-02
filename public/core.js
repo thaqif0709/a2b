@@ -6,7 +6,7 @@
 export const $ = (id) => document.getElementById(id);
 
 export const DEFAULT_SETTINGS = {
-  voice: true, alerts: true, speed_warning: true, units: 'metric', theme: 'auto', avoid_tolls: false, avoid_highways: false, avoid_ferries: false, traffic_probe: false, map_pois: true, weather: true,
+  voice: true, alerts: true, speed_warning: true, units: 'metric', theme: 'auto', avoid_tolls: false, avoid_highways: false, avoid_ferries: false, traffic_probe: false, map_pois: true, night_vehicle_lights: true, weather: true,
 };
 
 export const state = {
@@ -48,20 +48,30 @@ const deviceId = (() => {
   return id;
 })();
 
-export async function api(path, { method = 'GET', body } = {}) {
+// A request still unanswered after this long is given up as unreachable, rather than spinning for as long as the
+// phone lets a dead connection hang. Longer than the server's own wait on its slowest provider (a route).
+const API_TIMEOUT_MS = 40_000;
+
+// Set by presence.js: checks this device in again and says whether it has a spot.
+export const presenceHook = { recheck: null };
+
+export async function api(path, { method = 'GET', body, retry = true } = {}) {
   const res = await fetch(path, {
     method,
     headers: { 'x-a2b-device': deviceId, ...(body === undefined ? {} : { 'content-type': 'application/json' }) },
     body: body === undefined ? undefined : JSON.stringify(body),
     credentials: 'same-origin',
+    signal: AbortSignal.timeout?.(API_TIMEOUT_MS),
   }).catch(() => {
     throw Object.assign(new Error("Can't reach A2B. Check your connection and try again."), { status: 0 });
   });
   const data = await res.json().catch(() => ({}));
+  // Turned away for want of a spot: usually this device's spot lapsed (the app was away for over 5 minutes) or
+  // its first check-in hasn't landed yet on a slow connection. Check in, and if that gets a spot, ask once more.
+  if (data.code === 'full' && retry && (await presenceHook.recheck?.())) return api(path, { method, body, retry: false });
   // Without a message of our own, a 429 or 5xx came from Cloudflare itself, e.g. the free plan's daily cap.
   const busy = res.status === 429 || res.status >= 500;
   const fallback = busy ? 'A2B is busy right now (it runs on free servers during the beta). Try again in a minute.' : `Something went wrong (${res.status}).`;
-  if (data.code === 'full') dispatchEvent(new Event('a2b:full'));
   if (!res.ok) throw Object.assign(new Error(data.error || fallback), { status: res.status, code: data.code });
   return data;
 }
@@ -133,7 +143,7 @@ export async function renamePlace(kind, id, name) {
   const p = state.places[kind].find((x) => x.id === id);
   if (!p) return;
   p.name = name;
-  if (state.user) await api(`/api/places/${id}`, { method: 'PATCH', body: { name } });
+  if (state.user && !String(id).startsWith('local-')) await api(`/api/places/${id}`, { method: 'PATCH', body: { name } });
   else local.set(kind, state.places[kind]);
 }
 
@@ -167,6 +177,19 @@ export function toast(msg, ms = 2600) {
   el.classList.remove('hidden');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.add('hidden'), ms);
+}
+
+// A phone on its side keeps its sheets, the turn banner and the trip sheet in a column on the left (styles.css,
+// "Phone on its side"). Where the map's free room starts, in px from the left edge; 0 when the column isn't there.
+let sideProbe = null;
+export function sideColumnEnd() {
+  if (!matchMedia('(orientation: landscape) and (max-height: 540px)').matches) return 0;
+  if (!sideProbe) {
+    sideProbe = document.createElement('i');
+    sideProbe.style.cssText = 'position: fixed; top: 0; left: var(--side-end); visibility: hidden; pointer-events: none';
+    document.body.append(sideProbe);
+  }
+  return sideProbe.offsetLeft;
 }
 
 export function esc(s) {

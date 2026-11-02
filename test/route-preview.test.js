@@ -42,6 +42,11 @@ test('existing preview, location, visibility and overlay guards still block auto
   }
 });
 
+test('riding routes auto-start like driving ones', () => {
+  assert.equal(canAutoStartRoute({ ...readyPreview, travel: 'motorcycle' }), true);
+  assert.equal(canAutoStartRoute({ ...readyPreview, travel: 'motorcycle', closuresIgnored: true }), false);
+});
+
 test('walking routes and trips by train never auto-start', () => {
   assert.equal(canAutoStartRoute({ ...readyPreview, travel: 'walk' }), false);
   assert.equal(canAutoStartRoute({ ...readyPreview, travel: 'transit' }), false);
@@ -58,7 +63,8 @@ test('every trip starts on Drive: Walk or Train is not remembered, and goes back
   assert.match(body('resetTravel'), /travel = 'drive'/);
 });
 
-test('walking speeds are not shared as traffic', async () => {
+// Only cars' speeds: walkers would look like a jam, and motorcycles filter past jams.
+test('walking and riding speeds are not shared as traffic', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
   assert.match(app, /if \(mode === 'drive' && travel === 'drive' && !sim\) noteProbeFix\(fix\)/);
 });

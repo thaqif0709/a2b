@@ -1,19 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (C) 2026 Thaqif Syarafuddin bin Roslan. A2B: https://github.com/thaqif0709/a2b (see NOTICE).
 
-import { REPORT_TYPES, reportLabel, reportIcon } from './report-types.js';
-import { distance, bearing, cumulative, formatDistance, formatDuration, formatClock } from './geo.js';
+import { REPORT_TYPES, reportLabel, reportIcon, canReportFrom, TRAIN_REPORT_TYPES, trainReportIcon } from './report-types.js';
+import { distance, bearing, cumulative, encodePolyline, formatDistance, formatDuration, formatClock } from './geo.js';
 import { Navigator, Simulator, reportsAlong, sliceAlong, spokenDistance, roundaboutTurn } from './nav.js';
 import { canAutoStartRoute } from './route-preview.js';
+import { TrainGuide, markerFor, walkText } from './train-guide.js';
 import { Glide } from './motion.js';
 import { Follow, shouldSend, nextPollDelay } from './follow.js';
 import { sheetGesture, settle, rubberBand } from './sheet-drag.js';
-import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES } from './places.js';
-import { start as startVehicle, DEFAULT_COLOR } from './vehicle3d.js';
+import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES, addTypeSource, withoutBaseDuplicates } from './places.js';
+import { addressQuery, addressToLookUp, withAddresses } from './address.js';
+import { start as startVehicle, DEFAULT_COLOR, vehicleFor } from './vehicle3d.js';
 import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PLACE_ICONS, soundIcon } from './icons.js';
 import {
-  $, state, api, local, toast, esc, timeAgo, speak, loadLocalSettings, saveSettings, loadPlaces, addPlace, removePlace,
-  isSaved, setHomeWork, armBack,
+  $, state, api, local, toast, esc, timeAgo, speak, loadLocalSettings, saveSettings, loadPlaces, addPlace, removePlace, renamePlace,
+  isSaved, setHomeWork, armBack, sideColumnEnd,
 } from './core.js';
 import { MAP_THEMES, BASE_STYLES, applyMapTheme } from './map-themes.js';
 import { initPanels, openMenu, openAuth, openSettings, renderAvatar, refreshMe } from './panels.js';
@@ -22,7 +24,13 @@ import { noteProbeFix, startProbeSender, discardProbeBuffer } from './probe.js';
 import { welcome, hideSplash } from './welcome.js';
 import { watchUpdates, updateCheckpoint } from './update.js';
 import { prefetchRouteTiles } from './offline.js';
+import { isSchoolTime, schoolAhead, schoolLimit } from './school-zones.js';
+import { DeadReckoner, shouldEstimate, nearTunnel, pointAt, BAD_ACCURACY_M } from './dead-reckoning.js';
 import { matchesWordStarts } from './text.js';
+import { shouldCheck as shouldCheckFaster, pickFaster, offerText, checkBody, OFFER_FOR_MS, KEEP_FOR_MS } from './faster-route.js';
+import { signPlaces } from './signs.js';
+import { mapPlace } from './map-places.js';
+import { initSuggest, openSuggest, closeSuggest, suggesting, syncDriverPlaces } from './suggest.js';
 import { weatherPoints, weatherQuery, describeTrip, wetAhead, spokenWeather, restReminder, drivesAtNight } from './weather.js';
 
 // Which map look to use for day or night (see map-themes.js). 'mapTheme' in local storage overrides it.
@@ -32,13 +40,15 @@ function mapThemeId(t = themeNow) {
   return t === 'night' ? 'plum_night' : 'bright_plum';
 }
 const styleUrl = (t) => BASE_STYLES[MAP_THEMES[mapThemeId(t)].base];
-// Route line colours per map theme: brand plum, lighter at night so it stands out on the dark map.
+// The selected route stays pink in both themes, distinct from the yellow-to-red traffic segments.
 // The stretch already driven stays visible in a muted tone.
 const ROUTE = {
-  day: { main: '#9b2c6b', casing: '#4a0f31', driven: '#c3b3bd', drivenCasing: '#8f7a87' },
-  night: { main: '#d0569a', casing: '#5e1640', driven: '#8a7684', drivenCasing: '#3b2f39' },
+  day: { main: '#ffbade', casing: '#4a0f31', driven: '#c3b3bd', drivenCasing: '#8f7a87' },
+  night: { main: '#ffbade', casing: '#5e1640', driven: '#8a7684', drivenCasing: '#3b2f39' },
 };
-const JAM_COLOURS = { 1: '#f2a516', 2: '#e8442e', 3: '#a3121c' }; // slow, queuing, stationary
+// Walks use the same pink route colour as dots, including the walks in train trips.
+const WALK_DOTS = { day: ROUTE.day.main, night: ROUTE.night.main };
+const JAM_COLOURS = { 1: '#ffd62e', 2: '#ff6f00', 3: '#f70518' }; // slow, queuing, stationary
 const REPORT_REFRESH_MS = 60_000;
 const STILL_SPEED = 1; // m/s; slower than this counts as standing still
 const BROWSE_RESUME_MS = 15_000;
@@ -53,16 +63,17 @@ const routeLabels = [];
 const reports = new Map(); // id -> report
 const reportMarkers = new Map(); // id -> maplibregl.Marker
 let follow = true;
-let mode = 'browse'; // browse | preview | drive | watch
+let mode = 'browse'; // browse | preview | drive | ride (a train trip, train-guide.js) | watch
 let transit = null; // { place, trips, selected } while showing trips by train
 let themeNow = null;
 
 // Preview / drive state
 let dest = null;
-// How to get there: 'drive' | 'walk' | 'transit'. Not remembered: every trip starts on Drive, so someone who walked once
+// How to get there: 'drive' | 'motorcycle' | 'walk' | 'transit'. Not remembered: every trip starts on Drive, so someone who walked once
 // isn't given footpaths (no cameras, alerts or tolls) next time they're in the car. See resetTravel.
 let travel = 'drive';
 let stops = []; // places to visit on the way, in order, not yet reached
+let origin = null, originMarker = null; // where routes start when it isn't where you are (picked in the preview)
 let routes = [];
 let selected = 0;
 let nav = null;
@@ -79,6 +90,7 @@ let shareTimer = null; // phones send no GPS while standing still, so the heartb
 let recenterTimer = null;
 const glide = new Glide(); // slides the car between GPS fixes
 let shown = null; // where the car is drawn this frame
+let lastFixAt = 0; // when the last GPS fix came
 let frameId = 0, lastFrame = 0;
 let camZoom = null;
 let userMoving = false;
@@ -91,6 +103,7 @@ let trail = []; // lines driven earlier in this drive: parts of routes replaced 
 let offTrail = []; // where the car has been since it left the current route
 const tollsSpoken = new Set(); // toll plazas (route + index) already announced this drive
 const camerasWarned = new Set(); // fixed speed cameras (route + index) already announced this drive
+const schoolsWarned = new Set(); // school zones (route + index) already announced this drive
 let weather = null; // { route, points, answer } for the route on screen or being driven (see weather.js)
 const weatherSpoken = new Set(); // wet stretches (route + point) already announced this drive
 let restsSaid = 0; // 2-hour rest reminders spoken this drive
@@ -149,6 +162,39 @@ const tripSheet = (() => {
   return { init, set, isOpen: () => open, justDragged: () => justDragged() };
 })();
 
+// The sheet of stops while riding. Drag it down (or tap the grabber) to close it to one line, the next station;
+// drag it up or tap that line to see the stops again.
+const rideSheet = (() => {
+  const sheet = () => $('ride-sheet');
+  const set = (closed) => {
+    const el = sheet();
+    el.classList.remove('dragging');
+    el.style.transform = '';
+    el.classList.toggle('closed', closed);
+    // Keep you in view above the sheet's new height.
+    if (mode === 'ride' && follow && rideGlide.to) {
+      map.easeTo({ center: rideGlide.at(performance.now())?.pos, padding: ridePadding(), duration: 300 });
+    }
+  };
+  function init() {
+    // The ride's buttons sit above the sheet (styles.css), so they follow its height.
+    new ResizeObserver(() => document.body.style.setProperty('--ride-sheet', `${sheet().offsetHeight}px`)).observe(sheet());
+    sheet().querySelector('.grabber').onclick = () => set(!sheet().classList.contains('closed'));
+    $('ride-peek').onclick = () => set(false);
+    sheetGesture(sheet(), {
+      // Not from inside a scrolled list of stops, so it can still be scrolled back up.
+      start: (e) => !(e.target.closest('#ride-stops') && sheet().scrollTop > 0),
+      move: (dy) => {
+        const el = sheet();
+        el.classList.add('dragging');
+        el.style.transform = `translateY(${Math.round(el.classList.contains('closed') ? Math.min(0, dy) / 3 : rubberBand(dy, 0, el.offsetHeight))}px)`;
+      },
+      end: (dy, v) => set(!settle(!sheet().classList.contains('closed'), dy, v, sheet().offsetHeight / 2)),
+    });
+  }
+  return { init, set };
+})();
+
 boot();
 
 async function boot() {
@@ -182,7 +228,7 @@ async function boot() {
     stopFollowing();
     if (mode === 'preview') autoGo.stop(); // looking around the routes: wait for Go
   });
-  map.on('zoomstart', (e) => e.originalEvent && mode === 'drive' && stopFollowing());
+  map.on('zoomstart', (e) => e.originalEvent && (mode === 'drive' || mode === 'ride') && stopFollowing());
   map.on('rotate', () => $('btn-compass').classList.toggle('hidden', Math.abs(map.getBearing()) < 3 || mode === 'drive'));
   map.on('moveend', scheduleReportLoad);
   map.on('moveend', schedulePois);
@@ -204,6 +250,8 @@ async function boot() {
   carMarker = new maplibregl.Marker({ element: el('div', 'car', CAR), rotationAlignment: 'map', pitchAlignment: 'map' });
 
   initPanels({ onUserChanged, applyTheme, openSearchFor, openPreview, refreshSound, setupVehicle, drawPois, setSimSpeed: (v) => sim && (sim.speedFactor = v) });
+  initSuggest({ map, openAuth, setBrowseHidden: (hidden) => $('browse-ui').classList.toggle('hidden', hidden) });
+  syncDriverPlaces();
   wireUi();
   setupSheetDrag();
   refreshSound();
@@ -223,13 +271,19 @@ async function boot() {
   setInterval(() => applyTheme(), 5 * 60_000);
   startProbeSender(); // opt-in traffic sharing batches; silent unless the driver said yes
 
+  // Deep links: /drive/<token> watches a shared drive; /?to=lat,lng&name= opens a destination.
+  const m = location.pathname.match(/^\/drive\/([a-z0-9]+)$/i);
+  // Check in and set up the offline shell before waiting on the account: on a slow connection those requests can
+  // take a while, and a search made meanwhile would be turned away for want of a spot.
+  if (!m) { // watching a friend's drive doesn't take one of the spots
+    startPresence({ driving: () => mode === 'drive', signUp: () => openAuth(null, 'signup') });
+    if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  }
+
   await refreshMe();
   await onUserChanged();
 
-  // Deep links: /drive/<token> watches a shared drive; /?to=lat,lng&name= opens a destination.
-  const m = location.pathname.match(/^\/drive\/([a-z0-9]+)$/i);
-  if (m) return startWatching(m[1]); // watching a friend's drive doesn't take one of the spots
-  startPresence({ driving: () => mode === 'drive', signUp: () => openAuth(null, 'signup') });
+  if (m) return startWatching(m[1]);
   const to = new URLSearchParams(location.search).get('to');
   if (to) {
     const [lat, lng] = to.split(',').map(Number);
@@ -238,17 +292,17 @@ async function boot() {
       history.replaceState(null, '', '/');
       openPreview({ name, address: '', lat, lng });
     }
-  }
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  } else setTimeout(offerResume, 600); // a trip the phone cut off (not over a link someone opened)
   watchUpdates({
     // On the map with nothing open, so a refresh interrupts nothing.
     idle: () => mode === 'browse' && [...OVERLAYS, 'menu', 'watch', 'gate', 'welcome'].every((id) => $(id).classList.contains('hidden')),
-    driving: () => mode === 'drive',
+    driving: () => mode === 'drive' || mode === 'ride',
   });
 }
 
 async function onUserChanged() {
   renderAvatar();
+  setupVehicle(); // apply the signed-in account's night-light preference
   if (state.presence && !state.presence.admitted) checkIn(); // an account may get in where a guest couldn't
   await loadPlaces();
   renderSearchHome();
@@ -295,7 +349,13 @@ function addMapLayers() {
     map.addLayer({ id: 'trail-main', type: 'line', source: 'trail', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ROUTE[themeNow].driven, 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 5, 16, 11] } }, before);
     map.addLayer({ id: 'routes-casing', type: 'line', source: 'routes', filter: ['==', ['get', 'selected'], true], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ROUTE[themeNow].casing, 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 8, 16, 16] } }, before);
     map.addLayer({ id: 'routes-main', type: 'line', source: 'routes', filter: ['==', ['get', 'selected'], true], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ROUTE[themeNow].main, 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 5, 16, 11] } }, before);
+    // A walk: the same route as dots (a line with a gradient can't be dotted), shown instead of the line above.
+    map.addLayer({ id: 'routes-walk', type: 'line', source: 'routes', filter: ['==', ['get', 'selected'], true], layout: { 'line-cap': 'round', 'line-join': 'round', visibility: 'none' }, paint: { 'line-color': WALK_DOTS[themeNow], 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 5, 16, 10], 'line-dasharray': [0.1, 2.4] } }, before);
     // Toll plazas on the route, as small amber "TOLL" tags.
+    // The school a school-zone warning is about, pinned while the warning shows (see checkSchools).
+    map.addSource('school-pin', { type: 'geojson', data: emptyFc() });
+    if (!map.hasImage('school-pin')) map.addImage('school-pin', schoolPinImage(), { pixelRatio: 2 });
+    map.addLayer({ id: 'school-pin', type: 'symbol', source: 'school-pin', layout: { 'icon-image': 'school-pin', 'icon-anchor': 'bottom', 'icon-allow-overlap': true, 'icon-ignore-placement': true } });
     map.addSource('tolls', { type: 'geojson', data: emptyFc() });
     if (!map.hasImage('toll-tag')) map.addImage('toll-tag', tollTagImage(), { pixelRatio: 2 });
     map.addLayer({ id: 'tolls', type: 'symbol', source: 'tolls', layout: { 'icon-image': 'toll-tag', 'icon-allow-overlap': true, 'icon-ignore-placement': true, 'icon-size': ['interpolate', ['linear'], ['zoom'], 10, 0.7, 15, 1] } });
@@ -315,7 +375,7 @@ function addMapLayers() {
     map.addLayer({ id: 'watch-route', type: 'line', source: 'watch-route', layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ROUTE[themeNow].main, 'line-width': 6, 'line-opacity': 0.85 } }, before);
     // A trip by train (see drawTransit): walks dashed, rides in their line's colour.
     map.addSource('transit', { type: 'geojson', data: emptyFc() });
-    map.addLayer({ id: 'transit-walk', type: 'line', source: 'transit', filter: ['==', ['get', 'mode'], 'walk'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#5f6b76', 'line-width': 4, 'line-dasharray': [0.1, 2] } }, before);
+    map.addLayer({ id: 'transit-walk', type: 'line', source: 'transit', filter: ['==', ['get', 'mode'], 'walk'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': WALK_DOTS[themeNow], 'line-width': 6, 'line-dasharray': [0.1, 2] } }, before);
     map.addLayer({ id: 'transit-ride-casing', type: 'line', source: 'transit', filter: ['==', ['get', 'mode'], 'train'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 7, 16, 13] } }, before);
     map.addLayer({ id: 'transit-ride', type: 'line', source: 'transit', filter: ['==', ['get', 'mode'], 'train'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['get', 'color'], 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 4, 16, 9] } }, before);
     map.addLayer({ id: 'transit-stops', type: 'circle', source: 'transit', filter: ['==', ['get', 'mode'], 'stop'], paint: { 'circle-radius': 6, 'circle-color': '#ffffff', 'circle-stroke-color': ['get', 'color'], 'circle-stroke-width': 3 } });
@@ -355,9 +415,25 @@ function addMapLayers() {
 
 // The car as a 3D model (Settings › Vehicle). The flat arrow marker keeps the position either way and shows
 // instead when 3D can't start (no WebGL, three.js didn't load).
+// The 3D model: the vehicle from Settings, a motorbike while riding in Motorbike mode (see vehicleFor), or while on
+// the train part of a trip a train in the line's colour (see renderRide). On foot it's always the chevron: it shows which way you're facing, which a car doesn't. Run again
+// after a style change, which drops custom layers.
+let trainPose = null; // { pos, heading, color } while on a train
+let vehicleShown = null; // which model the layer has now, e.g. 'car:#e23d9b' or 'train:#e4002b'
+function wantedVehicle() {
+  if (mode === 'ride' && trainPose) return ['train', trainPose.color];
+  const kind = travel === 'walk' ? 'chevron' : vehicleFor(mode === 'drive' ? travel : null, markerFor({ mode: 'drive', vehicle: local.get('vehicle', 'chevron') }));
+  return [kind, local.get('vehicleColor', DEFAULT_COLOR)];
+}
+function syncVehicle() {
+  if (vehicleShown !== wantedVehicle().join(':')) setupVehicle();
+}
 async function setupVehicle() {
-  const kind = local.get('vehicle', 'chevron');
-  vehicle3d = await startVehicle(map, kind, local.get('vehicleColor', DEFAULT_COLOR), () => (mode === 'watch' || !carMarker._map ? null : shown));
+  const [kind, color] = wantedVehicle();
+  const onTrain = kind === 'train';
+  vehicleShown = `${kind}:${color}`;
+  const pose = onTrain ? () => (mode === 'ride' ? trainPose : null) : () => (mode === 'watch' || mode === 'ride' || !carMarker._map ? null : shown);
+  vehicle3d = await startVehicle(map, kind, color, pose, { night: themeNow === 'night' && state.settings.night_vehicle_lights !== false });
   carMarker.getElement().classList.toggle('as-3d', vehicle3d);
   map.triggerRepaint();
 }
@@ -398,17 +474,19 @@ function arrowHeadImage() {
 
 // A rounded amber tag reading TOLL, for toll plazas on the map.
 // ---------- Places on the map you can tap to go ----------
-// Petrol stations, hospitals, clinics and convenience stores come from this phone's Overture files
-// (public/places.js), drawn by A2B when the map is zoomed in far enough to be useful, while browsing or choosing a
+// Petrol stations, EV chargers, hospitals, clinics and convenience stores come from this phone's Overture files
+// (public/places.js; EV chargers also from the server's list), drawn by A2B when the map is zoomed in far enough to be useful, while browsing or choosing a
 // route (not while driving). Stations (LRT, MRT, KTM, monorail, buses), landmarks and the airport are already on
 // the base map from OpenStreetMap; tapping those works too. Either way, a tap shows the routes there.
-const POI_TYPES = ['fuel', 'hospital', 'clinic', 'convenience'];
+// EV chargers: the server keeps OpenStreetMap's and Open Charge Map's (src/lib/chargers.js); Overture's few are in the files.
+addTypeSource('ev', () => api('/api/chargers').then((r) => r.chargers ?? []));
+const CHARGERS_ATTRIBUTION = 'EV chargers: © OpenStreetMap contributors, Open Charge Map';
+const POI_TYPES = ['fuel', 'ev', 'hospital', 'clinic', 'convenience'];
 const POI_MIN_ZOOM = 13;
-const POI_STYLE = { fuel: { color: '#e8590c' }, hospital: { color: '#e03131' }, clinic: { color: '#1c7ed6' }, convenience: { color: '#2f9e44' } };
+const POI_STYLE = { fuel: { color: '#e8590c' }, ev: { color: '#0c8599' }, hospital: { color: '#e03131' }, clinic: { color: '#1c7ed6' }, convenience: { color: '#2f9e44' } };
 const BASE_PLACE_LAYERS = new Set(['poi', 'aerodrome_label']); // the base map's own labelled places
 const TAP_SLOP = 12; // px around a tap, for fingertips
 let basePlaceLayers = []; // this style's layers drawing those, found when it loads
-const KIND_NAMES = { rail: 'Train station', railway: 'Train station', bus: 'Bus stop', bus_station: 'Bus station', bus_stop: 'Bus stop', subway: 'Station', light_rail: 'LRT station', monorail: 'Monorail station', halt: 'Train station', aerodrome: 'Airport', airport: 'Airport' };
 
 // The place drawn under a point on the screen, A2B's own first, or null.
 function placeAt(point) {
@@ -416,14 +494,16 @@ function placeAt(point) {
   const box = [[point.x - TAP_SLOP, point.y - TAP_SLOP], [point.x + TAP_SLOP, point.y + TAP_SLOP]];
   const ours = map.getLayer('pois') && map.queryRenderedFeatures(box, { layers: ['pois'] })[0];
   if (ours) return { name: ours.properties.name, address: ours.properties.address, lng: ours.geometry.coordinates[0], lat: ours.geometry.coordinates[1] };
-  const f = basePlaceLayers.length && map.queryRenderedFeatures(box, { layers: basePlaceLayers }).find((x) => x.geometry.type === 'Point' && (x.properties['name:latin'] || x.properties.name));
-  if (!f) return null;
-  const p = f.properties;
-  const kind = KIND_NAMES[p.subclass] ?? KIND_NAMES[p.class] ?? String(p.subclass || p.class || '').replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
-  return { name: p['name:latin'] || p.name, address: kind, lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] };
+  // Stops, stations and car parks count even unnamed (many bus stops and "P" signs are): see map-places.js.
+  for (const f of basePlaceLayers.length ? map.queryRenderedFeatures(box, { layers: basePlaceLayers }) : []) {
+    const place = f.geometry.type === 'Point' && mapPlace(f.properties);
+    if (place) return { ...place, lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] };
+  }
+  return null;
 }
 
 function tapPlaceOnMap(e) {
+  if (suggesting()) return; // the map is moving under the suggestion's pin
   const place = placeAt(e.point);
   if (!place) return;
   stopFollowing();
@@ -445,13 +525,25 @@ async function drawPois() {
   const b = map.getBounds();
   const found = await placesOfTypesIn(POI_TYPES, [b.getWest(), b.getSouth(), b.getEast(), b.getNorth()]).catch(() => []);
   if (seq !== poiSeq) return;
-  src.setData({
+  const draw = () => src.setData({
     type: 'FeatureCollection',
-    features: found.map((p) => ({ type: 'Feature', properties: { name: p.name, address: p.address || '', type: p.type }, geometry: { type: 'Point', coordinates: [p.lng, p.lat] } })),
+    features: withoutBaseDuplicates(found, basePoisShown()).map((p) => ({ type: 'Feature', properties: { name: p.name, address: p.address || '', type: p.type }, geometry: { type: 'Point', coordinates: [p.lng, p.lat] } })),
   });
+  draw();
+  // The base map may still be drawing this view's tiles: look again at what it shows once it has.
+  map.once('idle', () => seq === poiSeq && draw());
 }
 
-// A round badge: a petrol pump, an H for a hospital, a cross for a clinic.
+// The base map's own places of our pins' kinds drawn on screen now, as { type, name, lng, lat }.
+const BASE_POI_TYPES = { fuel: 'fuel', charging_station: 'ev', hospital: 'hospital', clinic: 'clinic', doctors: 'clinic', convenience: 'convenience' };
+function basePoisShown() {
+  if (!basePlaceLayers.length) return [];
+  return map.queryRenderedFeatures({ layers: basePlaceLayers })
+    .filter((f) => f.geometry.type === 'Point' && BASE_POI_TYPES[f.properties.subclass])
+    .map((f) => ({ type: BASE_POI_TYPES[f.properties.subclass], name: f.properties['name:latin'] || f.properties.name || '', lng: f.geometry.coordinates[0], lat: f.geometry.coordinates[1] }));
+}
+
+// A round badge: a petrol pump, a lightning bolt for an EV charger, an H for a hospital, a cross for a clinic.
 function poiImage(type) {
   const size = 52, c = document.createElement('canvas');
   c.width = c.height = size;
@@ -464,7 +556,13 @@ function poiImage(type) {
   g.strokeStyle = '#ffffff';
   g.stroke();
   g.fillStyle = g.strokeStyle = '#ffffff';
-  if (type === 'hospital') {
+  if (type === 'ev') {
+    // A lightning bolt.
+    g.beginPath();
+    for (const [x, y] of [[29, 11], [17, 28], [25, 28], [22, 41], [35, 23], [27, 23], [31, 11]]) g.lineTo(x, y);
+    g.closePath();
+    g.fill();
+  } else if (type === 'hospital') {
     g.font = '800 26px system-ui, -apple-system, sans-serif';
     g.textAlign = 'center';
     g.textBaseline = 'middle';
@@ -603,6 +701,61 @@ function checkCameras() {
   card.querySelector('[data-a]').onclick = () => card.classList.add('hidden');
 }
 
+// While driving at school times: a spoken "School zone ahead" and a chip from about 300 m before each school on the
+// route until just past it. Nothing outside the school runs. See school-zones.js.
+function checkSchools() {
+  const chip = $('school-chip');
+  const next = state.settings.alerts && isSchoolTime(Date.now(), live.snapped) && schoolAhead(live.along, nav.route.schools, nav.cum);
+  if (!next) {
+    if (!chip.classList.contains('hidden')) map.getSource('school-pin')?.setData(emptyFc());
+    return chip.classList.add('hidden');
+  }
+  const { school, ahead } = next;
+  const units = state.settings.units;
+  const limit = schoolLimit(units);
+  chip.innerHTML = `<b>SCHOOL</b><span>${ahead > 0 ? formatDistance(ahead, units) : 'Now'} · ${limit.chip}${school.name ? `<small>${esc(school.name)}</small>` : ''}</span>`;
+  chip.classList.remove('hidden');
+  const key = `${nav.total}:${school.at}`;
+  if (pinnedSchool !== key) {
+    pinnedSchool = key;
+    map.getSource('school-pin')?.setData({ type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: school.pos ?? nav.coords[school.at] } }] });
+  }
+  if (ahead > 0 && !schoolsWarned.has(key)) {
+    schoolsWarned.add(key);
+    speak(`School zone ahead. ${limit.spoken}`);
+  }
+}
+let pinnedSchool = null;
+
+// A yellow pin with a little school (a roof over a door), for the school a warning is about.
+function schoolPinImage() {
+  const w = 48, h = 60, c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const g = c.getContext('2d');
+  g.beginPath();
+  g.moveTo(w / 2, h - 3);
+  g.bezierCurveTo(w / 2 - 6, h - 16, 4, h - 26, 4, 22);
+  g.arc(w / 2, 22, w / 2 - 4, Math.PI, 0);
+  g.bezierCurveTo(w - 4, h - 26, w / 2 + 6, h - 16, w / 2, h - 3);
+  g.fillStyle = '#f5c400';
+  g.fill();
+  g.lineWidth = 3;
+  g.strokeStyle = '#1b1b1f';
+  g.stroke();
+  g.fillStyle = '#1b1b1f';
+  g.beginPath(); // the roof
+  g.moveTo(w / 2, 9);
+  g.lineTo(w / 2 + 13, 19);
+  g.lineTo(w / 2 - 13, 19);
+  g.closePath();
+  g.fill();
+  g.fillRect(w / 2 - 10, 19, 20, 14); // the walls
+  g.fillStyle = '#f5c400';
+  g.fillRect(w / 2 - 3, 25, 6, 8); // the door
+  return g.getImageData(0, 0, w, h);
+}
+
 // Turn arrow on the map for the next maneuver: from just before the turn to just after it
 // (for a roundabout, all the way round to the exit).
 const NO_ARROW = new Set(['straight', 'depart', 'arrive', 'arrive_left', 'arrive_right', 'stop', 'ferry']);
@@ -637,6 +790,10 @@ function drawManeuverArrow() {
 function drawRoutes() {
   const src = map?.getSource('routes');
   if (!src) return;
+  // On foot the selected route is dots; otherwise the solid line (see 'routes-walk').
+  const walk = travel === 'walk';
+  map.setLayoutProperty('routes-walk', 'visibility', walk ? 'visible' : 'none');
+  for (const id of ['routes-main', 'routes-casing']) map.setLayoutProperty(id, 'visibility', walk ? 'none' : 'visible');
   drawTolls();
   if (mode === 'drive' && nav) {
     drawDriveLine();
@@ -683,7 +840,7 @@ function drawDriveLine() {
 }
 
 // The selected route's colours along its length: muted where already driven (up to `driven`, a fraction of the
-// length), then the route colour, with live-traffic and driver-speed jams in amber to deep red.
+// length), then the route colour, with live-traffic and driver-speed jams in yellow, orange and red.
 function routeColours(route, driven) {
   const c = ROUTE[themeNow];
   const jams = [...(route?.traffic?.jams ?? []), ...(route?.probe_jams ?? [])];
@@ -744,7 +901,7 @@ function onFix(p) {
     accuracy: p.coords.accuracy,
     time: still ? prev.time : p.timestamp, // so the speed estimate spans the whole stop
   };
-  if (sim) return; // a simulated drive owns the car right now
+  if (sim || gpsBlocked) return; // a simulated drive owns the car right now (or a test is pretending the GPS is gone)
   handleFix(fix, !prev);
 }
 
@@ -754,18 +911,30 @@ function estSpeed(prev, lngLat, t) {
 }
 
 function handleFix(fix, first = false) {
+  if (mode === 'drive' && !sim) {
+    tunnelFixAt = Date.now();
+    lastFixAccuracy = fix.accuracy;
+    // A vague fix in a tunnel would drag the car off its route: leave it to the estimate (see tunnelTick).
+    if ((fix.accuracy ?? 0) > BAD_ACCURACY_M && (reckoner || tunnelAhead())) return;
+    if (reckoner) stopReckoning();
+    lastGoodSpeed = fix.speed ?? lastGoodSpeed;
+  }
   state.pos = fix;
   // Traffic sharing only buffers real drives: walking, browsing the map, and demo drives never become traffic.
-  if (mode === 'drive' && travel === 'drive' && !sim) noteProbeFix(fix); // walking speeds would look like a jam
+  // Only cars' speeds are shared: walking speeds would look like a jam, and motorcycles filter past jams.
+  if (mode === 'drive' && travel === 'drive' && !sim) noteProbeFix(fix);
   local.set('lastPos', fix.lngLat.map((v) => Math.round(v * 1e4) / 1e4));
   if (mode === 'watch') return; // the viewer's own position isn't part of someone else's drive
+  lastFixAt = Date.now(); // a train trip reads state.pos each second (rideTick), while it's fresh
+  if (mode === 'ride') return;
   if (!carMarker._map) carMarker.setLngLat(fix.lngLat).addTo(map);
   updateSpeedo(fix.speed);
   if (mode === 'drive') return driveTick(fix);
   moveCar({ pos: fix.lngLat, heading: fix.heading ?? 0 });
-  if (first && mode === 'browse') map.jumpTo({ center: fix.lngLat, zoom: 15.5 });
+  // Not under a suggestion's pin: the map shows the place being suggested or reviewed, not the phone.
+  if (first && mode === 'browse' && !suggesting()) map.jumpTo({ center: fix.lngLat, zoom: 15.5 });
   // Moving without a route after panning the map away: come back to the car after a while.
-  else if (mode === 'browse' && !follow && (fix.speed ?? 0) > 2 && Date.now() - lastUserMove > BROWSE_RESUME_MS) recenter();
+  else if (mode === 'browse' && !follow && !suggesting() && (fix.speed ?? 0) > 2 && Date.now() - lastUserMove > BROWSE_RESUME_MS) recenter();
 }
 
 // Each fix sets where the car should be; every animation frame draws it part of the way there,
@@ -790,7 +959,7 @@ function frame(now) {
   let settling = false;
   if (follow && !userMoving && !touching && !map.isEasing()) {
     if (mode === 'drive' && live) settling = followDrive(dt);
-    else if (mode === 'browse') map.jumpTo({ center: shown.pos });
+    else if (mode === 'browse' && !suggesting()) map.jumpTo({ center: shown.pos });
   } else camZoom = null;
   const done = glide.done(now);
   if (mode === 'drive') drawDriveLine();
@@ -820,6 +989,7 @@ function updateSpeedo(speed) {
 function stopFollowing() {
   follow = false;
   $('btn-recenter').classList.remove('following');
+  if (mode === 'ride') $('btn-recenter-ride').classList.remove('hidden');
   if (mode === 'drive') {
     $('btn-recenter-drive').classList.remove('hidden');
     clearTimeout(recenterTimer);
@@ -832,7 +1002,12 @@ function recenter() {
   clearTimeout(recenterTimer);
   $('btn-recenter').classList.add('following');
   $('btn-recenter-drive').classList.add('hidden');
+  $('btn-recenter-ride').classList.add('hidden');
   if (mode === 'drive' && live) return driveCamera();
+  if (mode === 'ride') {
+    rideKind = null; // ease back into the ride view
+    return rideTick();
+  }
   if (state.pos) map.easeTo({ center: state.pos.lngLat, zoom: Math.max(map.getZoom(), 15), bearing: 0, pitch: 0, duration: 700 });
   else if (state.locationDenied) toast('Location is off. Allow location for this site in your browser settings.');
 }
@@ -842,14 +1017,14 @@ function setupLongPress() {
   let timer = null, start = null;
   const cancel = () => clearTimeout(timer);
   map.on('touchstart', (e) => {
-    if (e.points?.length !== 1 || mode === 'drive' || mode === 'watch') return;
+    if (e.points?.length !== 1 || mode === 'drive' || mode === 'ride' || mode === 'watch') return;
     start = e.point;
     timer = setTimeout(() => showContextMenu(e.lngLat, e.point), 550);
   });
   map.on('touchmove', (e) => start && Math.hypot(e.point.x - start.x, e.point.y - start.y) > 10 && cancel());
   map.on('touchend', cancel);
   map.on('touchcancel', cancel);
-  map.on('contextmenu', (e) => mode !== 'drive' && mode !== 'watch' && showContextMenu(e.lngLat, e.point));
+  map.on('contextmenu', (e) => !['drive', 'ride', 'watch'].includes(mode) && !suggesting() && showContextMenu(e.lngLat, e.point));
   map.on('click', hideContextMenu);
   map.on('click', routeAtTap);
   map.on('click', () => tripSheet.set(false)); // a tap on the map closes the trip menu
@@ -893,9 +1068,29 @@ function hideContextMenu() {
 // ================= UI wiring =================
 function wireUi() {
   $('btn-where').onclick = () => openSearchFor(null);
+  $('btn-wrong-place').onclick = () => {
+    if (!state.user) return openAuth('suggest');
+    const place = dest;
+    closeScreen('preview');
+    openSuggest({ kind: 'fix', place, onClose: (cancelled) => cancelled && openPreview(place) });
+  };
   $('btn-menu').onclick = openMenu;
   $('btn-recenter').onclick = recenter;
   $('btn-recenter-drive').onclick = recenter;
+  $('btn-recenter-ride').onclick = recenter;
+  $('btn-ride-start').onclick = startRide;
+  $('btn-ride-stop').onclick = () => endRide(false);
+  $('btn-ride-here').onclick = () => rideHere();
+  // On a ride, tap a station to say you're there. A sheet asks first: an accidental tap mustn't move you (tapping
+  // your stop gets you off the train, with "Get off here" said and buzzed).
+  $('ride-stops').onclick = (e) => {
+    const li = e.target.closest('li[data-k]');
+    if (li) askHere(Number(li.dataset.k));
+  };
+  $('btn-here-no').onclick = () => $('here-confirm').classList.add('hidden');
+  $('btn-report-ride').onclick = openTrainReport;
+  $('ride-report-chip').onclick = () => askTrainReport(trainReports.shown);
+  rideSheet.init();
   $('btn-compass').onclick = () => map.easeTo({ bearing: 0, pitch: 0 });
   $('btn-loc-retry').onclick = () => {
     $('loc-banner').classList.add('hidden');
@@ -903,7 +1098,7 @@ function wireUi() {
   };
   $('btn-report').onclick = openReportMenu;
   $('btn-report-drive').onclick = openReportMenu;
-  $('btn-sound').onclick = $('btn-sound-browse').onclick = () => {
+  $('btn-sound').onclick = $('btn-sound-browse').onclick = $('btn-sound-ride').onclick = () => {
     saveSettings({ voice: !state.settings.voice });
     refreshSound();
     toast(state.settings.voice ? 'Sound on' : 'Sound off');
@@ -917,6 +1112,7 @@ function wireUi() {
     const q = $('search-input').value.trim();
     $('search-clear').classList.toggle('hidden', !q);
     if (q.length < 2) return showSearchHome();
+    showSearching(); // straight away, not after the pause: your recent places go, the results' placeholders come
     t = setTimeout(() => runSearch(q), 280);
   };
   $('search-input').onkeydown = (e) => {
@@ -937,15 +1133,21 @@ function wireUi() {
 
   // Preview
   $('btn-go').onclick = startDrive;
+  $('btn-from').onclick = () => openSearchFor('from');
+  $('btn-from-clear').onclick = () => {
+    origin = null;
+    openPreview(dest);
+  };
   for (const b of $('travel-seg').querySelectorAll('button')) {
     b.onclick = () => {
       if (b.dataset.travel === travel || !dest) return;
       travel = b.dataset.travel;
+      syncVehicle();
       openPreview(dest);
     };
   }
   $('btn-transit-maps').onclick = () => {
-    const from = state.pos?.lngLat ?? map.getCenter().toArray();
+    const from = origin ? [origin.lng, origin.lat] : state.pos?.lngLat ?? map.getCenter().toArray();
     const q = `origin=${from[1]},${from[0]}&destination=${dest.lat},${dest.lng}&travelmode=transit`;
     window.open(`https://www.google.com/maps/dir/?api=1&${q}`, '_blank', 'noopener');
   };
@@ -958,6 +1160,8 @@ function wireUi() {
   $('btn-parking').onclick = openParking;
   tripSheet.init();
   $('btn-stop').onclick = () => endDrive(false);
+  $('btn-faster-take').onclick = takeFaster;
+  $('btn-faster-keep').onclick = keepCurrent;
   $('btn-overview').onclick = overview;
   $('btn-trip-settings').onclick = () => {
     tripSheet.set(false);
@@ -991,13 +1195,14 @@ function wireUi() {
     if (e.key === 'Escape') closeTop();
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && mode === 'drive') requestWakeLock();
+    if (document.visibilityState === 'visible' && (mode === 'drive' || mode === 'ride')) requestWakeLock();
   });
 }
 
 function refreshSound() {
   $('btn-sound').innerHTML = soundIcon(state.settings.voice);
   $('btn-sound-browse').innerHTML = soundIcon(state.settings.voice);
+  $('btn-sound-ride').innerHTML = soundIcon(state.settings.voice);
 }
 
 function closeScreen(id) {
@@ -1005,9 +1210,10 @@ function closeScreen(id) {
   if (id === 'parking') closeParking();
   if (id === 'preview') backToBrowse();
   if (id === 'report-sheet') reportDraft = null;
+  if (id === 'suggest') closeSuggest();
 }
 
-const OVERLAYS = ['ctx', 'auth', 'panel', 'search', 'report-card', 'report-sheet', 'parking', 'later', 'arrived', 'preview'];
+const OVERLAYS = ['ctx', 'auth', 'panel', 'search', 'report-card', 'report-sheet', 'parking', 'later', 'arrived', 'resume', 'here-confirm', 'train-report', 'train-report-vote', 'suggest', 'preview'];
 
 // Closes the top-most screen; returns false when nothing was open.
 function closeTop() {
@@ -1035,7 +1241,7 @@ function onBack() {
   // Back while driving opens the trip options rather than dropping out of the app.
   if (!closed && mode === 'drive') tripSheet.set(true);
   const open = OVERLAYS.some((id) => !$(id).classList.contains('hidden')) || !$('menu').classList.contains('hidden');
-  if (open || mode === 'drive') armBack();
+  if (open || mode === 'drive' || mode === 'ride') armBack(); // back never drops out of a trip; Stop does
 }
 
 // ================= Search =================
@@ -1044,20 +1250,25 @@ let searchSeq = 0;
 
 function openSearchFor(target) {
   armBack();
+  syncDriverPlaces(); // places drivers added lately (public/suggest.js)
   searchTarget = target;
   $('search').classList.remove('hidden');
   $('search-input').value = '';
   $('search-clear').classList.add('hidden');
-  const label = { home: 'Set your Home address', work: 'Set your Work address', save: 'Search for a place to save', stop: 'Add a stop on your way' }[target];
+  const label = { home: 'Set your Home address', work: 'Set your Work address', save: 'Search for a place to save', stop: 'Add a stop on your way', from: 'Where are you starting from?' }[target];
   $('search-target').textContent = label ?? '';
   $('search-target').classList.toggle('hidden', !label);
   $('search-input').placeholder = target ? 'Search for an address' : 'Where to?';
   showSearchHome();
-  setTimeout(() => $('search-input').focus(), 50);
+  // Focus now, inside the tap: iPhones only bring the keyboard up for a focus made during the tap itself, and
+  // ignored the old delayed one. The delayed one stays as a fallback for browsers that need a frame first.
+  $('search-input').focus();
+  setTimeout(() => document.activeElement !== $('search-input') && $('search-input').focus(), 50);
 }
 
 function showSearchHome() {
   $('results').classList.add('hidden');
+  $('results').removeAttribute('aria-busy');
   $('search-status').classList.add('hidden');
   $('search-home').classList.remove('hidden');
   renderSearchHome();
@@ -1069,9 +1280,35 @@ function renderSearchHome() {
   const { saved, recent } = state.places;
   $('saved-head').classList.toggle('hidden', !saved.length);
   $('recent-head').classList.toggle('hidden', !recent.length);
+  $('recent-clear').onclick = clearRecent;
   $('search-empty-hint').classList.toggle('hidden', saved.length + recent.length > 0);
   renderPlaceList($('saved-list'), saved, 'star', 'saved');
   renderPlaceList($('recent-list'), recent, 'recent', 'recent');
+}
+
+// Clear the search history (on this phone, or on the account when signed in).
+async function clearRecent() {
+  if (!confirm('Clear your search history?')) return;
+  const btn = $('recent-clear');
+  const previousLabel = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Clearing…';
+  try {
+    if (state.user) {
+      await api('/api/places?kind=recent', { method: 'DELETE' });
+    } else {
+      state.places.recent = [];
+      local.set('recent', state.places.recent);
+    }
+    state.places.recent = [];
+    renderSearchHome();
+    toast('Search history cleared.');
+  } catch (err) {
+    toast(err?.message ?? "Couldn't clear search history.");
+  } finally {
+    btn.disabled = false;
+    btn.textContent = previousLabel || 'Clear';
+  }
 }
 
 function renderPlaceList(ul, list, icon, kind) {
@@ -1080,21 +1317,73 @@ function renderPlaceList(ul, list, icon, kind) {
     const li = el('li');
     const d = state.pos ? formatDistance(distance(state.pos.lngLat, [p.lng, p.lat]), state.settings.units) : '';
     li.innerHTML = `<button class="place-row"><span class="p-ic">${PLACE_ICONS[icon]}</span><span class="p-text"><b>${esc(p.name)}</b><small>${esc(p.address || '')}</small></span><span class="p-dist">${d}</span></button>
-      <button class="icon-btn" aria-label="Remove">${PLACE_ICONS.more}</button>`;
+      <button class="icon-btn" aria-label="More for ${esc(p.name)}">${PLACE_ICONS.more}</button>`;
     li.firstElementChild.onclick = () => pickPlace(p);
-    li.lastElementChild.onclick = async () => {
-      if (!confirm(`Remove "${p.name}" from ${kind === 'saved' ? 'saved places' : 'recent'}?`)) return;
-      await removePlace(kind, p.id).catch((e) => toast(e.message));
-      renderSearchHome();
-    };
+    li.lastElementChild.onclick = (e) => placeMenu(e.currentTarget, p, kind);
     ul.append(li);
   }
 }
 
+// The ⋯ on a saved or recent place: Rename (saved places) and Remove, in the small menu the map's long-press uses.
+function placeMenu(button, p, kind) {
+  const box = $('ctx');
+  const saved = kind === 'saved';
+  box.innerHTML = `${saved ? `<button class="menu-row" data-act="rename"><span class="ctx-ic">${PLACE_ICONS.edit}</span>Rename</button>` : ''}
+    <button class="menu-row danger" data-act="remove"><span class="ctx-ic">${PLACE_ICONS.trash}</span>${saved ? 'Remove from saved' : 'Remove from recent'}</button>`;
+  box.classList.remove('hidden');
+  // Under the ⋯, its right edge lined up with it, kept on screen.
+  const r = button.getBoundingClientRect();
+  box.style.left = `${Math.max(8, Math.min(r.right - box.offsetWidth, innerWidth - box.offsetWidth - 8))}px`;
+  box.style.top = `${Math.min(r.bottom + 4, innerHeight - box.offsetHeight - 8)}px`;
+  // A tap anywhere else closes it.
+  const away = (e) => {
+    if (box.contains(e.target)) return;
+    hideContextMenu();
+    removeEventListener('pointerdown', away, true);
+  };
+  setTimeout(() => addEventListener('pointerdown', away, true));
+  box.onclick = async (e) => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (!act) return;
+    removeEventListener('pointerdown', away, true);
+    hideContextMenu();
+    if (act === 'rename') {
+      const name = prompt('Name', p.name);
+      if (!name?.trim() || name.trim() === p.name) return;
+      await renamePlace('saved', p.id, name.trim()).catch((err) => toast(err.message));
+    } else {
+      if (!confirm(`Remove "${p.name}" from ${saved ? 'saved places' : 'recent'}?`)) return;
+      await removePlace(kind, p.id).catch((err) => toast(err.message));
+    }
+    renderSearchHome();
+  };
+}
+
+// While a search runs: rows that shimmer where its results will be, in place of your recent places.
+function showSearching() {
+  $('search-home').classList.add('hidden');
+  $('search-status').classList.add('hidden');
+  const ul = $('results');
+  ul.classList.remove('hidden');
+  if (ul.getAttribute('aria-busy')) return; // already showing them: don't restart the shimmer on every key
+  ul.setAttribute('aria-busy', 'true');
+  ul.innerHTML = '<li class="place-skeleton" aria-hidden="true"><span class="p-ic"></span><span><i></i><i></i></span></li>'.repeat(5);
+}
+
+// Nothing to show, only a message ("No results", "busy", offline): in the middle of the screen.
+function searchMessage(text) {
+  const ul = $('results');
+  ul.classList.add('hidden');
+  ul.removeAttribute('aria-busy');
+  ul.innerHTML = '';
+  $('search-home').classList.add('hidden');
+  $('search-status').textContent = text;
+  $('search-status').classList.remove('hidden');
+}
+
 async function runSearch(q, enter = false) {
   const seq = ++searchSeq;
-  $('search-status').textContent = 'Searching…';
-  $('search-status').classList.remove('hidden');
+  showSearching();
   const near = state.pos?.lngLat ?? map.getCenter().toArray();
   try {
     const coord = q.match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
@@ -1115,37 +1404,73 @@ async function runSearch(q, enter = false) {
           searchNearby(q, near).catch(() => []),
         ]);
     // A search for parking is answered with the car parks around the place (or you), nearest first: only those.
-    const places = server.parking ? await withOvertureParking(server) : mergeResults(server.places, local, q, near);
+    let places = server.parking ? await withOvertureParking(server) : mergeResults(server.places, local, q, near);
+    if (!server.parking && !pasted) places = await withAddressSearch(q, near, places);
     const from = server.parking?.from;
     const note = server.parking
       ? places.length ? `Car parks near ${from ?? 'you'}` : `No car parks mapped near ${from ?? 'you'}.`
       : local.length ? null : server.note; // "not in the map data" is moot once Overture found it
     if (seq !== searchSeq) return;
-    showResults(q, near, places, note, places.some((p) => !server.places.includes(p)), enter);
+    showResults(q, near, places, note, places.some((p) => !server.places.includes(p) && p.source !== 'tomtom'), enter);
   } catch (e) {
     if (seq !== searchSeq) return;
-    $('search-status').textContent = e.message;
+    searchMessage(e.message);
   }
 }
 
+// An address ("129, BK 5/6, Puchong, 47180"): the house from TomTom when neither search found it, put first, with the
+// places on that street after it (public/address.js). Any other search is left as it is, and never asks TomTom.
+async function withAddressSearch(q, near, places) {
+  const a = addressQuery(q);
+  if (!a) return places;
+  const found = addressToLookUp(q, places)
+    ? await api(`/api/address?q=${encodeURIComponent(q)}&lat=${near[1]}&lng=${near[0]}`).then((r) => r.places ?? []).catch(() => [])
+    : [];
+  return withAddresses(places, found, a);
+}
+
+const RESULT_ICONS = { parking: 'parking', address: 'house', street: 'street' };
+
 function showResults(q, near, places, note, overture, enter) {
   $('search-home').classList.add('hidden');
+  if (!places.length) {
+    searchMessage(note || `No results for "${q}".`);
+    $('search-status').append(addMissingButton(q, `Add “${q}” to the map`, 'btn primary small add-missing'));
+    return;
+  }
   const ul = $('results');
   ul.classList.remove('hidden');
+  ul.removeAttribute('aria-busy');
   ul.innerHTML = '';
-  $('search-status').classList.toggle('hidden', places.length > 0);
-  $('search-status').textContent = places.length ? '' : note || `No results for "${q}".`;
+  $('search-status').classList.add('hidden');
   // e.g. "No "nandos" found near Eco Grandeur in the map data." above the nearest other matches
   if (note && places.length) ul.append(el('li', 'search-note', esc(note)));
   for (const p of places) {
     const li = el('li');
     const d = formatDistance(distance(near, [p.lng, p.lat]), state.settings.units);
-    li.innerHTML = `<button class="place-row"><span class="p-ic">${PLACE_ICONS[p.category === 'parking' ? 'parking' : 'pin']}</span><span class="p-text"><b>${esc(p.name)}</b><small>${esc(p.address)}</small></span><span class="p-dist">${d}</span></button>`;
+    li.innerHTML = `<button class="place-row"><span class="p-ic">${PLACE_ICONS[RESULT_ICONS[p.category] ?? 'pin']}</span><span class="p-text"><b>${esc(p.name)}</b><small>${esc(p.address)}</small></span><span class="p-dist">${d}</span></button>`;
     li.firstElementChild.onclick = () => pickPlace(p);
     ul.append(li);
   }
-  if (overture) ul.append(el('li', 'search-note', esc(placesAttribution)));
+  const credits = [overture && placesAttribution, overture && places.some((p) => p.type === 'ev') && CHARGERS_ATTRIBUTION, places.some((p) => p.source === 'tomtom') && 'Addresses © TomTom'];
+  if (credits.some(Boolean)) ul.append(el('li', 'search-note', esc(credits.filter(Boolean).join(' · '))));
+  if (!searchTarget) {
+    const li = el('li', 'add-missing-row');
+    li.append(addMissingButton(q, 'Can’t find it? Add a missing place', 'btn link'));
+    ul.append(li);
+  }
   if (enter && places.length === 1) pickPlace(places[0]);
+}
+
+// Suggest a place search didn't find (public/suggest.js), with what was typed as its name.
+function addMissingButton(q, label, cls) {
+  const b = el('button', cls, esc(label));
+  b.onclick = () => {
+    if (!state.user) return openAuth('suggest');
+    closeScreen('search');
+    openSuggest({ kind: 'add', name: q.trim() });
+  };
+  return b;
 }
 
 // A search naming a kind of place ("petrol", "hospital", "balai polis", "convenience store"): its nearest
@@ -1217,7 +1542,16 @@ async function pickPlace(p) {
     closeScreen('search');
     return addStop(p);
   }
+  if (searchTarget === 'from') {
+    searchTarget = null;
+    closeScreen('search');
+    origin = p;
+    return dest && openPreview(dest);
+  }
   closeScreen('search');
+  // Search history: kept on this phone without an account (and on the account with one), so it's there next time.
+  // Not TomTom's addresses: its terms don't allow keeping them.
+  if (p.source !== 'tomtom') addPlace('recent', p).then(renderSearchHome).catch(() => {});
   openPreview(p);
 }
 
@@ -1261,6 +1595,9 @@ async function openPreview(place) {
   renderWeather(null);
   $('dest-name').textContent = place.name;
   $('dest-addr').textContent = place.address || '';
+  // A wrong place can be fixed; a dropped pin or typed coordinates are just a spot.
+  // Not for TomTom's addresses: a fix would keep its answer, which its terms don't allow.
+  $('btn-wrong-place').classList.toggle('hidden', ['Dropped pin', 'Coordinates'].includes(place.name) || place.source === 'tomtom');
   // Placeholder cards the shape of real ones, so the sheet doesn't jump when the routes arrive.
   renderTravel();
   $('route-list').innerHTML = '<div class="route-opt skeleton" aria-hidden="true"><i></i><i></i></div>'.repeat(2);
@@ -1271,8 +1608,11 @@ async function openPreview(place) {
   destMarker = new maplibregl.Marker({ element: el('div', 'dest-pin', DEST_PIN), anchor: 'bottom' }).setLngLat([place.lng, place.lat]).addTo(map);
   map.easeTo({ center: [place.lng, place.lat], zoom: 15, pitch: 0, bearing: 0, padding: sheetPadding() });
 
-  const from = state.pos?.lngLat;
-  const status = !from
+  renderFrom();
+  const from = origin ? [origin.lng, origin.lat] : state.pos?.lngLat;
+  const status = origin
+    ? `Finding routes from ${origin.name}… Leave later puts the trip in your calendar.`
+    : !from
     ? state.locationDenied
       ? 'Location is off, so routes start from the middle of the map.'
       : 'Waiting for your location… routes start from the middle of the map for now.'
@@ -1293,13 +1633,15 @@ async function openPreview(place) {
     if (mode !== 'preview' || dest !== place || travel !== asked) return;
     routes = found;
     $('route-status').textContent = [from ? '' : status, routeNote(routes)].filter(Boolean).join(' ');
+    if (origin) $('route-status').textContent = `From ${origin.name}. Leave later puts the trip in your calendar.`;
     renderRouteOptions();
     renderPeekSummary();
     drawRoutes();
     fitRoutes();
     loadWeather(routes[selected]);
     $('btn-go').disabled = false;
-    autoGo.restart();
+    if (resuming && !origin) return resumeStart(); // carrying on with a trip the phone cut off
+    if (!origin) autoGo.restart(); // a drive from somewhere else doesn't start by itself
   } catch (e) {
     if (mode !== 'preview' || dest !== place || travel !== asked) return;
     $('route-list').innerHTML = '';
@@ -1311,6 +1653,18 @@ async function openPreview(place) {
 // LRT, MRT, Monorail, BRT and KTM Komuter trips from the server (src/lib/transit.js): each as its walks and rides,
 // with the lines' own colours, and the chosen one drawn on the map. There's no turn-by-turn for these; a link
 // opens Google Maps for live departure times instead.
+// The start of the routes: where you are, or a place picked with Change. From somewhere else there's nothing to
+// start now: the trip goes in the calendar with Leave later instead.
+function renderFrom() {
+  $('from-label').textContent = origin ? `From ${origin.name}` : 'From your location';
+  $('btn-from-clear').classList.toggle('hidden', !origin);
+  $('preview').classList.toggle('elsewhere', Boolean(origin));
+  $('btn-leave-later').classList.toggle('primary', Boolean(origin));
+  $('btn-leave-later').classList.toggle('ghost', !origin);
+  originMarker?.remove();
+  originMarker = origin ? new maplibregl.Marker({ element: el('div', 'drop-pin', DROP_PIN), anchor: 'bottom' }).setLngLat([origin.lng, origin.lat]).addTo(map) : null;
+}
+
 function renderTravel() {
   for (const b of $('travel-seg').querySelectorAll('button')) b.classList.toggle('on', b.dataset.travel === travel);
   $('preview').classList.toggle('transit', travel === 'transit');
@@ -1318,20 +1672,35 @@ function renderTravel() {
 
 async function showTransit(place, from, status) {
   try {
-    const plan = await api('/api/transit', { method: 'POST', body: { from, to: [place.lng, place.lat] } });
+    const plan = await api('/api/transit', { method: 'POST', body: { from, to: [place.lng, place.lat], moving: origin ? null : movingNow() } });
     if (mode !== 'preview' || dest !== place || travel !== 'transit') return;
-    transit = { place, trips: plan.trips, selected: 0 };
+    transit = { place, trips: plan.trips, selected: 0, reports: plan.reports ?? [] };
     const night = plan.night ? `${plan.note} The first trains leave around ${formatClock(new Date(plan.firstTrain))}.` : plan.note;
-    $('route-status').textContent = [status, night, plan.trips.length ? 'Times are estimates from the official timetables.' : ''].filter(Boolean).join(' ');
+    const last = plan.trips[0]?.lastTrain ? 'Last train tonight: miss it and there’s no later one this way.' : '';
+    const elsewhere = origin ? `From ${origin.name}. Leave later puts the trip in your calendar.` : '';
+    $('route-status').textContent = [status, elsewhere, last, night, plan.trips.length ? 'Times are estimates from the official timetables.' : ''].filter(Boolean).join(' ');
     renderTransit();
+    if (resuming && !origin && plan.trips.length) return resumeStart();
     const b = new maplibregl.LngLatBounds();
     for (const l of plan.trips[0]?.legs ?? []) for (const c of l.coords) b.extend(c);
     if (!b.isEmpty()) fitTo(b, { padding: sheetPadding(), duration: 700, maxZoom: 16 });
   } catch (e) {
     if (mode !== 'preview' || dest !== place) return;
+    // Carrying on offline: the trip as it was when the phone cut it off.
+    if (resuming?.trip && travel === 'transit') {
+      transit = { place, trips: [resuming.trip], selected: 0 };
+      renderTransit();
+      return resumeStart();
+    }
     $('route-list').innerHTML = '';
     $('route-status').textContent = e.message;
   }
+}
+
+// Speed and heading when moving at train speed, so a trip planned on a train starts on it (src/lib/transit.js).
+function movingNow() {
+  const p = state.pos;
+  return p && Date.now() - lastFixAt < 10_000 && (p.speed ?? 0) >= 6 && Number.isFinite(p.heading) ? { speed: p.speed, heading: p.heading } : null;
 }
 
 const WALK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="13" cy="4" r="2" fill="currentColor"/><path d="m9 21 2.5-7 2.5 2.5V21M8 11l2-4 4 1 2 4M11.5 14 10 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
@@ -1349,8 +1718,9 @@ function renderTransit() {
       .map((l) => (l.mode === 'walk' ? `<span class="t-walk">${WALK_ICON}${Math.round(l.duration / 60)}</span>` : lineChip(l)))
       .join('<span class="t-sep">›</span>');
     const facts = [`arrive ${formatClock(new Date(trip.arrive))}`, trip.changes ? `${trip.changes} change${trip.changes > 1 ? 's' : ''}` : 'no changes'];
+    if (trip.lastTrain) facts.push('<span class="t-last">last train</span>');
     const steps = i === transit.selected ? `<ol class="t-steps">${trip.legs.map(stepHtml).join('')}</ol>` : '';
-    b.innerHTML = `<span class="r-time">${formatDuration(trip.duration)}</span><span class="r-info"><b>${facts.join(' · ')}</b><br><span class="t-legs">${legs}</span></span>${steps}`;
+    b.innerHTML = `<span class="r-time">${formatDuration(trip.duration)}</span><span class="r-info"><b>${facts.join(' · ')}</b><br><span class="t-legs">${legs}</span>${reportedOn(trip)}</span>${steps}`;
     b.onclick = () => {
       transit.selected = i;
       renderTransit();
@@ -1358,6 +1728,17 @@ function renderTransit() {
     box.append(b);
   });
   drawTransit();
+  renderPeekSummary();
+}
+
+// What riders have reported on a trip's lines (src/lib/train-reports.js), as one line under its trains.
+function reportedOn(trip) {
+  const found = (transit.reports ?? []).filter((r) => trip.legs.some((l) => l.line?.id === r.line));
+  if (!found.length) return '';
+  const [r] = found, t = TRAIN_REPORT_TYPES[r.type];
+  const line = trip.legs.find((l) => l.line?.id === r.line).line;
+  const more = found.length > 1 ? ` · +${found.length - 1} more` : '';
+  return `<br><span class="t-report" style="--tr:${t.color}"><i></i>${esc(t.label)} on the ${esc(line.short)}${r.station ? ` at ${esc(r.station)}` : ''}, ${timeAgo(r.created_at)}${more}</span>`;
 }
 
 function stepHtml(l) {
@@ -1366,9 +1747,9 @@ function stepHtml(l) {
     const to = l.to.name === 'Destination' ? (dest?.name ?? 'your destination') : `${l.to.name} station`;
     return `<li><span>Walk to ${esc(to)}<small>${mins(l.duration)} · ${formatDistance(l.distance, units)}</small></span></li>`;
   }
-  const when = l.every ? `Every ${l.every} min` : `Train at ${formatClock(new Date(l.depart))}`;
-  return `<li class="ride" style="--dot:${esc(l.line.color)}"><span>${lineChip(l)} ${esc(l.line.name)} towards ${esc(l.towards)}
-    <small>${esc(when)} · ${l.stops} stop${l.stops > 1 ? 's' : ''} to ${esc(l.to.name)}, ${mins(l.duration)}</small></span></li>`;
+  const when = (l.last ? '<b class="t-last">Last train</b> · ' : '') + (l.aboard ? 'You’re on it' : l.every ? `Every ${l.every} min` : `Train at ${formatClock(new Date(l.depart))}`);
+  return `<li class="ride" style="--dot:${esc(l.line.color)}"><span>${lineChip(l)} ${l.aboard ? 'Stay on the ' : ''}${esc(l.line.name)} towards ${esc(l.towards)}
+    <small>${when} · ${l.stops} stop${l.stops > 1 ? 's' : ''} to ${esc(l.to.name)}, ${mins(l.duration)}</small></span></li>`;
 }
 
 // The chosen trip on the map: walks dashed, rides in their line's colour, a dot where you get on and off.
@@ -1382,6 +1763,515 @@ function drawTransit() {
     if (l.mode === 'train') for (const s of [l.from, l.to]) features.push({ type: 'Feature', properties: { mode: 'stop', color: l.line.color, name: s.name }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] } });
   }
   src.setData({ type: 'FeatureCollection', features });
+}
+
+// ---------- Picking a trip up again ----------
+// iPhones close a page in the background to save memory, and a trip in progress goes with it. The trip is kept on
+// this phone while it runs; opening A2B again within a few hours offers to carry on, planned again from where you
+// are then (a train trip offline: as it was, from the leg it had reached).
+const RESUME_MS = 3 * 3600_000;
+let resuming = null, resumeLeg = 0, savedLeg = -1;
+
+function saveTrip(kind) {
+  savedLeg = kind === 'ride' && guide ? guide.i : -1;
+  local.set('activeTrip', { kind, travel, dest, at: Date.now(), ...(kind === 'ride' && guide && { trip: guide.trip, leg: guide.i }) });
+}
+
+function forgetTrip() {
+  local.set('activeTrip', null);
+  savedLeg = -1;
+}
+
+function offerResume() {
+  const t = local.get('activeTrip');
+  if (!t?.dest || mode !== 'browse') return;
+  if (Date.now() - t.at > RESUME_MS) return forgetTrip();
+  const what = t.kind === 'ride' ? 'train trip' : t.travel === 'walk' ? 'walk' : t.travel === 'motorcycle' ? 'ride' : 'drive';
+  const mins = Math.round((Date.now() - t.at) / 60_000);
+  $('resume-title').textContent = `Continue to ${t.dest.name}?`;
+  $('resume-sub').textContent = `Your ${what} stopped ${mins < 2 ? 'just now' : `${formatDuration(mins * 60)} ago`} when the app closed. It picks up from where you are now.`;
+  $('resume').classList.remove('hidden');
+  $('btn-resume-no').onclick = () => {
+    forgetTrip();
+    $('resume').classList.add('hidden');
+  };
+  $('btn-resume-go').onclick = () => {
+    $('resume').classList.add('hidden');
+    speak(`Continuing to ${t.dest.name}.`); // inside the tap: phones only allow speech that a tap started
+    resuming = t;
+    resumeLeg = 0;
+    travel = t.kind === 'ride' ? 'transit' : ['walk', 'motorcycle'].includes(t.travel) ? t.travel : 'drive';
+    syncVehicle();
+    openPreview(t.dest);
+  };
+}
+
+// The routes (or trains) are in: start, as Go or Start would.
+function resumeStart() {
+  const t = resuming;
+  resuming = null;
+  if (travel === 'transit') {
+    if (transit?.trips[0] === t.trip) resumeLeg = t.leg ?? 0; // the saved trip (offline): from its leg
+    return startRide();
+  }
+  startDrive();
+}
+
+// ---------- Riding a train trip ----------
+// "Start" on a train trip follows it (train-guide.js): the walk to the station, which train, the next station as the
+// train goes (estimated underground from the timetable), "get off at the next stop", any change, and the walk at the
+// end. A train marker in the line's colour shows where you are on a ride, the chevron on foot. The trip line stays
+// drawn. Nothing from a train trip is shared as traffic or as a live trip. Works while A2B is open on screen.
+const TRAIN_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="2.5" width="12" height="15" rx="3.5" fill="currentColor"/><rect x="8" y="5.5" width="8" height="4.5" rx="1" fill="#000" fill-opacity=".35"/><circle cx="9.2" cy="14" r="1.3" fill="#000" fill-opacity=".45"/><circle cx="14.8" cy="14" r="1.3" fill="#000" fill-opacity=".45"/><path d="m8.5 21.5 2-3.5m5 3.5-2-3.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
+let guide = null, rideTimer = null, riderMarker = null, rideGpsBlocked = false, rideTimeShift = 0, rideStarted = 0;
+// The guide moves you once a second; between those, every animation frame slides the train along the track (or the
+// walking dot) and the camera with it, as driving does, so nothing jumps.
+const rideGlide = new Glide();
+let rideFrameId = 0, rideKind = null; // 'train' | 'chevron', what the last update showed
+let rideZoom = null, rideFrameAt = 0; // the train camera's zoom, drifting like driving's (followDrive)
+const RIDE_ZOOM = 15.4; // trains are quick: about as far out as driving at speed (driveZoom)
+let compass = null, compassAt = 0; // which way the phone faces (degrees from north), for the walking dot
+const rideNow = () => Date.now() + rideTimeShift;
+
+function startRide() {
+  const trip = transit?.trips[transit.selected];
+  if (!trip || mode !== 'preview') return;
+  autoGo.stop();
+  mode = 'ride';
+  drawPois(); // off the map while riding
+  guide = new TrainGuide(trip, { now: rideNow(), leg: resumeLeg });
+  resumeLeg = 0;
+  Object.assign(trainReports, { list: transit?.reports ?? [], at: 0, lines: '', said: new Set(), shown: null, html: '' });
+  rideStarted = rideNow();
+  saveTrip('ride');
+  carMarker.remove(); // the train or walking marker instead (and the 3D vehicle hides itself in this mode)
+  if (vehicle3d) map.triggerRepaint();
+  riderMarker ??= new maplibregl.Marker({ element: el('div', 'rider'), rotationAlignment: 'map', pitchAlignment: 'map' });
+  for (const id of ['preview', 'later']) $(id).classList.add('hidden');
+  $('ride-ui').classList.remove('hidden');
+  document.body.classList.add('riding');
+  armBack();
+  follow = true;
+  requestWakeLock();
+  startCompass(); // inside the tap on Start: iOS only asks for the compass from a tap
+  rideTick(); // its first update says how the trip starts: the walk, the train, or that you're already on it
+  clearInterval(rideTimer);
+  rideTimer = setInterval(rideTick, 1000);
+}
+
+function rideTick(say = null) {
+  if (mode !== 'ride' || !guide) return;
+  // Fresh: the last few seconds. Starting, the fix the trip was planned from will do: a phone standing still on the
+  // platform may not send another for a while, and without one the trip can't see you're already there.
+  const fresh = state.pos && !rideGpsBlocked && Date.now() - lastFixAt < (guide.begun ? 4000 : 120_000);
+  const { view, events } = guide.update({ now: rideNow(), fix: fresh ? state.pos : null });
+  if (!sayRide(events, say)) return;
+  if (guide.i !== savedLeg) saveTrip('ride'); // a new leg: pick up from here if the phone cuts the trip off
+  $('ride-off').classList.toggle('hidden', !view.off);
+  if (view.off) replanRide();
+  else replanNoted = false;
+  renderRide(view);
+  renderTrainReport(); // its age, and gone once it expires or the trip leaves that line
+  refreshTrainReports();
+}
+
+// What the guide says, as one sentence (each speak cuts off the one before). False once you've arrived.
+function sayRide(events, before = null) {
+  if (events.some((e) => e.type === 'arrived')) {
+    endRide(true);
+    return false;
+  }
+  speak([before, ...events.map((e) => e.text)].filter(Boolean).join(' '));
+  if (events.some((e) => e.type === 'alert' || e.type === 'alight' || e.type === 'change')) navigator.vibrate?.([300, 150, 300]);
+  return true;
+}
+
+// Off the trip (another way on foot, off the platform, on another train): plan it again from where you are, as
+// driving reroutes. The marker follows you meanwhile. Needs signal; offline, "I'm already here" still works.
+const REPLAN_MS = 20_000;
+let replanning = false, replanAt = 0, replanNoted = false;
+async function replanRide() {
+  if (replanning || !state.pos || !dest || Date.now() - replanAt < REPLAN_MS) return;
+  replanAt = Date.now();
+  if (!navigator.onLine) return noteReplan("You're offline, so the trip can't be planned again. Tap “I'm already here” to say where you are.");
+  replanning = true;
+  const place = dest;
+  try {
+    const plan = await api('/api/transit', { method: 'POST', body: { from: state.pos.lngLat, to: [place.lng, place.lat], moving: movingNow() } });
+    if (mode !== 'ride' || !guide || dest !== place) return;
+    if (!plan.trips.length) return noteReplan(plan.note || 'No train trip from here. Stay on the highlighted route.');
+    transit = { place, trips: plan.trips, selected: 0 };
+    drawTransit();
+    guide = new TrainGuide(plan.trips[0], { now: rideNow() });
+    saveTrip('ride');
+    rideTick('Route recalculated.');
+  } catch (e) {
+    noteReplan(!navigator.onLine || e.status === 0 ? "You're offline, so the trip can't be planned again. Tap “I'm already here” to say where you are." : e.message);
+  } finally {
+    replanning = false;
+  }
+}
+// Said once while off, not every try.
+function noteReplan(msg) {
+  if (!replanNoted) toast(msg, 4000);
+  replanNoted = true;
+}
+
+// "I'm already here": you say where you are when GPS can't (underground, inside a station, no signal).
+function rideHere(station = null) {
+  if (mode !== 'ride' || !guide) return;
+  if (!sayRide(guide.here({ now: rideNow(), station }))) return;
+  rideTick();
+}
+
+// A station tapped in the list: what saying you're there would do (board the train, move you on, get you off), and
+// "I'm here" to do it. The big button needs no asking: its label already says where.
+function askHere(k) {
+  if (mode !== 'ride' || !guide || guide.leg.mode !== 'train') return;
+  const leg = guide.leg, at = guide.i, last = leg.stations.length - 1;
+  const name = leg.stations[k][0], after = guide.trip.legs[at + 1];
+  const waiting = guide.phase === 'wait';
+  $('here-title').textContent = waiting ? (k ? `On the train, at ${name}?` : 'On the train?') : `You’re at ${name}?`;
+  $('here-sub').textContent = k === last
+    ? after?.mode === 'train' ? `That’s where you change, to the ${after.line.name}.` : 'That’s your stop: you get off here.'
+    : waiting && !k ? `Leaving ${name} now. ${last} stop${last > 1 ? 's' : ''} to ${leg.to.name}.`
+    : `${last - k} stop${last - k > 1 ? 's' : ''} to ${leg.to.name} from there.`;
+  $('btn-here-yes').onclick = () => {
+    $('here-confirm').classList.add('hidden');
+    if (guide?.i === at) rideHere(k); // still on that train: the trip hasn't moved on (or been planned again) meanwhile
+  };
+  $('here-confirm').classList.remove('hidden');
+  armBack();
+}
+
+const sentence = (t) => t.replace(/\.$/, '');
+
+// ================= Train reports =================
+// Riders report a problem on the line they're on: delays, a stopped train, crowds, a closed station (see
+// src/lib/train-reports.js). What's reported on the lines still ahead shows under the banner, said once, and riders
+// say whether it's still happening or cleared. When planning, a trip using a line with a report says so.
+const TRAIN_REPORTS_MS = 60_000;
+const trainReports = { list: [], at: 0, lines: '', said: new Set(), shown: null, html: '' };
+let lastRideView = null; // the guide's last view (renderRide), for where a report is from
+
+// The lines still ahead on this trip, the one you're on (or walking to) first.
+function linesAhead() {
+  return guide ? [...new Set(guide.trip.legs.slice(guide.i).filter((l) => l.mode === 'train').map((l) => l.line.id))] : [];
+}
+const tripLine = (id) => guide?.trip.legs.find((l) => l.line?.id === id)?.line;
+
+async function refreshTrainReports() {
+  const lines = linesAhead().join(',');
+  if (!lines || (lines === trainReports.lines && Date.now() - trainReports.at < TRAIN_REPORTS_MS)) return;
+  trainReports.at = Date.now();
+  trainReports.lines = lines;
+  try {
+    const res = await api(`/api/train-reports?lines=${encodeURIComponent(lines)}`);
+    if (mode !== 'ride') return;
+    trainReports.list = res.reports;
+    renderTrainReport();
+  } catch {} // offline: try again next time
+}
+
+function renderTrainReport() {
+  const chip = $('ride-report-chip');
+  const r = linesAhead().map((id) => trainReports.list.find((x) => x.line === id && x.expires_at > Date.now())).find(Boolean) ?? null;
+  trainReports.shown = r;
+  chip.classList.toggle('hidden', !r);
+  if (!r) return;
+  const t = TRAIN_REPORT_TYPES[r.type], line = tripLine(r.line);
+  const html = `<b>${t.short}</b><span>${esc(line?.name ?? '')}${r.station ? ` · ${esc(r.station)}` : ''}<small>${timeAgo(r.created_at)} · tap to say if it’s cleared</small></span>`;
+  if (html !== trainReports.html) { // only when it reads differently: a rewrite mid-tap would lose the tap
+    chip.style.setProperty('--tr', t.color);
+    chip.innerHTML = trainReports.html = html;
+  }
+  if (!trainReports.said.has(r.id) && !r.mine) {
+    trainReports.said.add(r.id);
+    speak(`Riders report ${t.label.toLowerCase()} on the ${line?.name ?? 'line'}${r.station ? `, at ${r.station}` : ''}.`);
+  }
+}
+
+// What a report from here is about: the train you're on and its next stop, the one you're waiting for and its
+// station, or on a walk the next train and where you'll board it.
+function trainReportPlace() {
+  const leg = guide.leg;
+  if (leg.mode === 'train') return { line: leg.line, station: guide.phase !== 'wait' && lastRideView?.kind === 'ride' ? lastRideView.next : leg.from.name };
+  const next = guide.trip.legs.slice(guide.i).find((l) => l.mode === 'train');
+  return next ? { line: next.line, station: next.from.name } : null;
+}
+
+function openTrainReport() {
+  if (mode !== 'ride' || !guide) return;
+  if (!state.user) return openAuth('report');
+  const at = trainReportPlace();
+  if (!at) return toast('There’s no train left on this trip to report on.');
+  $('train-report-title').textContent = `Report on the ${at.line.name}`;
+  $('train-report-where').textContent = `At ${at.station}`;
+  const grid = $('train-report-grid');
+  grid.innerHTML = '';
+  for (const [key, t] of Object.entries(TRAIN_REPORT_TYPES)) {
+    const b = el('button', 'report-tile', `<span class="pin-ic" style="background:${t.color}">${trainReportIcon(key, 36)}</span>${esc(t.label)}`);
+    b.onclick = () => sendTrainReport(key, at);
+    grid.append(b);
+  }
+  $('train-report').classList.remove('hidden');
+  armBack();
+}
+
+async function sendTrainReport(type, at) {
+  $('train-report').classList.add('hidden');
+  try {
+    const res = await api('/api/train-reports', { method: 'POST', body: { type, line: at.line.id, station: at.station } });
+    bumpPoints(res.points || 0);
+    trainReports.list = [res.report, ...trainReports.list.filter((r) => r.id !== res.report.id)];
+    trainReports.said.add(res.report.id);
+    renderTrainReport();
+    toast(res.merged ? 'Thanks! You confirmed what another rider reported.' : `Thanks! Riders on the ${at.line.name} will see it. +${res.points} points`);
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+// A report under the banner, tapped: still happening, or cleared? Your own: only cleared.
+function askTrainReport(r) {
+  if (!r) return;
+  if (!state.user) return openAuth('report');
+  const t = TRAIN_REPORT_TYPES[r.type], line = tripLine(r.line);
+  $('train-vote-title').textContent = r.mine ? `${t.label}: cleared?` : `${t.label}: still happening?`;
+  $('train-vote-sub').textContent = `Reported ${timeAgo(r.created_at)} on the ${line?.name ?? 'line'}${r.station ? `, at ${r.station}` : ''}.`;
+  $('btn-train-still').classList.toggle('hidden', r.mine);
+  const vote = async (v) => {
+    $('train-report-vote').classList.add('hidden');
+    try {
+      const res = await api(`/api/train-reports/${r.id}/vote`, { method: 'POST', body: { vote: v } });
+      bumpPoints(res.points || 0);
+      trainReports.list = res.removed ? trainReports.list.filter((x) => x.id !== r.id) : trainReports.list.map((x) => (x.id === r.id ? res.report : x));
+      renderTrainReport();
+      toast(v === 'gone' && res.removed ? 'Thanks! It’s gone for everyone.' : 'Thanks!');
+    } catch (e) {
+      toast(e.message);
+    }
+  };
+  $('btn-train-gone').onclick = () => vote('gone');
+  $('btn-train-still').onclick = () => vote('still');
+  $('train-report-vote').classList.remove('hidden');
+  armBack();
+}
+
+function renderRide(view) {
+  lastRideView = view;
+  const leg = view.leg;
+  const units = state.settings.units;
+  $('ride-banner').classList.toggle('alert', Boolean(view.alerted));
+  const icon = $('ride-icon');
+  if (leg.mode === 'train') {
+    icon.style.setProperty('--line', leg.line.color);
+    icon.style.setProperty('--line-text', leg.line.text);
+    icon.textContent = leg.line.short;
+  } else {
+    icon.style.removeProperty('--line');
+    icon.innerHTML = WALK_ICON;
+  }
+  if (view.kind === 'walk') {
+    $('ride-title').textContent = formatDistance(view.left, units);
+    $('ride-sub').textContent = sentence(walkText(leg));
+  } else if (view.kind === 'wait') {
+    $('ride-title').textContent = leg.every ? `Every ${leg.every} min` : `Train at ${formatClock(new Date(leg.depart))}`;
+    $('ride-sub').textContent = `${leg.line.name} towards ${leg.towards}`;
+  } else {
+    $('ride-title').textContent = view.alerted ? `Get off at ${leg.to.name}` : `Next: ${view.next}`;
+    $('ride-sub').textContent = view.alerted ? 'It’s the next stop' : `${view.stopsToGo} stop${view.stopsToGo > 1 ? 's' : ''} to ${leg.to.name}`;
+  }
+  $('ride-est').classList.toggle('hidden', !view.estimating);
+  // When you'll get there, as driving's arrival time: by the train you're on (or waiting for), then the rest.
+  const arrive = view.arrive ? new Date(view.arrive) : null;
+  $('ride-eta').textContent = arrive ? `Arrive ${formatClock(arrive)} · ${formatDuration(Math.max(60, (view.arrive - rideNow()) / 1000))}` : '';
+  // The closed sheet's one line: where you're going next.
+  const peek = $('ride-peek');
+  peek.style.setProperty('--dot', leg.line?.color ?? '#1c7ed6');
+  peek.textContent = (view.kind === 'ride'
+    ? (view.alerted ? `Get off at ${leg.to.name}` : `Next: ${view.next}`)
+    : view.kind === 'wait' ? `${leg.line.name} towards ${leg.towards}` : sentence(walkText(leg))) + (arrive ? ` · ETA at ${formatClock(arrive)}` : '');
+  // The list: this ride's stations, or on foot what's left of the trip.
+  const list = $('ride-stops');
+  if (leg.mode === 'train') {
+    const last = leg.stations.length - 1;
+    const states = view.stations ?? leg.stations.map(([name], k) => ({ name, state: k === last ? 'alight' : k === 0 ? 'next' : 'later' }));
+    list.style.setProperty('--dot', leg.line.color);
+    list.innerHTML = states.map((x, k) => `<li class="${x.state}" data-k="${k}" aria-label="I'm at ${esc(x.name)}">${esc(x.name)}${x.state === 'alight' ? ' · get off' : ''}</li>`).join('');
+  } else {
+    list.style.removeProperty('--dot');
+    list.innerHTML = guide.trip.legs.slice(guide.i).map((l) => (l.mode === 'walk'
+      ? `<li class="walk">${esc(sentence(walkText(l)))}</li>`
+      : `<li style="--dot:${esc(l.line.color)}">${esc(l.line.name)} to ${esc(l.to.name)}</li>`)).join('');
+  }
+  $('btn-ride-here').textContent = guide.hereText() ?? '';
+  // Where you are: a train on the track, or on foot the chevron, turned the way you're going (also off the line,
+  // following GPS while the trip is planned again).
+  const kind = markerFor({ mode, legMode: view.kind === 'ride' && !view.off ? 'train' : 'walk' });
+  const at = view.kind === 'walk' ? view.pos ?? state.pos?.lngLat : view.pos;
+  const node = riderMarker.getElement();
+  const heading = kind === 'train' ? view.heading ?? 0 : walkHeading(view);
+  // On a train, the 3D train (vehicle3d.js) in the line's colour; the flat badge only if 3D isn't available.
+  // rideFrame keeps its position and heading moving between updates.
+  trainPose = kind === 'train' && at ? { ...(trainPose ?? { pos: at, heading }), color: leg.line.color } : null;
+  const want = trainPose ? `train:${trainPose.color}` : null;
+  if (want ? vehicleShown !== want : vehicleShown?.startsWith('train:')) setupVehicle();
+  const flatTrain = kind === 'train' && !vehicle3d;
+  node.classList.toggle('train', flatTrain); // classList, not className: MapLibre keeps its own classes on it
+  node.classList.toggle('walker', kind === 'chevron');
+  node.style.setProperty('--rider', leg.line?.color ?? '#1c7ed6');
+  node.style.color = kind === 'chevron' ? 'var(--car)' : leg.line?.text ?? '#fff'; // the chevron in your colour
+  node.innerHTML = flatTrain ? TRAIN_ICON : kind === 'chevron' ? CAR : '';
+  if (kind === 'chevron') node.style.setProperty('--car', local.get('vehicleColor', DEFAULT_COLOR)); // your colour, as when driving
+  if (vehicle3d) map.triggerRepaint();
+  if (!at) return;
+  if (kind === 'train' && vehicle3d) riderMarker.remove();
+  else if (!riderMarker._map) riderMarker.setLngLat(at).setRotation(heading).addTo(map);
+  // On the train the glide follows the track; on foot it slides straight between fixes.
+  rideGlide.set(kind === 'train' ? { pos: at, heading, along: guide.along, path: guide.track } : { pos: at, heading }, performance.now());
+  // Getting on or off a train: ease into that view once; after that the frames keep the camera on you.
+  if (kind !== rideKind && follow && !userMoving && !touching) {
+    const riding = kind === 'train';
+    rideZoom = null;
+    map.easeTo({ center: at, zoom: riding ? RIDE_ZOOM : 17, bearing: riding ? heading : map.getBearing(), pitch: riding ? 55 : 30, padding: ridePadding(), duration: 900 });
+  }
+  rideKind = kind;
+  if (!rideFrameId) rideFrameId = requestAnimationFrame(rideFrame);
+}
+
+function rideFrame(now) {
+  rideFrameId = 0;
+  if (mode !== 'ride') return;
+  const dt = rideFrameAt ? Math.min(now - rideFrameAt, 100) : FRAME_MS;
+  rideFrameAt = now;
+  const s = rideGlide.at(now);
+  if (!s) return;
+  if (rideKind === 'train' && trainPose) {
+    trainPose.pos = s.pos;
+    trainPose.heading = s.heading;
+    if (vehicle3d) map.triggerRepaint();
+  }
+  if (riderMarker._map) riderMarker.setLngLat(s.pos).setRotation(rideKind === 'chevron' && compassFresh() ? compass : s.heading);
+  let settling = false;
+  if (follow && !userMoving && !touching && !map.isEasing()) {
+    if (rideKind === 'train') {
+      // As driving does (followDrive): behind the train, heading up, tilted, the zoom drifting rather than stepping.
+      rideZoom = rideZoom == null ? map.getZoom() : rideZoom + (RIDE_ZOOM - rideZoom) * (1 - Math.exp(-dt / 700));
+      map.jumpTo({ center: s.pos, bearing: s.heading, pitch: 55, zoom: rideZoom, padding: ridePadding() });
+      settling = Math.abs(RIDE_ZOOM - rideZoom) > 0.01;
+    } else map.jumpTo({ center: s.pos });
+  } else rideZoom = null;
+  if (!rideGlide.done(now) || settling) rideFrameId = requestAnimationFrame(rideFrame);
+  else rideFrameAt = 0;
+}
+
+// The map left above the sheet, with you low in it like the car when driving, so more of the line ahead shows.
+function ridePadding() {
+  const side = sideColumnEnd(); // on its side, the sheet is beside the map, not under it
+  if (side) return { top: Math.round(innerHeight * 0.42), bottom: 30, left: side, right: 0 };
+  const bottom = Math.min(Math.round(innerHeight * 0.6), $('ride-sheet').offsetHeight + 10);
+  return { top: Math.round((innerHeight - bottom) * 0.42), bottom, left: 0, right: 0 };
+}
+
+
+// Which way you're heading on foot: the compass when the phone has one, else the way GPS says you're moving, else
+// towards where you're walking to.
+const compassFresh = () => compass != null && Date.now() - compassAt < 3000;
+function walkHeading(view) {
+  if (compassFresh()) return compass;
+  const p = state.pos;
+  if (p && (p.speed ?? 0) > 0.7 && Number.isFinite(p.heading)) return p.heading;
+  return view.heading ?? 0;
+}
+
+function onCompass(e) {
+  // iOS gives a compass heading; Android an absolute alpha, counter-clockwise from north.
+  const h = e.webkitCompassHeading ?? (e.absolute && e.alpha != null ? 360 - e.alpha : null);
+  if (h == null || !Number.isFinite(h)) return;
+  compass = (h + (screen.orientation?.angle ?? 0)) % 360;
+  compassAt = Date.now();
+  if (rideKind === 'chevron' && riderMarker?._map) riderMarker.setRotation(compass);
+}
+
+function startCompass() {
+  const listen = () => {
+    addEventListener('deviceorientationabsolute', onCompass);
+    addEventListener('deviceorientation', onCompass);
+  };
+  const ask = globalThis.DeviceOrientationEvent?.requestPermission; // iOS asks once
+  if (ask) ask.call(DeviceOrientationEvent).then((r) => r === 'granted' && listen()).catch(() => {});
+  else listen();
+}
+
+function stopCompass() {
+  removeEventListener('deviceorientationabsolute', onCompass);
+  removeEventListener('deviceorientation', onCompass);
+  compass = null;
+}
+
+function endRide(arrived) {
+  forgetTrip();
+  for (const id of ['here-confirm', 'train-report', 'train-report-vote', 'ride-report-chip']) $(id).classList.add('hidden');
+  clearInterval(rideTimer);
+  rideTimer = null;
+  const name = dest?.name ?? '';
+  const took = rideNow() - rideStarted;
+  guide = null;
+  rideGpsBlocked = false;
+  rideTimeShift = 0;
+  riderMarker?.remove();
+  trainPose = null;
+  cancelAnimationFrame(rideFrameId);
+  rideFrameId = 0;
+  rideKind = null;
+  rideZoom = null;
+  rideGlide.from = rideGlide.to = null; // the next trip starts where you are, not sliding from here
+  rideSheet.set(false); // the next trip opens with its stops showing
+  stopCompass();
+  $('ride-ui').classList.add('hidden');
+  $('btn-recenter-ride').classList.add('hidden');
+  document.body.classList.remove('riding');
+  wakeLock?.release?.().catch(() => {});
+  wakeLock = null;
+  mode = 'browse';
+  if (vehicleShown?.startsWith('train:')) setupVehicle();
+  $('ride-off').classList.add('hidden');
+  replanning = false;
+  replanNoted = false;
+  // Back to the vehicle from Settings (the chevron, unless the car was picked), where you are now. The 3D model
+  // draws where the car's glide says, and fixes didn't move that during the trip: start it afresh from here, or
+  // it stays where the trip began (often off screen) and you see no chevron at all.
+  if (state.pos) {
+    carMarker.setLngLat(state.pos.lngLat).setRotation(state.pos.heading ?? 0).addTo(map);
+    glide.from = glide.to = null;
+    moveCar({ pos: state.pos.lngLat, heading: state.pos.heading ?? 0 });
+  }
+  updateSpeedo(state.pos?.speed); // still showing the speed from before the trip
+  if (vehicle3d) map.triggerRepaint();
+  if (!arrived) return backToBrowse();
+  speak('You have arrived.');
+  $('arrived-name').textContent = name;
+  $('arrived-stats').textContent = `By train in ${formatDuration(took / 1000)}`;
+  $('arrived').classList.remove('hidden');
+  $('browse-ui').classList.add('hidden');
+  map.easeTo({ pitch: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 600 });
+}
+
+// For testing on a phone against a local server: the trip's state, time moved on, and GPS cut and restored.
+if (typeof location !== 'undefined' && ['localhost', '127.0.0.1'].includes(location.hostname)) {
+  window.__trainTest = {
+    state: () => guide && { leg: guide.i, phase: guide.phase, along: Math.round(guide.along), alerted: guide.alerted, done: guide.done, shift: rideTimeShift / 1000 },
+    advance: (seconds) => {
+      rideTimeShift += seconds * 1000;
+      rideTick();
+    },
+    loseGps: () => (rideGpsBlocked = true),
+    restore: () => (rideGpsBlocked = false),
+    // A GPS fix from the console, as the phone would give it: gps(101.71, 3.15, { speed: 14, accuracy: 10 }).
+    gps: (lng, lat, { speed = null, accuracy = 10, heading = null } = {}) =>
+      onFix({ coords: { longitude: lng, latitude: lat, speed, accuracy, heading }, timestamp: Date.now() }),
+  };
 }
 
 // What the server did about closures, worth a line under the route options.
@@ -1453,12 +2343,14 @@ function checkWeather() {
   speak(spokenWeather(next));
 }
 
-async function requestRoutes(from, to, heading, via = []) {
+// `check`: a faster-route check's checkBody (faster-route.js), so the server can skip what an unwanted answer needs.
+async function requestRoutes(from, to, heading, via = [], { check = null } = {}) {
   const s = state.settings;
   const { routes: rs, closures_ignored: closuresIgnored, construction_avoided: constructionAvoided } = await api('/api/route', {
     method: 'POST',
     body: {
       from, to, heading, travel,
+      ...(check && { check }),
       via: via.map((p) => [p.lng, p.lat]),
       units: s.units,
       lang: navigator.language || 'en-US',
@@ -1471,6 +2363,8 @@ async function requestRoutes(from, to, heading, via = []) {
 
 // Room the map leaves for the route sheet: its real height on a phone, so a collapsed sheet shows more map.
 function sheetPadding() {
+  const side = sideColumnEnd();
+  if (side) return { top: 40, bottom: 40, left: side + 40, right: 60 };
   if (innerWidth >= 720) return { top: 60, bottom: 60, left: 460, right: 60 };
   const sheet = $('preview');
   const h = sheet.classList.contains('hidden') ? Math.min(innerHeight * 0.5, 380) : sheet.offsetHeight + 24;
@@ -1525,8 +2419,9 @@ function collapsibleSheet(sheet, list, settled) {
   };
   sheet.querySelector('.grabber').onclick = () => set(!peeked());
   sheetGesture(sheet, {
-    // Not from inside a list that's scrolled, so long lists can still be scrolled back up.
-    start: (e) => !(e.target.closest(`#${list.id}`) && list.scrollTop > 0),
+    // Not from inside a list that scrolls: that drag scrolls it (the header still pulls the sheet). Taking it as a
+    // pull let the sheet snap back on release and the list never moved.
+    start: (e) => !(e.target.closest(`#${list.id}`) && (list.scrollTop > 0 || list.scrollHeight > list.clientHeight + 1)),
     move: (dy) => {
       if (!sheet.classList.contains('dragging')) {
         measure();
@@ -1542,6 +2437,13 @@ function collapsibleSheet(sheet, list, settled) {
 
 // One line for the collapsed sheet: "44 min · 30 km · 3 tolls".
 function renderPeekSummary() {
+  const t = travel === 'transit' ? transit?.trips[transit.selected] : null;
+  if (travel === 'transit') {
+    $('peek-summary').textContent = t
+      ? [formatDuration(t.duration), `arrive ${formatClock(new Date(t.arrive))}`, t.changes ? `${t.changes} change${t.changes > 1 ? 's' : ''}` : 'no changes'].join(' · ')
+      : '';
+    return;
+  }
   const r = routes[selected];
   $('peek-summary').textContent = r
     ? [formatDuration(r.duration), formatDistance(r.distance, state.settings.units), r.tolls?.length ? tollSummary(r.tolls) : r.toll ? 'Toll' : ''].filter(Boolean).join(' · ')
@@ -1580,6 +2482,7 @@ function renderRouteOptions() {
     if (r.duration === fastest && routes.length > 1) badges.push('<span class="badge best">Fastest</span>');
     if (r.tolls?.length) badges.push(`<span class="badge warn">${esc(tollSummary(r.tolls))}</span>`);
     else if (r.toll) badges.push('<span class="badge warn">Toll</span>');
+    else if (r.toll_free_bike) badges.push('<span class="badge">No toll for motorcycles</span>');
     if (r.ferry) badges.push('<span class="badge warn">Ferry</span>');
     const reps = (r.reports ?? []).length;
     if (reps) badges.push(`<span class="badge">${reps} report${reps > 1 ? 's' : ''}</span>`);
@@ -1647,6 +2550,7 @@ function selectRoute(i) {
 // Back to Drive when the preview closes or the trip ends (see travel).
 function resetTravel() {
   travel = 'drive';
+  syncVehicle(); // back to your usual vehicle after a walk
 }
 
 function backToBrowse() {
@@ -1658,6 +2562,8 @@ function backToBrowse() {
   schedulePois();
   routes = [];
   dest = null;
+  origin = null; // the next trip starts where you are again
+  originMarker?.remove();
   destMarker?.remove();
   dropMarker?.remove();
   routeLabels.splice(0).forEach((m) => m.remove());
@@ -1676,8 +2582,7 @@ let laterMode = 'leave';
 
 function openLater() {
   autoGo.stop();
-  const r = routes[selected];
-  if (!r) return toast('Wait for the route first.');
+  if (travel === 'transit' ? !transit?.trips.length : !routes[selected]) return toast(travel === 'transit' ? 'Wait for the trains first.' : 'Wait for the route first.');
   $('later').classList.remove('hidden');
   armBack();
   const input = $('later-time');
@@ -1691,8 +2596,13 @@ function openLater() {
       updateLater();
     };
   });
-  input.oninput = updateLater;
+  let t;
+  input.oninput = () => {
+    clearTimeout(t);
+    t = setTimeout(updateLater, travel === 'transit' ? 400 : 0); // trains are asked of the server: not on every key
+  };
   $('btn-later-remind').onclick = downloadCalendar;
+  laterTrip = null;
   updateLater();
 }
 
@@ -1704,24 +2614,58 @@ function laterTimes() {
 }
 
 function updateLater() {
+  if (travel === 'transit') return updateLaterTrains();
   if (!routes[selected] || Number.isNaN(+new Date($('later-time').value))) return;
   const { leave, arrive } = laterTimes();
   $('later-result').innerHTML = `Leave <b>${formatClock(leave)}</b>, arrive around <b>${formatClock(arrive)}</b>.<br><small class="hint">Based on today's typical drive time of ${formatDuration(routes[selected].duration)}.</small>`;
 }
 
+// By train, the trains that run then (the timetable changes through the day and at night), not today's trip moved.
+// "Arrive by" asks for a time that early, then earlier by however late that trip gets in, so it's the last one in time.
+let laterTrip = null, laterSeq = 0;
+async function updateLaterTrains() {
+  const want = +new Date($('later-time').value);
+  if (Number.isNaN(want)) return;
+  const seq = ++laterSeq;
+  laterTrip = null;
+  $('later-result').innerHTML = '<span class="spinner" aria-hidden="true"></span>Finding trains…';
+  const from = origin ? [origin.lng, origin.lat] : state.pos?.lngLat ?? map.getCenter().toArray();
+  const ask = (at) => api('/api/transit', { method: 'POST', body: { from, to: [dest.lng, dest.lat], at } });
+  try {
+    let plan = await ask(laterMode === 'leave' ? want : want - (transit.trips[0]?.duration ?? 1800) * 1000);
+    for (let k = 0; laterMode === 'arrive' && plan.trips[0]?.arrive > want && k < 2; k++) {
+      plan = await ask(plan.trips[0].depart - (plan.trips[0].arrive - want) - 60_000);
+    }
+    if (seq !== laterSeq) return;
+    const trip = plan.trips[0];
+    if (!trip) return void ($('later-result').textContent = plan.note || 'No trains then.');
+    laterTrip = trip;
+    const last = trip.lastTrain ? ' <b class="t-last">Last train</b>' : '';
+    $('later-result').innerHTML = `Leave <b>${formatClock(new Date(trip.depart))}</b>, arrive around <b>${formatClock(new Date(trip.arrive))}</b>.${last}
+      <ol class="t-steps">${trip.legs.map(stepHtml).join('')}</ol><small class="hint">From the official timetables.</small>`;
+  } catch (e) {
+    if (seq === laterSeq) $('later-result').textContent = e.message;
+  }
+}
+
 function downloadCalendar() {
-  const { leave, arrive } = laterTimes();
+  if (travel === 'transit' && !laterTrip) return toast('Wait for the trains first.');
+  const byTrain = travel === 'transit';
+  const { leave, arrive } = byTrain ? { leave: new Date(laterTrip.depart), arrive: new Date(laterTrip.arrive) } : laterTimes();
+  // By train, the steps go in the event: which line, which way, where to change.
+  const steps = byTrain ? laterTrip.legs.map((l) => (l.mode === 'walk' ? sentence(walkText(l)) : `${l.line.name} towards ${l.towards} to ${l.to.name}`)).join('\n') : '';
+  const ical = (t) => t.replace(/[,;\\]/g, (c) => `\\${c}`).replace(/\n/g, '\\n'); // calendar text: escaped, lines as \n
   const stamp = (d) => d.toISOString().replace(/[-:]/g, '').replace(/\.\d+/, '');
   const link = `${location.origin}/?to=${dest.lat},${dest.lng}&name=${encodeURIComponent(dest.name)}`;
   const ics = [
     'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//A2B//Leave later//EN', 'BEGIN:VEVENT',
     `UID:${Date.now()}@a2b`, `DTSTAMP:${stamp(new Date())}`, `DTSTART:${stamp(leave)}`, `DTEND:${stamp(arrive)}`,
-    `SUMMARY:Drive to ${dest.name.replace(/[,;\n]/g, ' ')}`, `DESCRIPTION:Open in A2B: ${link}`, `URL:${link}`,
+    `SUMMARY:${byTrain ? 'Train' : 'Drive'} to ${dest.name.replace(/[,;\n]/g, ' ')}`, `DESCRIPTION:${steps ? `${ical(steps)}\\n` : ''}Open in A2B: ${link}`, `URL:${link}`,
     'BEGIN:VALARM', 'TRIGGER:-PT10M', 'ACTION:DISPLAY', 'DESCRIPTION:Time to leave soon', 'END:VALARM', 'END:VEVENT', 'END:VCALENDAR',
   ].join('\r\n');
   const a = document.createElement('a');
   a.href = URL.createObjectURL(new Blob([ics], { type: 'text/calendar' }));
-  a.download = 'a2b-drive.ics';
+  a.download = byTrain ? 'a2b-train.ics' : 'a2b-drive.ics';
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   toast('Added: open the file to put it in your calendar.');
@@ -1745,9 +2689,15 @@ function startDrive() {
   drawTrail();
   tollsSpoken.clear();
   camerasWarned.clear();
+  schoolsWarned.clear();
   weatherSpoken.clear();
   restsSaid = 0;
   $('toll-chip').classList.add('hidden');
+  resetFaster();
+  $('school-chip').classList.add('hidden');
+  map.getSource('school-pin')?.setData(emptyFc());
+  pinnedSchool = null;
+  startTunnelWatch();
   nav = new Navigator(route, { units: state.settings.units });
   nav.spoken.add('depart');
   live = null;
@@ -1755,12 +2705,14 @@ function startDrive() {
   renderStopMenu();
   alerted.clear();
   driveStarted = Date.now();
+  saveTrip('drive');
   routeLabels.splice(0).forEach((m) => m.remove());
   $('preview').classList.add('hidden');
   $('later').classList.add('hidden');
   $('drive-ui').classList.remove('hidden');
   tripSheet.set(false);
   $('alert').classList.add('hidden');
+  syncVehicle(); // a motorbike while riding
   document.body.classList.add('driving');
   document.body.classList.toggle('walking', travel === 'walk');
   armBack();
@@ -1824,14 +2776,16 @@ function driveTick(fix) {
   drawDriveLine();
   drawManeuverArrow();
   if (live.prompt) speak(live.prompt);
-  // Tolls, speed cameras, weather ahead (its tips are a driver's) and road reports ahead are for drivers.
+  // Tolls, speed cameras, school zones, weather ahead, road reports ahead and faster routes in traffic are for drivers.
   if (travel !== 'walk') {
     checkTolls();
     checkCameras();
+    checkSchools();
     checkWeather();
     checkAlerts();
+    checkFaster();
   }
-  if (share) pushShare();
+  if (share && !fix.estimated) pushShare(); // viewers see the last real position, not a guess
 
   const stopStep = nav.steps.findIndex((st) => st.type === 'stop');
   if (stops.length && stopStep >= 0 && live.stepIndex >= stopStep) {
@@ -1844,6 +2798,58 @@ function driveTick(fix) {
   if (live.offRoute && (!offTrail.length || distance(offTrail.at(-1), fix.lngLat) > 5)) offTrail.push(fix.lngLat);
   if (live.offRoute) reroute(fix);
   if (live.arrived) arrive();
+}
+
+// ---------- Tunnel mode ----------
+// When the GPS goes quiet in a tunnel (or anywhere, while moving), keep the car going along the route at its last
+// speed, so the banner, distances and the turn after the tunnel keep coming. See dead-reckoning.js.
+let reckoner = null, tunnelTimer = null, tunnelFixAt = 0, lastFixAccuracy = null, lastGoodSpeed = 0, gpsBlocked = false;
+
+function tunnelAhead() {
+  return Boolean(nav && live && nearTunnel(live.along, nav.cum, nav.route.tunnels));
+}
+
+function startTunnelWatch() {
+  stopTunnelWatch();
+  tunnelFixAt = Date.now();
+  lastFixAccuracy = null;
+  lastGoodSpeed = 0;
+  tunnelTimer = setInterval(tunnelTick, 1000);
+}
+
+function stopTunnelWatch() {
+  clearInterval(tunnelTimer);
+  tunnelTimer = null;
+  stopReckoning();
+}
+
+function stopReckoning() {
+  reckoner = null;
+  $('dr-chip')?.classList.add('hidden');
+}
+
+function tunnelTick() {
+  if (mode !== 'drive' || sim || !nav || !live || live.offRoute) return;
+  const now = Date.now();
+  if (!reckoner) {
+    if (!shouldEstimate({ sinceFixMs: now - tunnelFixAt, accuracy: lastFixAccuracy, speed: lastGoodSpeed, tunnel: tunnelAhead() })) return;
+    reckoner = new DeadReckoner({ along: live.along, speed: lastGoodSpeed, now: now - 1000 });
+    $('dr-chip').classList.remove('hidden');
+  }
+  const est = reckoner.advance(now, live.limit);
+  if (est.done) return stopReckoning(); // too long without a fix to guess: the car waits where it is, as before
+  const { point, bearing: heading } = pointAt(nav.coords, nav.cum, est.along);
+  updateSpeedo(est.speed);
+  driveTick({ lngLat: point, heading, speed: est.speed, accuracy: 5, time: now, estimated: true });
+}
+
+// For testing on a phone or the Simulator: pretend the GPS has gone, then bring it back.
+if (['localhost', '127.0.0.1'].includes(location.hostname)) {
+  window.__tunnelTest = {
+    loseGps: () => (gpsBlocked = true),
+    restore: () => (gpsBlocked = false),
+    state: () => ({ estimating: Boolean(reckoner), along: live?.along, tunnels: nav?.route.tunnels ?? [] }),
+  };
 }
 
 // Glide the camera into the driving view (start of a drive, Recenter); frames take over from there.
@@ -1859,7 +2865,11 @@ function driveZoom() {
   return speed > 25 ? 15.3 : speed > 15 ? 16 : 16.8;
 }
 
-const drivePadding = () => ({ top: Math.round(innerHeight * 0.42), bottom: 110, left: 0, right: 0 });
+// The car low on the screen, so more of the road ahead shows. On its side, centred in the map right of the column.
+const drivePadding = () => {
+  const side = sideColumnEnd();
+  return { top: Math.round(innerHeight * 0.42), bottom: side ? 30 : 110, left: side, right: 0 };
+};
 
 // A step's arrow; roundabouts are drawn with their real exit direction (cached per step).
 const roundaboutIcons = new WeakMap();
@@ -1881,9 +2891,25 @@ function renderBanner() {
   if (next.type.startsWith('arrive')) street = dest?.name || 'Destination';
   if (next.type === 'stop') street = stops[0]?.name || 'Your stop';
   $('turn-street').textContent = street;
+  renderSign(next.sign);
   $('then').classList.toggle('hidden', !then);
   if (then) $('then-icon').innerHTML = stepIcon(then);
   renderLanes(next, distToNext);
+}
+
+// An exit's overhead sign, Malaysian style: a green panel with the exit number, the road it leads onto and where
+// it goes ("EXIT 218 · 241 · Seremban / Labu"). It stands in for the street line when it names places.
+function renderSign(sign) {
+  const box = $('turn-sign');
+  const places = signPlaces(sign);
+  box.classList.toggle('hidden', !sign);
+  $('turn-street').classList.toggle('hidden', Boolean(places));
+  if (!sign) return;
+  box.innerHTML = [
+    sign.exit ? `<span class="sign-exit">EXIT ${esc(sign.exit)}</span>` : '',
+    ...(sign.roads ?? []).map((r) => `<span class="sign-road">${esc(r)}</span>`),
+    places ? `<span class="sign-to">${esc(places)}</span>` : '',
+  ].join('');
 }
 
 // Which lanes to be in, shown as you get close to the turn.
@@ -1952,15 +2978,10 @@ async function reroute(fix, { force = false, note } = {}) {
   try {
     const rs = await requestRoutes(fix.lngLat, [dest.lng, dest.lat], fix.heading ?? undefined, stops);
     if (mode !== 'drive') return;
-    keepTrail(fix.lngLat);
-    nav = new Navigator(rs[0], { units: state.settings.units });
-    nav.spoken.add('depart');
-    computeOnRoute();
-    loadReports(true);
-    if (sim) startSimulation(rs[0]);
+    adoptRoute(rs[0], fix.lngLat);
+    faster.lastCheck = Date.now(); // a fresh route: no need to look for a better one straight away
     speak(note ?? 'Route recalculated.');
     if (rs.closuresIgnored) toast("Couldn't find a way around a reported closure.");
-    if (share) pushShare(true);
   } catch (e) {
     // The common mid-drive failure is a dead spot: say so, and keep guiding on the loaded route.
     if (!navigator.onLine || e.status === 0) toast("You're offline, so the route can't be recalculated. Stay on the highlighted route.", 4000);
@@ -1968,6 +2989,92 @@ async function reroute(fix, { force = false, note } = {}) {
   } finally {
     rerouting = false;
   }
+}
+
+// Drive on `route` from `at`: after a reroute, or taking a faster route.
+function adoptRoute(route, at) {
+  keepTrail(at);
+  hideFaster();
+  nav = new Navigator(route, { units: state.settings.units });
+  nav.spoken.add('depart');
+  computeOnRoute();
+  loadReports(true);
+  if (sim) startSimulation(route);
+  if (share) pushShare(true);
+}
+
+// ---------- Faster route found ----------
+// Now and then while driving, routes from here are asked for again; one clearly quicker and really another way is
+// offered on a card, said once, and gone after 20 s if not taken. See faster-route.js for when and what counts.
+const faster = { lastCheck: 0, checks: 0, quiet: 0, busy: false, kept: [], offer: null, timer: null };
+
+function resetFaster() {
+  hideFaster();
+  Object.assign(faster, { lastCheck: 0, checks: 0, quiet: 0, busy: false, kept: [] });
+}
+
+async function checkFaster({ force = false } = {}) {
+  if (mode !== 'drive' || !nav || !live || !dest || faster.offer || rerouting) return;
+  const now = Date.now();
+  const toStop = stops[0] && state.pos ? distance(state.pos.lngLat, [stops[0].lng, stops[0].lat]) : null;
+  const due = shouldCheckFaster({
+    now, startedAt: driveStarted, lastCheck: faster.lastCheck, checks: faster.checks, quiet: faster.quiet, left: live.remaining, leftTime: live.remainingTime,
+    offRoute: live.offRoute, busy: faster.busy, toStop, demo: Boolean(sim),
+  });
+  if (!due && !force) return;
+  faster.busy = true;
+  faster.lastCheck = now;
+  faster.checks++;
+  const route = nav.route, from = live.snapped, heading = state.pos?.heading ?? undefined;
+  try {
+    const rest = nav.coords.slice(Math.max(0, nav.seg - 1));
+    const check = checkBody(rest, live.remainingTime, encodePolyline);
+    const rs = await requestRoutes(from, [dest.lng, dest.lat], heading, stops, { check });
+    if (mode !== 'drive' || nav?.route !== route || !live) return; // rerouted or ended meanwhile
+    const pick = pickFaster(rs, { leftTime: live.remainingTime, rest, now: Date.now(), kept: faster.kept });
+    faster.quiet = pick ? 0 : faster.quiet + 1; // nothing found: wait longer before the next (checkGap)
+    if (pick) showFaster(pick);
+  } catch {
+    // A failed check is just no offer: the drive carries on as it is, and the next waits longer.
+    faster.quiet++;
+  } finally {
+    faster.busy = false;
+  }
+}
+
+function showFaster(pick) {
+  const { line, spoken } = offerText(pick.saves, pick.route.via);
+  faster.offer = pick;
+  const card = $('faster-card');
+  card.querySelector('.faster-line').textContent = line;
+  card.classList.remove('hidden');
+  speak(spoken);
+  clearTimeout(faster.timer);
+  faster.timer = setTimeout(() => keepCurrent(), OFFER_FOR_MS); // no answer counts as Keep
+}
+
+function hideFaster() {
+  clearTimeout(faster.timer);
+  faster.offer = null;
+  $('faster-card')?.classList.add('hidden');
+}
+
+function keepCurrent() {
+  if (faster.offer) faster.kept.push({ coords: faster.offer.route.coords, until: Date.now() + KEEP_FOR_MS });
+  hideFaster();
+}
+
+function takeFaster() {
+  const pick = faster.offer;
+  if (!pick || mode !== 'drive') return hideFaster();
+  adoptRoute(pick.route, live?.snapped ?? state.pos?.lngLat);
+  if (state.pos) driveTick(state.pos); // the new arrival time and line now, not at the next GPS fix
+  speak(`Taking the faster route${pick.route.via ? ` via ${pick.route.via}` : ''}.`);
+}
+
+// For testing on a phone against a local server: check now, whatever the timers say.
+if (typeof location !== 'undefined' && ['localhost', '127.0.0.1'].includes(location.hostname)) {
+  window.__fasterRouteTest = { checkNow: () => checkFaster({ force: true }), state: () => ({ ...faster, offer: faster.offer && { saves: faster.offer.saves, via: faster.offer.route.via } }) };
 }
 
 async function addStop(place) {
@@ -2047,7 +3154,8 @@ function fitParking() {
   if (!parkingBounds || $('parking').classList.contains('hidden')) return;
   stopFollowing();
   clearTimeout(recenterTimer); // stay on the car parks until one is picked or the sheet is closed
-  fitTo(parkingBounds, { padding: { top: 160, bottom: Math.min(innerHeight * 0.6, $('parking').offsetHeight + 40), left: 50, right: 50 }, pitch: 0, bearing: 0, duration: 600, maxZoom: 17 });
+  const side = sideColumnEnd();
+  fitTo(parkingBounds, { padding: side ? { top: 40, bottom: 40, left: side + 40, right: 60 } : { top: 160, bottom: Math.min(innerHeight * 0.6, $('parking').offsetHeight + 40), left: 50, right: 50 }, pitch: 0, bearing: 0, duration: 600, maxZoom: 17 });
 }
 
 function clearParkingPins() {
@@ -2102,7 +3210,8 @@ function overview() {
   stopFollowing();
   const b = new maplibregl.LngLatBounds();
   for (const c of nav.coords) b.extend(c);
-  fitTo(b, { padding: { top: 160, bottom: 140, left: 50, right: 50 }, pitch: 0, bearing: 0, duration: 800 });
+  const side = sideColumnEnd();
+  fitTo(b, { padding: side ? { top: 40, bottom: 40, left: side + 40, right: 90 } : { top: 160, bottom: 140, left: 50, right: 50 }, pitch: 0, bearing: 0, duration: 800 });
 }
 
 async function arrive() {
@@ -2119,6 +3228,7 @@ async function arrive() {
 
 async function endDrive(arrived) {
   stopSimulation();
+  stopTunnelWatch();
   discardProbeBuffer(); // fixes buffered on this drive must not leak into a later batch
   parkingFor = null;
   $('parking-label').textContent = 'Parking nearby';
@@ -2131,10 +3241,15 @@ async function endDrive(arrived) {
   }
   nav = null;
   live = null;
+  forgetTrip();
   trail = [];
   offTrail = [];
   drawTrail();
+  resetFaster();
   $('toll-chip').classList.add('hidden');
+  $('school-chip').classList.add('hidden');
+  map.getSource('school-pin')?.setData(emptyFc());
+  pinnedSchool = null;
   onRoute = [];
   stops = [];
   renderStopMenu();
@@ -2522,6 +3637,7 @@ function showAlert(r, ahead) {
 let reportDraft = null;
 
 function openReportMenu() {
+  if (!canReportFrom(mode)) return; // not from a train trip: see report-types.js
   hideContextMenu();
   if (!state.user) return openAuth('report');
   reportDraft = { at: state.pos?.lngLat ?? map.getCenter().toArray(), heading: state.pos?.heading ?? null };
@@ -2542,7 +3658,18 @@ function renderReportGrid() {
     b.onclick = () => pickReportType(key);
     grid.append(b);
   }
+  // A place missing from the map (public/suggest.js), with its pin starting where the report would go. Not while
+  // driving: choosing the spot moves the map, which the drive camera is following.
+  if (mode === 'drive') return;
+  const add = el('button', 'report-tile', `<span class="pin-ic" style="background:#2f9e44">${ADD_PLACE_ICON}</span>Add missing place`);
+  add.onclick = () => {
+    closeScreen('report-sheet');
+    openSuggest({ kind: 'add', onClose: (cancelled) => cancelled && openReportMenu() });
+  };
+  grid.append(add);
 }
+
+const ADD_PLACE_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 21s-6.5-5.6-6.5-11a6.5 6.5 0 0 1 13 0c0 5.4-6.5 11-6.5 11Z" fill="none" stroke="#fff" stroke-width="2" stroke-linejoin="round"/><path d="M12 7v6M9 10h6" stroke="#fff" stroke-width="2" stroke-linecap="round"/></svg>';
 
 function pickReportType(key) {
   const t = REPORT_TYPES[key];

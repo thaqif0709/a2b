@@ -65,9 +65,33 @@ test('picks up the route again after a straight slide', () => {
   assert.ok(shown.along > path.cum[3] && shown.along < path.cum[4]);
 });
 
-test('jumps when the next fix is far away', () => {
+test('jumps when the next fix is very far away', () => {
   const g = new Glide();
+  const far = [13.45, 52.5]; // about 3.4 km east: back from the background, say
   g.set({ pos: A, heading: 0 }, 0);
-  g.set({ pos: C, heading: 0 }, 1000);
-  assert.deepEqual(g.at(1000).pos, C);
+  g.set({ pos: far, heading: 0 }, 1000);
+  assert.deepEqual(g.at(1000).pos, far);
+});
+
+test('eases to a fix a few hundred metres off instead of jumping', () => {
+  const g = new Glide();
+  const off = [13.4, 52.5036]; // about 400 m north
+  g.set({ pos: A, heading: 0 }, 0);
+  g.set({ pos: off, heading: 0 }, 1000);
+  assert.ok(distance(g.at(1000).pos, A) < 1, 'still where it was the moment the fix lands');
+  const early = distance(g.at(1150).pos, A), mid = distance(g.at(1750).pos, A);
+  assert.ok(early < 15, `starts gently (${early} m)`);
+  assert.ok(Math.abs(mid - 200) < 10, `halfway after half the 1.5 s (${mid} m)`);
+  assert.ok(!g.done(2400));
+  assert.deepEqual(g.at(2500).pos, off);
+});
+
+test('slides back along the road when the car was drawn ahead', () => {
+  const g = new Glide();
+  // Drawn 50 m past the corner (a tunnel estimate ran ahead); the fix says 50 m before it.
+  g.set({ pos: coords[21], along: path.cum[21], path, heading: 90 }, 0);
+  g.set({ pos: coords[19], along: path.cum[19], path, heading: 0 }, 1000);
+  assert.ok(distance(g.at(1750).pos, B) < 1, 'back round the corner, not across it');
+  assert.ok(!g.done(2200), 'over 1.5 s, not the 1.2 s of a normal step');
+  assert.deepEqual(g.at(2500).pos, coords[19]);
 });

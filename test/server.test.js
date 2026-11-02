@@ -12,12 +12,13 @@ import { applyTraffic } from '../src/lib/traffic.js';
 import { camerasAlong } from '../src/lib/cameras.js';
 import { parkingQuery } from '../src/lib/parking.js';
 import { cameraBearing } from '../scripts/build-cameras.mjs';
-import { REPORT_TYPES } from '../public/report-types.js';
+import { REPORT_TYPES, TRAIN_REPORT_POINTS } from '../public/report-types.js';
 import { encodePolyline as encode, decodePolyline } from '../public/geo.js';
 
 // ---------- Fake upstream services ----------
 const LINE = Array.from({ length: 21 }, (_, i) => [13.4, 52.5 + 0.00045 * i]); // ~1 km north
 let lastRouteBody = null;
+let lastTomtomMode = null;
 let routingDown = false;
 let construction = null; // a road under construction for the fake Overpass, as [[lng, lat], ...]
 let detourTime = 150;
@@ -25,9 +26,13 @@ let failWithExcludes = false;
 let lastLocateBody = null;
 const DETOUR = LINE.map(([lng, lat]) => [lng + 0.003, lat]); // a parallel street ~200 m east
 let osmLookups = 0;
+let signedTrip = null; // a route with a signed exit, for the exit-sign test
+let overpassCalls = 0;
 let tomtomDown = false;
 let cameras = null; // the built speed camera list, as in public/cameras.json
+let schools = null; // the built school list, as in public/schools.json
 let tomtomCalls = 0;
+let traceCalls = 0; // trace_attributes requests (speed limits and tolls)
 
 function fakeTrip(coords, time) {
   return {
@@ -42,13 +47,20 @@ function fakeTrip(coords, time) {
   };
 }
 
+let geocodeCalls = 0; // TomTom address lookups (src/lib/addresses.js)
 globalThis.fetch = async (url, init = {}) => {
   const u = String(url);
+  if (u.includes('api.tomtom.com/search/2/geocode/')) {
+    geocodeCalls++;
+    const address = { streetNumber: '129', streetName: 'Jalan BK 5/6', freeformAddress: '129, Jalan BK 5/6, Bandar Kinrara, 47180 Puchong, Selangor', countrySubdivision: 'Selangor' };
+    return Response.json({ results: [{ type: 'Point Address', address, position: { lat: 3.0414207, lon: 101.6477069 } }] });
+  }
   if (u.includes('api.data.gov.my/weather/forecast')) return Response.json([]);
   if (u.includes('api.data.gov.my/weather/warning')) return Response.json([]);
   if (u.includes('api.met.no')) return Response.json({ properties: { timeseries: [] } });
   if (u.includes('api.tomtom.com')) {
     tomtomCalls++;
+    lastTomtomMode = new URL(u).searchParams.get('travelMode');
     if (tomtomDown) return Response.json({ error: 'over quota' }, { status: 403 });
     // Follows the route it's given; the full route has a jam over its third quarter.
     const points = JSON.parse(init.body).supportingPoints;
@@ -74,10 +86,13 @@ globalThis.fetch = async (url, init = {}) => {
       const a = fakeTrip(LINE.slice(0, 11), 60), b = fakeTrip(LINE.slice(10), 60);
       return Response.json({ trip: { summary: { length: 2, time: 120 }, legs: [a.legs[0], b.legs[0]] } });
     }
+    if (signedTrip) return Response.json({ trip: signedTrip });
     return Response.json({ trip: fakeTrip(LINE, 120), alternates: [{ trip: fakeTrip(LINE.slice(0, 15), 90) }] });
   }
   if (u.includes('/trace_attributes')) {
-    return Response.json({ edges: [{ begin_shape_index: 0, speed_limit: 50 }, { begin_shape_index: 5, end_shape_index: 10, speed_limit: 50, end_node: { type: 'toll_booth' } }, { begin_shape_index: 10, speed_limit: 30 }, { begin_shape_index: 15 }] });
+    traceCalls++;
+    // A tunnel from shape index 12 to 15, in two edges (as Valhalla splits a long one).
+    return Response.json({ edges: [{ begin_shape_index: 0, speed_limit: 50 }, { begin_shape_index: 5, end_shape_index: 10, speed_limit: 50, end_node: { type: 'toll_booth' } }, { begin_shape_index: 10, end_shape_index: 12, speed_limit: 30 }, { begin_shape_index: 12, end_shape_index: 13, speed_limit: 30, tunnel: true }, { begin_shape_index: 13, end_shape_index: 15, speed_limit: 30, tunnel: true }, { begin_shape_index: 15 }] });
   }
   if (u.includes('openstreetmap.org/api/0.6/map')) {
     osmLookups++;
@@ -85,6 +100,10 @@ globalThis.fetch = async (url, init = {}) => {
     return new Response(`<osm><node id="1" lat="${(s + n) / 2 + 0.0001}" lon="${(w + e) / 2}"><tag k="barrier" v="toll_booth"/><tag k="name" v="Plaza Tol Ujian"/>`
       + '<tag k="charge" v="2.10 MYR/motorcar;1.10 MYR/taxi"/><tag k="payment:touchngo" v="yes"/><tag k="payment:touchngo_smarttag" v="yes"/><tag k="payment:touchngo_rfid" v="yes"/></node>'
       + `<node id="2" lat="${s}" lon="${w}"><tag k="barrier" v="toll_booth"/><tag k="name" v="Far booth"/></node></osm>`);
+  }
+  if (u.startsWith('https://overpass-api.de/')) {
+    overpassCalls++;
+    return Response.json({ elements: [{ type: 'node', id: 9, lat: 3.1579, lon: 101.7119, tags: { amenity: 'charging_station', name: 'Suria KLCC EV', 'socket:type2_combo': '2', 'socket:type2_combo:output': '60 kW' } }] });
   }
   if (u.includes('/reverse') && u.includes('osm_tag=amenity')) {
     return Response.json({ features: [
@@ -120,6 +139,7 @@ globalThis.fetch = async (url, init = {}) => {
 const ASSETS = {
   async fetch(req) {
     if (new URL(req.url).pathname === '/cameras.json' && cameras) return Response.json({ cameras });
+    if (new URL(req.url).pathname === '/schools.json' && schools) return Response.json({ schools });
     const name = new URL(req.url).pathname.replace('/construction/', '');
     const key = construction && `${Math.floor(construction[0][0] / 0.05)}_${Math.floor(construction[0][1] / 0.05)}`;
     if (name === 'index.json') return Response.json({ tiles: key ? [key] : [] });
@@ -156,7 +176,7 @@ function client(device) {
 // open even when A2B is full). Everything else (accounts, places, reports, trips) doesn't.
 function needsSpot(method, path) {
   if (path === '/api/presence') return false;
-  if (method === 'GET' && ['/api/search', '/api/reverse', '/api/parking', '/api/weather'].some((p) => path.startsWith(p))) return true;
+  if (method === 'GET' && (path.startsWith('/api/search') || path.startsWith('/api/address') || path.startsWith('/api/reverse') || path.startsWith('/api/parking') || path.startsWith('/api/chargers') || path.startsWith('/api/weather'))) return true;
   return method === 'POST' && (path === '/api/route' || path === '/api/transit');
 }
 
@@ -199,6 +219,13 @@ test('walking routes ask Valhalla for a pedestrian route', () => {
   assert.equal(body.costing, 'pedestrian');
   assert.equal(body.costing_options.auto, undefined, 'no car options on foot');
   assert.equal(buildRouteRequest({ from: [1, 2], to: [3, 4] }).costing, 'auto', 'driving stays the default');
+});
+
+test('motorcycle routes ask Valhalla for a motorcycle route, without avoiding tolls', () => {
+  const body = buildRouteRequest({ from: [1, 2], to: [3, 4], travel: 'motorcycle', avoid: { tolls: true, highways: true } });
+  assert.equal(body.costing, 'motorcycle');
+  assert.deepEqual(body.costing_options.motorcycle, { use_tolls: 1, use_highways: 0, use_ferry: 0.5 }, 'tolls are free for them');
+  assert.equal(body.costing_options.auto, undefined);
 });
 
 test('turn lanes keep only junctions with a lane to follow', () => {
@@ -250,6 +277,24 @@ test('JSON is required for writes (blocks cross-site form posts)', async () => {
   assert.equal(res.status, 415);
 });
 
+test('an unexpected server error reads as a plain apology, not its internals', async () => {
+  const broken = () => {
+    throw new Error('D1_ERROR: table place_suggestions has no column named kind: SQLITE_ERROR');
+  };
+  const DB = new Proxy({}, { get: () => broken });
+  const log = console.error;
+  console.error = () => {};
+  try {
+    const res = await worker.fetch(new Request('https://a2b.test/api/presence', { method: 'POST', headers: { 'x-a2b-device': 'device-unexpected-1' } }), { ...env, DB });
+    assert.equal(res.status, 500);
+    const { error } = await res.json();
+    assert.doesNotMatch(error, /D1_ERROR|SQLITE|column/);
+    assert.match(error, /Something went wrong/);
+  } finally {
+    console.error = log;
+  }
+});
+
 test('profile: home, work and settings', async () => {
   const r = await alice('PATCH', '/api/me', { home: { name: 'Home', address: '1 Road', lat: 52.5, lng: 13.4 }, settings: { units: 'imperial', voice: false, bogus: 1, theme: 'purple' } });
   assert.deepEqual(r.body.user.home, { name: 'Home', address: '1 Road', lat: 52.5, lng: 13.4 });
@@ -269,6 +314,10 @@ test('saved and recent places', async () => {
   assert.equal((await bob('DELETE', `/api/places/${saved.body.place.id}`)).status, 200);
   r = await alice('GET', '/api/places');
   assert.equal(r.body.saved[0].name, 'My gym', "Bob can't delete Alice's place");
+  assert.equal((await alice('DELETE', '/api/places?kind=recent')).status, 200);
+  r = await alice('GET', '/api/places');
+  assert.equal(r.body.recent.length, 0, 'bulk clear empties recent history');
+  assert.equal((await alice('DELETE', '/api/places?kind=foo')).status, 400);
   assert.equal((await client()('GET', '/api/places')).status, 401);
 });
 
@@ -329,7 +378,52 @@ test('routes avoid reported closures and account for reported traffic', async ()
   assert.equal(r.body.routes[0].duration, 90, 'fastest first');
   assert.equal(full.steps[0].street, 'Test Street');
   assert.deepEqual(full.limits, [[0, 50], [10, 30], [15, null]]);
+  assert.deepEqual(full.tunnels, [[12, 15]], 'a tunnel in two edges is one stretch');
   assert.equal(full.shapes, undefined, 'encoded shapes stay on the server');
+});
+
+test('a faster-route check ends after one routing request when every route is the way the car is going', async () => {
+  env.TOMTOM_KEY = 'test-key';
+  try {
+    [tomtomCalls, traceCalls] = [0, 0];
+    // Driving LINE: Valhalla's routes (LINE and the first part of it) are both the same way.
+    const same = await alice('POST', '/api/route', { from: [13.4, 52.5], to: [13.4, 52.509], check: { rest: encode(LINE, 5), left: 2000 } });
+    assert.equal(same.status, 200);
+    assert.deepEqual(same.body.routes, []);
+    assert.deepEqual([tomtomCalls, traceCalls], [0, 0], 'no traffic, speed limits or tolls looked up');
+
+    // Driving the parallel street: both routes are another way. Traffic for both; the extras only for the one
+    // enough quicker than the 450 s left (TomTom: 100 s, against 600 s for the full one).
+    [tomtomCalls, traceCalls] = [0, 0];
+    const other = await alice('POST', '/api/route', { from: [13.4, 52.5], to: [13.4, 52.509], check: { rest: encode(DETOUR, 5), left: 450 } });
+    assert.equal(other.body.routes.length, 2);
+    assert.equal(tomtomCalls, 2);
+    assert.equal(traceCalls, 1);
+    const quick = other.body.routes.find((x) => x.coords.length === 15), full = other.body.routes.find((x) => x.coords.length === 21);
+    assert.ok(Array.isArray(quick.tolls) && Array.isArray(quick.cameras), 'ready to drive if taken');
+    assert.equal(full.tolls, undefined);
+    assert.equal(quick.shapes, undefined, 'encoded shapes stay on the server');
+
+    // Driving the first half of LINE and on: the short route is the same way, the full one another. The way the car
+    // is going is only looked up when the other is quick enough to offer.
+    const half = encode(LINE.slice(0, 12), 5);
+    [tomtomCalls, traceCalls] = [0, 0];
+    const slow = await alice('POST', '/api/route', { from: [13.4, 52.5], to: [13.4, 52.509], check: { rest: half, left: 450 } });
+    assert.deepEqual(slow.body.routes, [], 'the other way (600 s) is no quicker');
+    assert.deepEqual([tomtomCalls, traceCalls], [1, 0], 'traffic for the other way only');
+    [tomtomCalls, traceCalls] = [0, 0];
+    const quicker = await alice('POST', '/api/route', { from: [13.4, 52.5], to: [13.4, 52.509], check: { rest: half, left: 2000 } });
+    assert.equal(quicker.body.routes.length, 2);
+    assert.deepEqual([tomtomCalls, traceCalls], [2, 1], 'then the way the car is going too, and the extras for the offer');
+
+    // A check that doesn't make sense is an ordinary route request.
+    [tomtomCalls, traceCalls] = [0, 0];
+    const plain = await alice('POST', '/api/route', { from: [13.4, 52.5], to: [13.4, 52.509], check: { rest: 'x', left: 0 } });
+    assert.equal(plain.body.routes.length, 2);
+    assert.equal(traceCalls, 2);
+  } finally {
+    delete env.TOMTOM_KEY;
+  }
 });
 
 test('walking routes skip closures, reported traffic and the driving extras', async () => {
@@ -401,6 +495,22 @@ test('routes list the fixed speed cameras on them, not the ones across a divided
   assert.deepEqual(none.body.routes[0].cameras, [], 'no list built: no cameras');
 });
 
+test('routes list the schools beside them, for school zone warnings', async () => {
+  // LINE runs north from 52.5 to 52.509 along 13.4; 0.001° of longitude is about 68 m here.
+  schools = [
+    [13.4012, 52.5036, 'Test Primary School'], // ~80 m east of the road, by point 8
+    [13.4, 52.5068, 'Test Secondary School'], // on it, between points 15 and 16
+    [13.41, 52.505, 'Far School'], // ~680 m off
+  ];
+  try {
+    const r = await alice('POST', '/api/route', { from: [13.4, 52.5], to: [13.4, 52.509] });
+    const full = r.body.routes.find((x) => x.coords.length === 21);
+    assert.deepEqual(full.schools.map((x) => [x.at, x.name]), [[8, 'Test Primary School'], [16, 'Test Secondary School']]);
+  } finally {
+    schools = null;
+  }
+});
+
 test('a camera mapped twice is warned about once', () => {
   const coords = Array.from({ length: 11 }, (_, i) => [0, i * 0.001]);
   assert.equal(camerasAlong(coords, [[0, 0.005, 'A', 0, 90], [0, 0.0052, 'A', 0, 90], [0, 0.008, 'B', 0, 90]]).length, 2);
@@ -428,6 +538,7 @@ test('a stop splits the drive into legs but stays one route', async () => {
   assert.deepEqual(route.steps.map((s) => s.begin), [0, 10, 10, 20]);
   // The fake service answers every leg the same way; the second leg's runs are shifted by its offset (10).
   assert.deepEqual(route.limits, [[0, 50], [10, 30], [15, null], [10, 50], [20, 30], [25, null]]);
+  assert.deepEqual(route.tunnels, [[12, 15], [22, 25]], 'each leg’s tunnel, at its offset');
 });
 
 test('polylines round-trip', () => {
@@ -581,7 +692,7 @@ test('testing tools are flagged only for accounts in TESTER_EMAILS', async () =>
   }
 });
 
-test('feedback: anyone can send it, only the owner can read it and mark it done', async () => {
+test('feedback: anyone can send it, only the owner can read it, close it and reopen it', async () => {
   const guest = client('feedback-guest-1');
   await guest('POST', '/api/presence');
   assert.equal((await guest('POST', '/api/feedback', { message: ' ' })).status, 400, 'empty feedback is refused');
@@ -603,9 +714,21 @@ test('feedback: anyone can send it, only the owner can read it and mark it done'
       ['Love the speed camera alerts!', 'Fran', 'fran@test.com', null],
       ['Route to KLCC took a closed road', null, null, 'abc123'],
     ]);
-    assert.equal((await fran('DELETE', `/api/feedback/${feedback[0].id}`)).status, 404, 'only the owner marks it done');
-    await owner('DELETE', `/api/feedback/${feedback[0].id}`);
-    assert.equal((await owner('GET', '/api/feedback')).body.feedback.length, 1);
+    assert.equal((await fran('PATCH', `/api/feedback/${feedback[0].id}`, { closed: true })).status, 404, 'only the owner closes it');
+    assert.equal((await fran('DELETE', `/api/feedback/${feedback[0].id}`)).status, 404);
+    await owner('PATCH', `/api/feedback/${feedback[0].id}`, { closed: true });
+    let list = (await owner('GET', '/api/feedback')).body.feedback;
+    assert.equal(list.length, 2, 'closing keeps it');
+    assert.deepEqual(list.map((f) => [f.message, Boolean(f.closed_at)]), [
+      ['Route to KLCC took a closed road', false],
+      ['Love the speed camera alerts!', true],
+    ], 'open first, closed after');
+    await owner('PATCH', `/api/feedback/${feedback[0].id}`, { closed: false });
+    assert.equal((await owner('GET', '/api/feedback')).body.feedback.find((f) => f.id === feedback[0].id).closed_at, null, 'reopened');
+    await owner('DELETE', `/api/feedback/${feedback[1].id}`);
+    list = (await owner('GET', '/api/feedback')).body.feedback;
+    assert.equal(list.length, 2, "an old app's Done closes it rather than deleting it");
+    assert.ok(list.find((f) => f.id === feedback[1].id).closed_at);
   } finally {
     delete env.TESTER_EMAILS;
   }
@@ -613,6 +736,51 @@ test('feedback: anyone can send it, only the owner can read it and mark it done'
   for (let i = 1; i < 10; i++) await guest('POST', '/api/feedback', { message: `Idea number ${i}` });
   const more = await guest('POST', '/api/feedback', { message: 'One more idea' });
   assert.equal(more.status, 429, 'ten a day per device');
+});
+
+test('place suggestions: drivers with an account send them, testers approve, phones download the approved ones', async () => {
+  const guest = client('suggest-guest-1');
+  assert.equal((await guest('POST', '/api/suggestions', { kind: 'add', name: 'Kedai Ah Seng', lat: 3.1, lng: 101.6 })).status, 401, 'an account is needed');
+  const sam = client('suggest-sam-1');
+  await sam('POST', '/api/auth/signup', { email: 'sam@test.com', password: 'password8', name: 'Sam' });
+  assert.equal((await sam('POST', '/api/suggestions', { kind: 'add', name: 'K', lat: 3.1, lng: 101.6 })).status, 400, 'a name');
+  assert.equal((await sam('POST', '/api/suggestions', { kind: 'add', name: 'Kedai Ah Seng', lat: 52.5, lng: 13.4 })).status, 400, 'in Malaysia');
+  assert.equal((await sam('POST', '/api/suggestions', { kind: 'move', name: 'X', lat: 3.1, lng: 101.6 })).status, 400, 'a fix says which place');
+  assert.equal((await sam('POST', '/api/suggestions', { kind: 'add', name: 'Kedai Ah Seng', category: 'shop', lat: 3.1, lng: 101.6, address: 'Jalan Ipoh', note: 'Opened last month' })).status, 201);
+  assert.equal((await sam('POST', '/api/suggestions', { kind: 'move', name: 'Starbucks', category: 'food', lat: 3.2, lng: 101.5, was: { name: 'Starbucks', lat: 3.21, lng: 101.5 } })).status, 201);
+  assert.equal((await sam('POST', '/api/suggestions', { kind: 'gone', was: { name: 'Shell Kepong', lat: 3.2, lng: 101.63 } })).status, 201);
+
+  const owner = client();
+  await owner('POST', '/api/auth/signup', { email: 'places@test.com', password: 'password9', name: 'Owner' });
+  assert.equal((await owner('GET', '/api/suggestions')).status, 404, 'testers only');
+  env.TESTER_EMAILS = 'places@test.com';
+  try {
+    assert.equal((await sam('GET', '/api/suggestions')).status, 404);
+    const { pending } = (await owner('GET', '/api/suggestions')).body;
+    assert.deepEqual(pending.map((s) => [s.kind, s.name, s.by_name]), [['add', 'Kedai Ah Seng', 'Sam'], ['move', 'Starbucks', 'Sam'], ['gone', 'Shell Kepong', 'Sam']]);
+    const [add, move, gone] = pending;
+    assert.equal((await sam('POST', `/api/suggestions/${add.id}`, { action: 'approve' })).status, 404, 'only testers review');
+    assert.equal((await owner('GET', '/api/driver-places?since=0')).body.places.length, 0, 'nothing until approved');
+
+    await owner('POST', `/api/suggestions/${add.id}`, { action: 'approve', name: 'Kedai Runcit Ah Seng', lat: 3.1001, lng: 101.6001 });
+    await owner('POST', `/api/suggestions/${move.id}`, { action: 'approve' });
+    await owner('POST', `/api/suggestions/${gone.id}`, { action: 'reject' });
+    assert.equal((await owner('POST', `/api/suggestions/${gone.id}`, { action: 'approve' })).status, 404, 'reviewed once');
+
+    const first = (await guest('GET', '/api/driver-places?since=0')).body;
+    assert.deepEqual(first.places.map((p) => [p.name, p.lat, p.hides_name]), [['Kedai Runcit Ah Seng', 3.1001, null], ['Starbucks', 3.2, 'Starbucks']], "with the tester's edits");
+    assert.equal((await guest('GET', `/api/driver-places?since=${first.next}`)).body.places.length, 0, 'nothing new since');
+    const me = (await sam('GET', '/api/me')).body.user;
+    assert.equal(me.points, 20, 'points for each approved one');
+
+    await owner('POST', `/api/suggestions/${add.id}`, { action: 'undo' });
+    const after = (await guest('GET', `/api/driver-places?since=${first.next}`)).body.places;
+    assert.deepEqual(after.map((p) => [p.name, p.removed]), [['Kedai Runcit Ah Seng', 1]], 'taken out: phones are told to drop it');
+    const { reviewed } = (await owner('GET', '/api/suggestions')).body;
+    assert.deepEqual(reviewed.map((s) => s.status).sort(), ['approved', 'rejected', 'undone']);
+  } finally {
+    delete env.TESTER_EMAILS;
+  }
 });
 
 test('an overloaded routing server reads as busy, not as no route', async () => {
@@ -932,6 +1100,45 @@ test('presence check-ins admit new devices without a per-network throttle', asyn
   }
 });
 
+test('an exit’s sign comes with its step, and the cues name it', async () => {
+  const coords = [[13.4, 52.5], [13.4, 52.505], [13.401, 52.51]];
+  const trip = fakeTrip(coords, 120);
+  trip.legs[0].maneuvers.splice(1, 0, {
+    type: 21, instruction: 'Take exit 218 on the left.', verbal_transition_alert_instruction: 'Take exit 218.', verbal_pre_transition_instruction: 'Take exit 218 onto 241.',
+    street_names: ['241'], begin_shape_index: 1, end_shape_index: 2, length: 0.5, time: 30,
+    sign: { exit_number_elements: [{ text: '218' }], exit_branch_elements: [{ text: '241' }], exit_toward_elements: [{ text: 'Seremban' }, { text: 'Labu' }] },
+  });
+  trip.legs[0].maneuvers[0].end_shape_index = 1;
+  signedTrip = trip;
+  try {
+    const r = await client()('POST', '/api/route', { from: [13.4, 52.5], to: [13.401, 52.51] });
+    assert.equal(r.status, 200);
+    const exit = r.body.routes[0].steps.find((st) => st.sign);
+    assert.deepEqual(exit.sign, { exit: '218', roads: ['241'], toward: ['Seremban', 'Labu'] });
+    assert.equal(exit.alert, 'Take exit 218 towards Seremban and Labu.');
+    assert.equal(exit.pre, 'Take exit 218 onto 241 towards Seremban and Labu.');
+    assert.ok(r.body.routes[0].steps.filter((st) => st !== exit).every((st) => !('sign' in st)), 'only exits carry one');
+  } finally {
+    signedTrip = null;
+  }
+});
+
+test('EV chargers: the whole list, fetched from OpenStreetMap by the nightly job and kept in the database', async () => {
+  const alice = client();
+  await env.DB.prepare('DELETE FROM chargers').run();
+  const calls = overpassCalls;
+  const empty = await alice('GET', '/api/chargers');
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.body.chargers, []);
+  assert.equal(overpassCalls, calls, 'a request never downloads them');
+  await worker.scheduled({}, env);
+  assert.equal(overpassCalls, calls + 1, 'the nightly job does');
+  const r = await alice('GET', '/api/chargers');
+  assert.deepEqual(r.body.chargers, [['Suria KLCC EV', 101.7119, 3.1579, 'CCS2 · up to 60 kW', 'ev_charging_station']]);
+  await worker.scheduled({}, env);
+  assert.equal(overpassCalls, calls + 1, 'not again within the week');
+});
+
 test('weather along a route needs a spot and sensible points', async () => {
   const anon = client('weather-no-spot');
   assert.equal((await anon('GET', '/api/weather?pts=101.69,3.15,1')).status, 503, 'no spot yet');
@@ -954,4 +1161,118 @@ test('trips by train need a spot, a start and a destination', async () => {
   assert.ok(Array.isArray(res.body.trips));
   assert.equal(typeof res.body.walk, 'number');
   for (const trip of res.body.trips) assert.ok(trip.legs.some((l) => l.mode === 'train') && trip.arrive > trip.depart);
+  // Each ride carries its stations in order with the seconds after boarding, for following the trip on the phone.
+  for (const l of res.body.trips.flatMap((t) => t.legs).filter((x) => x.mode === 'train')) {
+    assert.equal(l.stations.length, l.stops + 1);
+    assert.deepEqual([l.stations[0][0], l.stations.at(-1)[0]], [l.from.name, l.to.name]);
+    assert.ok(l.stations.every(([name, lat, lng, t], i) => typeof name === 'string' && Math.abs(lat) < 90 && Math.abs(lng) < 180 && (!i || t > l.stations[i - 1][3])));
+  }
+});
+
+test('motorcycle routes keep closures, limits and cameras, but have no tolls to pay, and are timed as motorcycles', async () => {
+  env.TOMTOM_KEY = 'test-key';
+  try {
+    const rider = client();
+    const car = await rider('POST', '/api/route', { from: [13.4, 52.5], to: [13.4, 52.509] });
+    assert.ok(car.body.routes.some((r) => r.tolls.length), 'the car route passes a plaza');
+    assert.equal(lastTomtomMode, 'car');
+    const r = await rider('POST', '/api/route', { from: [13.4, 52.5], to: [13.4, 52.509], travel: 'motorcycle' });
+    assert.equal(r.status, 200);
+    assert.equal(lastRouteBody.costing, 'motorcycle');
+    assert.equal(lastTomtomMode, 'motorcycle', 'live traffic for a motorcycle');
+    const full = r.body.routes.find((x) => x.coords.length === 21);
+    assert.deepEqual([full.travel, full.tolls, full.toll, full.toll_free_bike], ['motorcycle', [], false, true]);
+    assert.ok(full.limits, 'speed limits still apply');
+    assert.ok(Array.isArray(full.cameras), 'cameras still checked');
+  } finally {
+    delete env.TOMTOM_KEY;
+  }
+});
+
+test('address search asks TomTom only for addresses, never caches it, and stops at the daily cap', async () => {
+  Object.assign(env, { TOMTOM_KEY: 'test-key', ADDRESS_LOOKUPS_PER_DAY: '2' });
+  try {
+    await env.DB.prepare('DELETE FROM usage_daily').run();
+    geocodeCalls = 0;
+    const c = client();
+    const q = encodeURIComponent('129, BK 5/6, Bandar Kinrara, Puchong, 47180');
+    for (const name of ['nandos', 'trx', 'pavilion']) {
+      assert.deepEqual((await c('GET', `/api/address?q=${name}&lat=3.04&lng=101.64`)).body, { places: [] });
+      await c('GET', `/api/search?q=${name}&lat=3.04&lng=101.64`);
+    }
+    assert.equal(geocodeCalls, 0, 'searching a name never asks TomTom');
+    const first = await c('GET', `/api/address?q=${q}&lat=3.04&lng=101.64`);
+    assert.deepEqual(first.body.places[0], { name: '129 Jalan BK 5/6', address: 'Bandar Kinrara, 47180 Puchong', lat: 3.0414207, lng: 101.6477069, category: 'address', source: 'tomtom' });
+    await c('GET', `/api/address?q=${q}`);
+    assert.deepEqual((await c('GET', `/api/address?q=${q}`)).body, { places: [] }, "the day's lookups are used up");
+    assert.equal(geocodeCalls, 2);
+    const row = await env.DB.prepare('SELECT addresses FROM usage_daily').first();
+    assert.equal(row.addresses, 2);
+    // Never kept: not in the shared cache, not by the browser.
+    await env.DB.prepare('DELETE FROM usage_daily').run();
+    await worker.fetch(new Request('https://a2b.test/api/presence', { method: 'POST', headers: { 'x-a2b-device': 'address-device-1' } }), env);
+    const res = await worker.fetch(new Request(`https://a2b.test/api/address?q=${q}`, { headers: { 'x-a2b-device': 'address-device-1' } }), env);
+    assert.equal(res.headers.get('cache-control'), 'no-store');
+    assert.equal((await res.json()).places.length, 1);
+  } finally {
+    delete env.TOMTOM_KEY;
+    delete env.ADDRESS_LOOKUPS_PER_DAY;
+  }
+});
+
+test('train reports: riders report on a line, others see them on it and on trips by train, and clear them', async () => {
+  const KJ = 'prasarana:KJ';
+  const [ann, ben, dan] = [client(), client(), client()];
+  for (const [c, name] of [[ann, 'Ann'], [ben, 'Ben'], [dan, 'Dan']]) await c('POST', '/api/auth/signup', { email: `${name.toLowerCase()}-rides@test.com`, password: 'password4', name });
+  assert.equal((await client()('POST', '/api/train-reports', { type: 'delay', line: KJ })).status, 401);
+  assert.equal((await ann('POST', '/api/train-reports', { type: 'jam', line: KJ })).status, 400, 'not a train report');
+  assert.equal((await ann('POST', '/api/train-reports', { type: 'delay', line: 'prasarana:XX' })).status, 400, 'no such line');
+  assert.equal((await ann('POST', '/api/train-reports', { type: 'delay', line: KJ, station: 'Bukit Bintang' })).status, 400, 'not on this line');
+  assert.equal((await ann('POST', '/api/train-reports', { type: 'closed', line: KJ })).status, 400, 'which station?');
+
+  const made = await ann('POST', '/api/train-reports', { type: 'delay', line: KJ, station: 'Pasar Seni' });
+  assert.equal(made.status, 201);
+  assert.equal(made.body.points, TRAIN_REPORT_POINTS);
+  const id = made.body.report.id;
+  assert.deepEqual([made.body.report.line, made.body.report.station, made.body.report.mine], [KJ, 'Pasar Seni', true]);
+  assert.equal((await ann('POST', '/api/train-reports', { type: 'crowded', line: KJ })).status, 429, 'one a minute');
+
+  // On that line, not on another, and never among the road reports.
+  assert.equal((await client()('GET', `/api/train-reports?lines=${KJ},prasarana:AG`)).body.reports.length, 1);
+  assert.equal((await client()('GET', '/api/train-reports?lines=prasarana:AG')).body.reports.length, 0);
+  assert.equal((await client()('GET', '/api/reports?bbox=101.6,3.0,101.8,3.2')).body.reports.length, 0);
+
+  // Ben reports the same: it confirms Ann's, and keeps it longer.
+  const dup = await ben('POST', '/api/train-reports', { type: 'delay', line: KJ, station: 'Pasar Seni' });
+  assert.equal(dup.body.merged, true);
+  assert.equal(dup.body.report.id, id);
+  assert.equal(dup.body.report.still, 1);
+  assert.ok(dup.body.report.expires_at > made.body.report.expires_at);
+
+  // A trip by train on the Kelana Jaya Line says so.
+  const trip = await client()('POST', '/api/transit', { from: [101.6865, 3.134], to: [101.7116, 3.1579] });
+  assert.ok(trip.body.trips.some((t) => t.legs.some((l) => l.line?.id === KJ)));
+  assert.deepEqual(trip.body.reports.map((r) => r.id), [id]);
+
+  // Cleared: Ben changes his mind, Dan agrees, and two "cleared" outweigh no "still happening".
+  let v = await ben('POST', `/api/train-reports/${id}/vote`, { vote: 'gone' });
+  assert.deepEqual([v.body.report.still, v.body.report.gone, v.body.removed], [0, 1, false]);
+  v = await dan('POST', `/api/train-reports/${id}/vote`, { vote: 'gone' });
+  assert.equal(v.body.removed, true);
+  assert.equal((await client()('GET', `/api/train-reports?lines=${KJ}`)).body.reports.length, 0);
+  assert.equal((await dan('POST', `/api/train-reports/${id}/vote`, { vote: 'still' })).status, 404);
+});
+
+test('night vehicle lights persist across sessions and accept only boolean preferences', async () => {
+  const first = client();
+  const account = { email: 'night-lights@example.test', password: 'night-lights-test-password', name: 'Night lights test', settings: { night_vehicle_lights: false } };
+  const signup = await first('POST', '/api/auth/signup', account);
+  assert.equal(signup.status, 201);
+  assert.equal(signup.body.user.settings.night_vehicle_lights, false);
+  const second = client();
+  assert.equal((await second('POST', '/api/auth/login', account)).status, 200);
+  assert.equal((await second('GET', '/api/me')).body.user.settings.night_vehicle_lights, false);
+  assert.equal((await second('PATCH', '/api/me', { settings: { night_vehicle_lights: true } })).body.user.settings.night_vehicle_lights, true);
+  await second('PATCH', '/api/me', { settings: { night_vehicle_lights: 'false' } });
+  assert.equal((await first('GET', '/api/me')).body.user.settings.night_vehicle_lights, true, 'invalid values must not overwrite the saved boolean');
 });

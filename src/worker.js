@@ -10,14 +10,21 @@ import { probesRepo, annotateWithProbes, PROBE_RETENTION_MS } from './lib/probes
 import { searchPlaces, reverseGeocode, fetchRoutes, fetchRouteAttributes, annotateWithReports, httpError, corridorBox, routeReportBox, roadMidpoint, MAX_EXCLUDE } from './lib/providers.js';
 import { constructionTwins } from './lib/construction.js';
 import { liveTraffic, applyTraffic } from './lib/traffic.js';
+import { lookupAddress, DAILY_LOOKUPS } from './lib/addresses.js';
 import { loadCameras, camerasAlong } from './lib/cameras.js';
+import { loadSchools, schoolsAlong } from './lib/schools.js';
 import { parkingNear, parkingQuery, parkingResults } from './lib/parking.js';
 import { plazaDetails } from './lib/tolls.js';
+import { refreshChargers, allChargers } from './lib/chargers.js';
 import { reportsRepo } from './lib/reports.js';
+import { trainReportsRepo } from './lib/train-reports.js';
+import { suggestionsRepo } from './lib/suggestions.js';
 import { presenceRepo, limits, validDevice } from './lib/presence.js';
 import { usageRepo, USAGE_DAYS, dayOf } from './lib/usage.js';
 import { weatherAlong, MAX_POINTS as WEATHER_POINTS } from './lib/weather.js';
 import { planTransit, withRealWalks } from './lib/transit.js';
+import { decodePolyline } from '../public/geo.js';
+import { overlap, routeTime, worthOffering, MAX_OVERLAP, MAX_REST_CHARS } from '../public/faster-route.js';
 
 const MAX_BODY = 64 * 1024;
 const LOGIN_WINDOW_MS = 15 * 60_000;
@@ -25,7 +32,8 @@ const LOGIN_MAX_FAILURES = 8; // per address: wrong passwords for one account st
 // were dropped: behind the Pages proxy every client shares one IP, so they would lock out everyone at once)
 const RECENTS_KEPT = 20;
 const FULL_MESSAGE = 'A2B is full right now. You will be let in when a spot opens.';
-const SETTINGS_KEYS = { voice: 'boolean', speed_warning: 'boolean', units: ['metric', 'imperial'], theme: ['auto', 'day', 'night'], avoid_tolls: 'boolean', avoid_highways: 'boolean', avoid_ferries: 'boolean', alerts: 'boolean', traffic_probe: 'boolean', map_pois: 'boolean', weather: 'boolean' };
+const UNEXPECTED_MESSAGE = 'Something went wrong on our side. Please try again in a minute.';
+const SETTINGS_KEYS = { voice: 'boolean', speed_warning: 'boolean', units: ['metric', 'imperial'], theme: ['auto', 'day', 'night'], avoid_tolls: 'boolean', avoid_highways: 'boolean', avoid_ferries: 'boolean', alerts: 'boolean', traffic_probe: 'boolean', map_pois: 'boolean', night_vehicle_lights: 'boolean', weather: 'boolean' };
 
 export default {
   async fetch(request, env) {
@@ -38,7 +46,9 @@ export default {
       return await route(request, env, url);
     } catch (e) {
       if (!e.status || e.status >= 500) console.error(e);
-      return json({ error: e.message || String(e), code: e.code }, e.status && e.status < 600 ? e.status : 500);
+      // Only messages written for drivers (httpError's, which carry a status) reach the app. Anything else, such as
+      // a database error, is in the log above and shows as a plain apology.
+      return json({ error: e.status ? e.message : UNEXPECTED_MESSAGE, code: e.code }, e.status && e.status < 600 ? e.status : 500);
     }
   },
 
@@ -59,6 +69,7 @@ export default {
       env.DB.prepare('DELETE FROM probe_limits WHERE last_at < ?').bind(now - PROBE_RETENTION_MS),
       env.DB.prepare('DELETE FROM shared_cache WHERE expires_at < ?').bind(now),
     ]);
+    await refreshChargers(env, { now }).catch((e) => console.warn('chargers', e.message)); // weekly, per source
   },
 };
 
@@ -69,6 +80,7 @@ async function route(request, env, url) {
   const parts = path.split('/').filter(Boolean); // ['api', ...]
   const user = await currentUser(db, request);
   const reports = reportsRepo(db);
+  const trainReports = trainReportsRepo(db);
   const needUser = () => {
     if (!user) throw httpError('Sign in first.', 401);
     return user;
@@ -120,16 +132,40 @@ async function route(request, env, url) {
   if (path === '/api/feedback' && method === 'GET') {
     if (!user || !isTester(env, user)) throw httpError('Not found.', 404);
     const rows = await db
-      .prepare('SELECT f.id, f.message, f.app, f.ua, f.created_at, u.name, u.email FROM feedback f LEFT JOIN users u ON u.id = f.user_id ORDER BY f.created_at DESC LIMIT 200')
+      .prepare('SELECT f.id, f.message, f.app, f.ua, f.created_at, f.closed_at, u.name, u.email FROM feedback f LEFT JOIN users u ON u.id = f.user_id ORDER BY f.closed_at IS NOT NULL, f.created_at DESC LIMIT 200')
       .all();
     return json({ feedback: rows.results });
   }
 
-  const doneFeedback = path.match(/^\/api\/feedback\/(\d+)$/);
-  if (doneFeedback && method === 'DELETE') {
+  // Close a piece of feedback (handled) or reopen it: { closed: true | false }. Feedback is never deleted here, so
+  // nothing is lost to a stray tap. DELETE, which older copies of the app send for "Done", closes it too.
+  const oneFeedback = path.match(/^\/api\/feedback\/(\d+)$/);
+  if (oneFeedback && (method === 'PATCH' || method === 'DELETE')) {
     if (!user || !isTester(env, user)) throw httpError('Not found.', 404);
-    await db.prepare('DELETE FROM feedback WHERE id = ?').bind(Number(doneFeedback[1])).run();
-    return json({ ok: true });
+    const closed = method === 'DELETE' || (await readJson(request)).closed !== false;
+    await db.prepare('UPDATE feedback SET closed_at = ? WHERE id = ?').bind(closed ? Date.now() : null, Number(oneFeedback[1])).run();
+    return json({ ok: true, closed });
+  }
+
+  // ---------- Place suggestions (src/lib/suggestions.js): drivers with an account suggest, testers review ----------
+  const suggestions = suggestionsRepo(db);
+  if (path === '/api/suggestions' && method === 'POST') {
+    return json({ suggestion: await suggestions.create(needUser(), await readJson(request)) }, 201);
+  }
+  if (path === '/api/suggestions' && method === 'GET') {
+    if (!user || !isTester(env, user)) throw httpError('Not found.', 404);
+    return json(await suggestions.forReview());
+  }
+  const oneSuggestion = path.match(/^\/api\/suggestions\/(\d+)$/);
+  if (oneSuggestion && method === 'POST') {
+    if (!user || !isTester(env, user)) throw httpError('Not found.', 404);
+    const body = await readJson(request);
+    const id = Number(oneSuggestion[1]);
+    return json(body.action === 'undo' ? await suggestions.undo(user, id) : await suggestions.review(user, id, body));
+  }
+  // Approved places for the phone's own search: only what changed since the phone last asked.
+  if (path === '/api/driver-places' && method === 'GET') {
+    return json(await suggestions.changes(url.searchParams.get('since')), 200, { 'cache-control': 'no-store' });
   }
 
   // ---------- Accounts ----------
@@ -252,6 +288,8 @@ async function route(request, env, url) {
       db.prepare('DELETE FROM trips WHERE user_id = ?').bind(u.id),
       db.prepare('DELETE FROM votes WHERE user_id = ?').bind(u.id),
       db.prepare('DELETE FROM feedback WHERE user_id = ?').bind(u.id),
+      db.prepare('DELETE FROM place_suggestions WHERE user_id = ?').bind(u.id),
+      db.prepare('UPDATE driver_places SET user_id = NULL WHERE user_id = ?').bind(u.id),
       db.prepare('UPDATE reports SET removed = 1 WHERE user_id = ?').bind(u.id),
       db.prepare("UPDATE users SET email = 'deleted-' || id || '@invalid', name = 'Former driver', pass_hash = '', pass_salt = '', home = NULL, work = NULL WHERE id = ?").bind(u.id),
     ]);
@@ -332,6 +370,16 @@ async function route(request, env, url) {
     return json({ place: row }, existing ? 200 : 201);
   }
 
+  // Clear all places of one kind at once (used by "Clear" on recent history). Deleting one row per item was
+  // what made clearing a long history slow.
+  if (path === '/api/places' && method === 'DELETE') {
+    const u = needUser();
+    const kind = url.searchParams.get('kind');
+    if (kind !== 'saved' && kind !== 'recent') throw httpError('kind must be saved or recent.', 400);
+    await db.prepare('DELETE FROM places WHERE user_id = ? AND kind = ?').bind(u.id, kind).run();
+    return json({ ok: true });
+  }
+
   if (parts[1] === 'places' && parts[2] && method === 'PATCH') {
     const u = needUser();
     const body = await readJson(request);
@@ -369,6 +417,18 @@ async function route(request, env, url) {
     return res;
   }
 
+  // A search that looks like an address no other search answered (public/address.js): asked of TomTom, at most
+  // ADDRESS_LOOKUPS_PER_DAY times a day. Its terms don't allow keeping the answers, so this is never cached.
+  if (path === '/api/address' && method === 'GET') {
+    await needSpot();
+    const q = (url.searchParams.get('q') ?? '').trim().slice(0, 200);
+    const lat = num(url, 'lat'), lng = num(url, 'lng');
+    const cap = Number(env.ADDRESS_LOOKUPS_PER_DAY ?? DAILY_LOOKUPS);
+    const allow = () => usage.take('addresses', cap).catch(() => false);
+    const places = await lookupAddress(env, q, Number.isFinite(lat) && Number.isFinite(lng) ? [lng, lat] : null, allow);
+    return json({ places }, 200, { 'cache-control': 'no-store' });
+  }
+
   // The weather at points along a route, each at the time the driver will pass it: pts=lng,lat,unix-seconds;...
   if (path === '/api/weather' && method === 'GET') {
     await needSpot();
@@ -397,6 +457,16 @@ async function route(request, env, url) {
     return res;
   }
 
+  // EV chargers (src/lib/chargers.js): all of them, a few hundred small rows, for the phone to search and draw. Only
+  // the nightly job fills the table, never a request: a whole-country Overpass download takes up to a minute, and
+  // drivers asking at once would each start one. Until the first run the list is empty (the phone still has
+  // Overture's chargers), and phones ask again sooner.
+  if (path === '/api/chargers' && method === 'GET') {
+    await needSpot();
+    const chargers = await allChargers(db);
+    return json({ chargers }, 200, { 'cache-control': `private, max-age=${chargers.length ? 3600 : 600}` });
+  }
+
   if (path === '/api/reverse' && method === 'GET') {
     await needSpot();
     const lat = num(url, 'lat'), lng = num(url, 'lng');
@@ -411,7 +481,13 @@ async function route(request, env, url) {
     const from = lngLat(body.from), to = lngLat(body.to);
     if (!from || !to) throw httpError('A trip needs a start and a destination.', 400);
     const at = Number.isFinite(body.at) && Math.abs(body.at - Date.now()) < 7 * 86400_000 ? body.at : Date.now();
-    const plan = await withRealWalks(env, planTransit(from, to, at));
+    // Moving along a line (a phone on a train): the trip starts on that train.
+    const m = body.moving;
+    const moving = m && Number.isFinite(m.speed) && Number.isFinite(m.heading) ? { speed: m.speed, heading: m.heading } : null;
+    const plan = await withRealWalks(env, planTransit(from, to, at, { moving }));
+    // What riders have reported on the lines these trips use (delays, a stopped train...), so the trips can say so.
+    const lines = plan.trips.flatMap((t) => t.legs.filter((l) => l.mode === 'train').map((l) => l.line.id));
+    plan.reports = await trainReports.forLines(lines, user?.id);
     await count('routes'); // with driving and walking routes
     return json(plan);
   }
@@ -421,8 +497,10 @@ async function route(request, env, url) {
     const body = await readJson(request);
     const from = lngLat(body.from), to = lngLat(body.to);
     if (!from || !to) throw httpError('Route needs a start and a destination.', 400);
-    // On foot, the driving extras (closures, roadworks, speed limits, tolls, traffic, cameras) don't apply.
-    const walk = body.travel === 'walk';
+    // On foot, the driving extras (closures, roadworks, speed limits, tolls, traffic, cameras) don't apply. On a
+    // motorcycle they all do, except tolls: most Malaysian plazas are free for motorcycles.
+    const travel = ['walk', 'motorcycle'].includes(body.travel) ? body.travel : 'drive';
+    const walk = travel === 'walk';
     const via = (Array.isArray(body.via) ? body.via : []).slice(0, 3).map(lngLat).filter(Boolean);
     const area = corridorBox([from, ...via, to]);
     const exclude = walk || body.avoid_closures === false ? [] : await reports.closuresNear(area);
@@ -432,7 +510,7 @@ async function route(request, env, url) {
       units: body.units === 'imperial' ? 'imperial' : 'metric',
       lang: typeof body.lang === 'string' && /^[a-z]{2}(-[A-Z]{2})?$/.test(body.lang) ? body.lang : 'en-US',
       heading: Number(body.heading),
-      travel: walk ? 'walk' : 'drive',
+      travel,
     };
     const first = await fetchRoutes(env, opts);
     if (walk) {
@@ -447,6 +525,75 @@ async function route(request, env, url) {
     }
     let { routes } = first;
     const closuresIgnored = first.dropped;
+    // The extras on a route, each a nice-to-have: a slow or failing lookup never holds up the route.
+    // Speed limits and toll plazas, from Valhalla's trace_attributes.
+    const attributes = async (r) => {
+      const a = await fetchRouteAttributes(env, r.shapes, r.coords).catch(() => null);
+      r.limits = a?.limits ?? null;
+      r.tolls = (a?.tolls ?? []).map((at) => ({ at }));
+      r.tunnels = a?.tunnels ?? [];
+      if (travel === 'motorcycle') {
+        // The route passes plazas, but a motorcycle rides through free: say so instead of listing them.
+        Object.assign(r, { travel, toll_free_bike: Boolean(r.tolls.length || r.toll), tolls: [], toll: false });
+      }
+    };
+    // Live traffic, when TomTom is set up: the route's time with today's traffic, and where the jams are.
+    const traffic = async (r) => {
+      if (!env.TOMTOM_KEY) return;
+      const [, t] = await Promise.all([count('tomtom'), liveTraffic(env, r, travel).catch(() => null)]);
+      applyTraffic(r, t);
+    };
+    // Fixed speed cameras on each route, from the built list.
+    const cameras = (rs) => loadCameras(env.ASSETS).catch(() => []).then((cams) => rs.forEach((r) => (r.cameras = camerasAlong(r.coords, cams))));
+    // Schools beside each route, for the school zone warning at school times.
+    const schools = (rs) => loadSchools(env.ASSETS).catch(() => ({ grid: new Map() })).then((s) => rs.forEach((r) => (r.schools = schoolsAlong(r.coords, s))));
+    const plazas = async (rs) => {
+      const list = rs.flatMap((r) => r.tolls.map((t) => [t, r.coords[t.at]]));
+      const details = await plazaDetails(db, list.map(([, p]) => p)).catch(() => []);
+      list.forEach(([t], i) => Object.assign(t, details[i] ?? {}));
+    };
+    // Congested blocks from opted-in drivers (a slow lookup never holds up the route), and road reports.
+    const reportsAndProbes = async (rs, area) => {
+      const [live, probeSegs] = await Promise.all([reports.inBox(area, user?.id), probesRepo(db).congested(area).catch(() => [])]);
+      return (some = rs) => {
+        annotateWithReports(some, live);
+        annotateWithProbes(some, probeSegs, area);
+      };
+    };
+
+    // A drive checking for a faster way (public/faster-route.js) sends what's left of its route and its time. Most
+    // checks find only the way it's already going, so they end after the one routing request. Otherwise traffic is
+    // looked up for the other ways first; only when one is quick enough to offer is the way the car is going looked up
+    // too (its fresh traffic can still make it the quicker), and speed limits, tolls and cameras for the one to offer.
+    const check = fasterCheck(body.check);
+    if (check) {
+      const twins = await constructionTwins(env.ASSETS, routes).catch(() => routes.map(() => []));
+      // Another way along a road probably still being built is never offered.
+      const ways = routes.map((r, i) => ({ r, same: overlap(r.coords, check.rest) >= MAX_OVERLAP, building: twins[i]?.length > 0 }));
+      routes = ways.filter((w) => w.same || !w.building).map((w) => w.r);
+      const other = ways.filter((w) => !w.same && !w.building).map((w) => w.r);
+      if (!other.length) {
+        await count('routes');
+        return json({ routes: [], closures_avoided: 0, closures_ignored: closuresIgnored, construction_avoided: 0 });
+      }
+      const area = routeReportBox(routes, [from, to]);
+      const [annotate] = await Promise.all([reportsAndProbes(routes, area), ...other.map(traffic)]);
+      annotate(other);
+      const offer = other.filter((r) => worthOffering(routeTime(r), check.left));
+      if (!offer.length) {
+        await count('routes');
+        return json({ routes: [], closures_avoided: 0, closures_ignored: closuresIgnored, construction_avoided: 0 });
+      }
+      const same = routes.filter((r) => !other.includes(r));
+      await Promise.all([...same.map(traffic), ...offer.map(attributes), cameras(offer), schools(offer)]);
+      annotate(same);
+      await plazas(offer);
+      for (const r of routes) delete r.shapes;
+      routes.sort((a, b) => a.duration - b.duration);
+      await count('routes');
+      return json({ routes, closures_avoided: closuresIgnored ? 0 : exclude.length, closures_ignored: closuresIgnored, construction_avoided: 0 });
+    }
+
     // A route along a road that's probably still being built (see construction.js): ask again around it, and
     // take the new routes unless they're a lot slower. Kept routes that still use one carry a warning.
     let constructionAvoided = 0;
@@ -465,33 +612,10 @@ async function route(request, env, url) {
       if (twins[i]?.length) r.warning = 'construction';
     });
     const routeArea = routeReportBox(routes, [from, to]);
-    const [live, probeSegs] = await Promise.all([
-      reports.inBox(routeArea, user?.id),
-      // Congested blocks from opted-in drivers; a slow lookup never holds up the route.
-      probesRepo(db).congested(routeArea).catch(() => []),
-      // Speed limits and toll plazas are nice-to-haves: a slow or failing lookup never holds up the route.
-      ...routes.map(async (r) => {
-        const a = await fetchRouteAttributes(env, r.shapes, r.coords).catch(() => null);
-        r.limits = a?.limits ?? null;
-        r.tolls = (a?.tolls ?? []).map((at) => ({ at }));
-      }),
-      // Live traffic, when TomTom is set up: the route's time with today's traffic, and where the jams are.
-      ...routes.map(async (r) => {
-        if (!env.TOMTOM_KEY) return;
-        const [, traffic] = await Promise.all([count('tomtom'), liveTraffic(env, r).catch(() => null)]);
-        applyTraffic(r, traffic);
-      }),
-      // Fixed speed cameras on each route, from the built list.
-      loadCameras(env.ASSETS)
-        .catch(() => [])
-        .then((cams) => routes.forEach((r) => (r.cameras = camerasAlong(r.coords, cams)))),
-    ]);
+    const [annotate] = await Promise.all([reportsAndProbes(routes, routeArea), ...routes.map(attributes), ...routes.map(traffic), cameras(routes), schools(routes)]);
     for (const r of routes) delete r.shapes;
-    const plazas = routes.flatMap((r) => r.tolls.map((t) => [t, r.coords[t.at]]));
-    const details = await plazaDetails(db, plazas.map(([, p]) => p)).catch(() => []);
-    plazas.forEach(([t], i) => Object.assign(t, details[i] ?? {}));
-    annotateWithReports(routes, live);
-    annotateWithProbes(routes, probeSegs, routeArea);
+    await plazas(routes);
+    annotate();
     routes.sort((a, b) => a.duration - b.duration);
     await count('routes');
     return json({ routes, closures_avoided: closuresIgnored ? 0 : exclude.length, closures_ignored: closuresIgnored, construction_avoided: constructionAvoided });
@@ -519,6 +643,24 @@ async function route(request, env, url) {
     const u = needUser();
     const body = await readJson(request);
     return json(await reports.vote(u, Number(parts[2]), body.vote));
+  }
+
+  // ---------- Train reports (src/lib/train-reports.js) ----------
+  if (path === '/api/train-reports' && method === 'GET') {
+    const lines = (url.searchParams.get('lines') ?? '').split(',').filter(Boolean);
+    if (!lines.length) throw httpError('lines=<line id>,... is required.', 400);
+    return json({ reports: await trainReports.forLines(lines, user?.id), now: Date.now() });
+  }
+
+  if (path === '/api/train-reports' && method === 'POST') {
+    const u = needUser();
+    return json(await trainReports.create(u, await readJson(request)), 201);
+  }
+
+  if (parts[1] === 'train-reports' && parts[3] === 'vote' && method === 'POST') {
+    const u = needUser();
+    const body = await readJson(request);
+    return json(await trainReports.vote(u, Number(parts[2]), body.vote));
   }
 
   // ---------- Opt-in probe traffic ----------
@@ -664,6 +806,20 @@ function cleanPlace(p) {
   const lat = Number(p.lat), lng = Number(p.lng);
   if (!(Math.abs(lat) <= 90 && Math.abs(lng) <= 180)) throw httpError('Place needs a valid location.', 400);
   return { name: String(p.name ?? 'Place').trim().slice(0, 80) || 'Place', address: String(p.address ?? '').trim().slice(0, 200), lat, lng };
+}
+
+// A faster-route check's { rest, left } (public/faster-route.js checkBody): the rest of the route, at least two points,
+// and the seconds left. Anything else is an ordinary route request.
+function fasterCheck(v) {
+  if (!v || typeof v.rest !== 'string' || v.rest.length > MAX_REST_CHARS || !(Number(v.left) > 0)) return null;
+  let rest;
+  try {
+    rest = decodePolyline(v.rest, 5);
+  } catch {
+    return null;
+  }
+  if (rest.length < 2 || rest.some(([x, y]) => !(Math.abs(x) <= 180 && Math.abs(y) <= 90))) return null;
+  return { rest, left: Number(v.left) };
 }
 
 function lngLat(v) {

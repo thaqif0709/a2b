@@ -12,6 +12,7 @@ import { VEHICLES, COLORS, DEFAULT_COLOR } from './vehicle3d.js';
 import { onlineLine } from './presence.js';
 import { tileCount, clearOfflineTiles, originUsage } from './offline.js';
 import { openReview, suggestionSummary, syncDriverPlaces } from './suggest.js';
+import { useLang } from './i18n.js';
 
 let ctx; // callbacks from app.js
 let authMode = 'signup';
@@ -47,6 +48,7 @@ export async function refreshMe() {
       // The account's settings win over this device's, so they follow the driver between phones.
       Object.assign(state.settings, user.settings);
       local.set('settings', state.settings);
+      useLang(state.settings.lang);
     }
   } catch {
     state.user = null;
@@ -317,6 +319,9 @@ export function openProbeConsent() {
 export function openSettings() {
   const u = state.user;
   const body = openPanel('Settings', `
+    <div class="set-group">
+      ${choiceRow('lang', 'Language<small>Bahasa</small>', [['auto', 'Auto'], ['en', 'English'], ['ms', 'Melayu']])}
+    </div>
     <div class="set-group"><h3>Sound and alerts</h3>
       ${toggleRow('voice', 'Voice directions')}
       ${toggleRow('alerts', 'Report alerts while driving', 'Police, crashes, hazards and closures ahead')}
@@ -390,7 +395,9 @@ export function openSettings() {
       const b = e.target.closest('button');
       if (!b) return;
       group.querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
-      await saveSettings({ [group.dataset.choice]: b.dataset.v });
+      const saving = saveSettings({ [group.dataset.choice]: b.dataset.v });
+      if (group.dataset.choice === 'lang') useLang(b.dataset.v); // straight away, not once the account has it
+      await saving;
       if (group.dataset.choice === 'theme') ctx.applyTheme();
     };
   });

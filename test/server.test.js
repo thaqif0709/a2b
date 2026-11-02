@@ -293,9 +293,9 @@ test('an unexpected server error reads as a plain apology, not its internals', a
 });
 
 test('profile: home, work and settings', async () => {
-  const r = await alice('PATCH', '/api/me', { home: { name: 'Home', address: '1 Road', lat: 52.5, lng: 13.4 }, settings: { units: 'imperial', voice: false, bogus: 1, theme: 'purple' } });
+  const r = await alice('PATCH', '/api/me', { home: { name: 'Home', address: '1 Road', lat: 52.5, lng: 13.4 }, settings: { units: 'imperial', voice: false, bogus: 1, theme: 'purple', lang: 'ms' } });
   assert.deepEqual(r.body.user.home, { name: 'Home', address: '1 Road', lat: 52.5, lng: 13.4 });
-  assert.deepEqual(r.body.user.settings, { units: 'imperial', voice: false });
+  assert.deepEqual(r.body.user.settings, { units: 'imperial', voice: false, lang: 'ms' });
   assert.equal((await alice('PATCH', '/api/me', { password: 'newpassword', current_password: 'wrong' })).status, 403);
 });
 

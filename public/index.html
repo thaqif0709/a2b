@@ -20,7 +20,7 @@
   <!-- Launch splash: covers the blank map until it's drawn (welcome.js hides it) -->
   <div id="splash" class="splash" aria-hidden="true">
     <img src="/icon.svg" alt="" width="96" height="96">
-    <b>A2B</b>
+    <b translate="no">A2B</b>
     <span class="splash-spin"></span>
   </div>
   <div id="map" aria-label="Map"></div>
@@ -305,6 +305,7 @@
   <!-- ===== First visit welcome (welcome.js) ===== -->
   <section id="welcome" class="gate welcome hidden" aria-label="Welcome to A2B">
     <div class="gate-card">
+      <div id="welcome-lang" class="choice w-lang" translate="no"><button data-lang="en">English</button><button data-lang="ms">Bahasa Melayu</button></div>
       <img src="/icon.svg" alt="" width="64" height="64">
       <h2>Welcome to A2B</h2>
       <p>Free navigation for Malaysia, built by one person with an AI coding assistant and still improving.</p>

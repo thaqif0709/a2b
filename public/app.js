@@ -22,6 +22,7 @@ import { initPanels, openMenu, openAuth, openSettings, renderAvatar, refreshMe }
 import { startPresence, checkIn } from './presence.js';
 import { noteProbeFix, startProbeSender, discardProbeBuffer } from './probe.js';
 import { welcome, hideSplash } from './welcome.js';
+import { useLang } from './i18n.js';
 import { watchUpdates, updateCheckpoint } from './update.js';
 import { prefetchRouteTiles } from './offline.js';
 import { isSchoolTime, schoolAhead, schoolLimit } from './school-zones.js';
@@ -195,6 +196,7 @@ boot();
 
 async function boot() {
   loadLocalSettings();
+  useLang(state.settings.lang);
   applyTheme(true);
   const last = local.get('lastPos');
   map = new maplibregl.Map({

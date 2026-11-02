@@ -203,6 +203,7 @@ public/                 the web app
   map-themes.js         map colours for day and night
   presence.js           keeping a spot, and the waiting screen when it's full
   welcome.js            launch splash and first-visit welcome
+  i18n.js, i18n-ms.js   English or Bahasa Melayu: tr() looks a message up by its English (test/i18n.test.js)
   update.js             noticing a newer version: quiet refresh, or a small "New version ready" pill
   follow.js             watching a shared drive
   sheet-drag.js         bottom sheets that follow the finger

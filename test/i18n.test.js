@@ -22,6 +22,7 @@ const SAME = new Set(['km', 'min']);
 const DEVELOPER = new Set([
   'Database is not configured (see README).', 'Body must be JSON.', 'kind is add, move or gone.', 'action is approve or reject.',
   'kind must be saved or recent.', 'lat and lng are required.', 'bbox=west,south,east,north is required.', 'lines=<line id>,... is required.',
+  'pts is required: lng,lat,time;...',
 ]);
 
 // Every message the app passes through tr() or trPlural() (by its "many" form, the one Malay is keyed by).

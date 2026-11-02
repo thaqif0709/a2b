@@ -13,6 +13,7 @@ export default {
   'Report': 'Lapor',
   'My A2B': 'A2B Saya',
   'Search': 'Cari',
+  'Find the nearest': 'Cari yang terdekat',
   'Back': 'Kembali',
   'Clear': 'Kosongkan',
   'Route preview': 'Pratonton laluan',

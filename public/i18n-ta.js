@@ -14,6 +14,7 @@ export default {
   'Report': 'தெரிவி',
   'My A2B': 'என் A2B',
   'Search': 'தேடு',
+  'Find the nearest': 'அருகிலுள்ளதைத் தேடு',
   'Back': 'பின்செல்',
   'Clear': 'அழி',
   'Route preview': 'பாதை முன்னோட்டம்',

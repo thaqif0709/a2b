@@ -3,7 +3,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { filesForWord, searchNearby, mergeResults, typeQuery, placesOfType, placesOfTypesIn, addTypeSource, withoutBaseDuplicates, setDriverPlaces } from '../public/places.js';
+import { filesForWord, searchNearby, mergeResults, typeQuery, placesOfType, placesOfTypesIn, addTypeSource, withoutBaseDuplicates, setDriverPlaces, TYPES, SEARCH_CATEGORIES } from '../public/places.js';
+import { parkingQuery } from '../src/lib/parking.js';
+import { CATEGORY_ICONS } from '../public/icons.js';
 import { matchesWordStarts, normalizeText } from '../public/text.js';
 
 const ECO = [101.468, 3.224]; // Eco Grandeur, Puncak Alam
@@ -274,5 +276,15 @@ test('places drivers added are searched and ranked like the others, and their fi
     assert.deepEqual(fuel.map((p) => p.name), ['Petronas Eco Grandeur', 'BHP Puncak Alam'], 'the closed Shell is gone, the added BHP is in');
   } finally {
     setDriverPlaces([]);
+  }
+});
+
+test('the search screen has a button for every kind of place search finds nearest first, and parking', () => {
+  assert.deepEqual(SEARCH_CATEGORIES.map((c) => c.type).sort(), [...Object.keys(TYPES), 'parking'].sort());
+  for (const c of SEARCH_CATEGORIES) {
+    // Each button's search is read as that kind with no area: the nearest to you.
+    if (c.type === 'parking') assert.equal(parkingQuery(c.query), '', c.query);
+    else assert.deepEqual(typeQuery(c.query), { type: c.type, area: '' }, c.query);
+    assert.ok(CATEGORY_ICONS[c.type]?.svg && /^#[0-9a-f]{6}$/.test(CATEGORY_ICONS[c.type].color), `${c.type} has an icon`);
   }
 });

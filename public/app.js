@@ -9,10 +9,10 @@ import { TrainGuide, markerFor, walkText } from './train-guide.js';
 import { Glide } from './motion.js';
 import { Follow, shouldSend, nextPollDelay } from './follow.js';
 import { sheetGesture, settle, rubberBand } from './sheet-drag.js';
-import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES, addTypeSource, withoutBaseDuplicates } from './places.js';
+import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES, addTypeSource, withoutBaseDuplicates, SEARCH_CATEGORIES } from './places.js';
 import { addressQuery, addressToLookUp, withAddresses } from './address.js';
 import { start as startVehicle, DEFAULT_COLOR, vehicleFor } from './vehicle3d.js';
-import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PLACE_ICONS, soundIcon } from './icons.js';
+import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PLACE_ICONS, CATEGORY_ICONS, soundIcon } from './icons.js';
 import {
   $, state, api, local, toast, esc, timeAgo, speak, loadLocalSettings, saveSettings, loadPlaces, addPlace, removePlace, renamePlace,
   isSaved, setHomeWork, armBack, sideColumnEnd,
@@ -28,10 +28,12 @@ import { prefetchRouteTiles } from './offline.js';
 import { isSchoolTime, schoolAhead, schoolLimit } from './school-zones.js';
 import { DeadReckoner, shouldEstimate, nearTunnel, pointAt, BAD_ACCURACY_M } from './dead-reckoning.js';
 import { matchesWordStarts } from './text.js';
+import { restStopsAlong, nextRestStop, BreakClock } from './rest-stops.js';
 import { shouldCheck as shouldCheckFaster, pickFaster, offerText, checkBody, OFFER_FOR_MS, KEEP_FOR_MS } from './faster-route.js';
 import { signPlaces } from './signs.js';
 import { mapPlace } from './map-places.js';
 import { initSuggest, openSuggest, closeSuggest, suggesting, syncDriverPlaces } from './suggest.js';
+import { weatherPoints, weatherQuery, describeTrip, wetAhead, spokenWeather, restReminder, drivesAtNight, REST_EVERY_S } from './weather.js';
 
 // Which map look to use for day or night (see map-themes.js). 'mapTheme' in local storage overrides it.
 function mapThemeId(t = themeNow) {
@@ -104,6 +106,8 @@ let offTrail = []; // where the car has been since it left the current route
 const tollsSpoken = new Set(); // toll plazas (route + index) already announced this drive
 const camerasWarned = new Set(); // fixed speed cameras (route + index) already announced this drive
 const schoolsWarned = new Set(); // school zones (route + index) already announced this drive
+let weather = null; // { route, points, answer } for the route on screen or being driven (see weather.js)
+const weatherSpoken = new Set(); // wet stretches (route + point) already announced this drive
 const cameraPins = [];
 
 // ================= Boot =================
@@ -304,6 +308,46 @@ async function onUserChanged() {
   if (state.presence && !state.presence.admitted) checkIn(); // an account may get in where a guest couldn't
   await loadPlaces();
   renderSearchHome();
+}
+
+// A finger swipes a sideways row, but a mouse can't, and the row hides its scrollbar: the wheel and a drag move it
+// too. A drag doesn't count as a click on the button it started on.
+function scrollsSideways(row) {
+  row.addEventListener('wheel', (e) => {
+    const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? 0 : e.deltaY; // a sideways trackpad swipe already scrolls it
+    const end = row.scrollWidth - row.clientWidth;
+    if (!d || (d < 0 && row.scrollLeft <= 0) || (d > 0 && row.scrollLeft >= end - 1)) return; // let the page scroll
+    row.scrollLeft += d;
+    e.preventDefault();
+  }, { passive: false });
+  let drag = null;
+  let draggedAt = 0;
+  row.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button === 0) drag = { id: e.pointerId, x: e.clientX, left: row.scrollLeft, moved: false };
+  });
+  row.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const dx = e.clientX - drag.x;
+    if (!drag.moved) {
+      if (Math.abs(dx) < 6) return;
+      drag.moved = true;
+      row.setPointerCapture(e.pointerId);
+    }
+    row.scrollLeft = drag.left - dx;
+  });
+  const end = (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    if (drag.moved) draggedAt = Date.now();
+    drag = null;
+  };
+  row.addEventListener('pointerup', end);
+  row.addEventListener('pointercancel', end);
+  row.addEventListener('click', (e) => {
+    if (Date.now() - draggedAt < 350) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+  }, true);
 }
 
 function el(tag, cls, html = '') {
@@ -674,6 +718,49 @@ function checkTolls() {
   if (next.ahead > 0 && next.ahead <= 1000 && !tollsSpoken.has(key)) {
     tollsSpoken.add(key);
     speak(`Toll plaza in ${spokenDistance(next.ahead, units)}.`);
+  }
+}
+
+// While driving a long way: a chip for each R&R coming up on your side of the road, and after two hours without a
+// break, the next one suggested (spoken once). Tap the chip to stop there. See rest-stops.js.
+const LONG_DRIVE_M = 50_000;
+let restRows = null; // rest-stops.json's rows once loaded
+let restAlong = null; // { nav, list }: this route's stops
+let breakClock = null;
+const restSpoken = new Set();
+let sinceBreakS = 0; // seconds at the wheel since the last break, from the latest fix
+let restReminded = null; // `${break}:${every 2 hours}` the break reminder was last given for, here or by checkWeather
+
+function loadRestStops() {
+  if (restRows) return;
+  fetch('/rest-stops.json')
+    .then((r) => (r.ok ? r.json() : null))
+    .then((d) => (restRows = d?.stops ?? null))
+    .catch(() => {});
+}
+
+function checkRest(fix) {
+  const chip = $('rest-chip');
+  const sinceBreak = (sinceBreakS = breakClock?.update(Date.now(), fix.speed) ?? 0);
+  if (!restRows || !nav || !live) return;
+  if (restAlong?.nav !== nav) restAlong = { nav, list: restStopsAlong(nav.coords, nav.cum, restRows) };
+  const next = !stops.length && nextRestStop(live.along, restAlong.list, { sinceBreak, longDrive: nav.total >= LONG_DRIVE_M });
+  if (!next) return chip.classList.add('hidden');
+  const { stop, ahead, remind } = next;
+  const units = state.settings.units;
+  chip.innerHTML = `<b>${stop.kind === 's' ? 'R&amp;R' : 'REST'}</b><span>${remind ? 'Time for a break? ' : ''}${esc(stop.name === 'R&R' ? 'Rest and service area' : stop.name)}<small>${formatDistance(ahead, units)} ahead · Tap to stop here</small></span>`;
+  chip.onclick = () => {
+    chip.classList.add('hidden');
+    addStop({ name: stop.name, address: stop.kind === 's' ? 'R&R' : 'Lay-by', lat: stop.lat, lng: stop.lng });
+  };
+  chip.classList.remove('hidden');
+  const key = `${breakClock.since}:${stop.name}`;
+  if (remind && !restSpoken.has(key)) {
+    restSpoken.add(key);
+    restReminded = restDue();
+    const hours = Math.floor(sinceBreak / 3600);
+    const which = { 'R&R': 'An R&R', 'Lay-by': 'A lay-by' }[stop.name] ?? stop.name;
+    speak(`You've been driving for ${hours > 1 ? `over ${hours} hours` : 'a while'}. ${which} is ${spokenDistance(ahead, units)} ahead, if you'd like a break.`);
   }
 }
 
@@ -1120,6 +1207,21 @@ function wireUi() {
       if (q.length >= 2) runSearch(q, true);
     }
   };
+  // A category button searches for that kind of place, as typing it would: the nearest ones (see searchByType), or
+  // the car parks around you.
+  $('search-cats').replaceChildren(...SEARCH_CATEGORIES.map((c) => {
+    const icon = CATEGORY_ICONS[c.type];
+    const b = el('button', 'cat', `<span class="cat-ic" style="background:${icon.color}">${icon.svg}</span>${esc(c.label)}`);
+    b.type = 'button';
+    b.onclick = () => {
+      $('search-input').value = c.query;
+      $('search-clear').classList.remove('hidden');
+      $('search-input').blur(); // the list, not the keyboard
+      runSearch(c.query);
+    };
+    return b;
+  }));
+  scrollsSideways($('search-cats'));
   $('search-clear').onclick = () => {
     $('search-input').value = '';
     $('search-clear').classList.add('hidden');
@@ -1257,6 +1359,8 @@ function openSearchFor(target) {
   $('search-target').textContent = label ?? '';
   $('search-target').classList.toggle('hidden', !label);
   $('search-input').placeholder = target ? 'Search for an address' : 'Where to?';
+  // Petrol or a clinic makes sense to drive to or stop at on the way, not as Home, Work or a trip's start.
+  $('search-cats').classList.toggle('hidden', Boolean(target) && target !== 'stop');
   showSearchHome();
   // Focus now, inside the tap: iPhones only bring the keyboard up for a focus made during the tap itself, and
   // ignored the old delayed one. The delayed one stays as a fallback for browsers that need a frame first.
@@ -1590,6 +1694,7 @@ async function openPreview(place) {
   $('browse-ui').classList.add('hidden');
   $('preview').classList.remove('hidden', 'peek');
   $('peek-summary').textContent = '';
+  renderWeather(null);
   $('dest-name').textContent = place.name;
   $('dest-addr').textContent = place.address || '';
   // A wrong place can be fixed; a dropped pin or typed coordinates are just a spot.
@@ -1635,6 +1740,7 @@ async function openPreview(place) {
     renderPeekSummary();
     drawRoutes();
     fitRoutes();
+    loadWeather(routes[selected]);
     $('btn-go').disabled = false;
     if (resuming && !origin) return resumeStart(); // carrying on with a trip the phone cut off
     if (!origin) autoGo.restart(); // a drive from somewhere else doesn't start by itself
@@ -2277,6 +2383,73 @@ function routeNote(rs) {
   return '';
 }
 
+// The weather on the way and on arrival for a route, leaving now, plus rest tips for a long or night drive (see
+// weather.js). The weather is extra: a failure or a full A2B just leaves it out. Each route's answer is kept, so
+// switching between routes doesn't ask again.
+async function loadWeather(route) {
+  if (!route || state.settings.weather === false) return renderWeather(null);
+  if (weather?.route === route) return renderWeather(weather);
+  route.weather ??= (async () => {
+    const points = weatherPoints(route);
+    const answer = points.length ? await api(`/api/weather?${weatherQuery(points)}`).catch(() => null) : null;
+    return { route, points, answer };
+  })();
+  const w = await route.weather;
+  if (routes[selected] === route || nav?.route === route) {
+    weather = w;
+    if (mode === 'preview') renderWeather(w);
+  }
+}
+
+function renderWeather(w) {
+  const box = $('route-weather');
+  const trip = w && describeTrip(w.answer, w.points, { start: Date.now(), seconds: w.route.duration }, {
+    clock: (at) => formatClock(new Date(at)),
+    duration: formatDuration,
+  });
+  box.classList.toggle('hidden', !trip);
+  if (!trip) return (box.innerHTML = '');
+  const credit = trip.sources.map((src) => `<a href="${esc(src.url)}" target="_blank" rel="noopener">${esc(src.name)}</a>`).join(' · ');
+  box.dataset.sky = trip.sky;
+  box.innerHTML = `<span class="w-ic" aria-hidden="true">${WEATHER_ICONS[trip.sky] ?? WEATHER_ICONS.clear}</span>
+    <div class="w-text">${trip.lines.map((l, i) => `<p${i ? '' : ' class="w-main"'}>${esc(l)}</p>`).join('')}
+    ${trip.tips.length ? `<ul class="w-tips">${trip.tips.map((t) => `<li>${esc(t)}</li>`).join('')}</ul>` : ''}${credit ? `<small>${credit}</small>` : ''}</div>`;
+}
+
+const WEATHER_ICONS = {
+  clear: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4.5" fill="currentColor"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  cloudy: '<svg viewBox="0 0 24 24"><path d="M7 18a4.5 4.5 0 1 1 .9-8.9A6 6 0 0 1 19.5 11 3.5 3.5 0 0 1 18.5 18Z" fill="currentColor"/></svg>',
+  rain: '<svg viewBox="0 0 24 24"><path d="M7 14a4.5 4.5 0 1 1 .9-8.9A6 6 0 0 1 19.5 7 3.5 3.5 0 0 1 18.5 14Z" fill="currentColor"/><path d="m8 17-1 3M12.5 17l-1 3M17 17l-1 3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
+  storm: '<svg viewBox="0 0 24 24"><path d="M7 13a4.5 4.5 0 1 1 .9-8.9A6 6 0 0 1 19.5 6 3.5 3.5 0 0 1 18.5 13Z" fill="currentColor"/><path d="m12.5 13-3 5h4l-2 4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+};
+WEATHER_ICONS['heavy-rain'] = WEATHER_ICONS.rain;
+WEATHER_ICONS.haze = WEATHER_ICONS.windy = WEATHER_ICONS.cloudy;
+WEATHER_ICONS.rest = '<svg viewBox="0 0 24 24"><path d="M5 9h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5Z" fill="currentColor"/><path d="M16 10.5h1.5a2.5 2.5 0 0 1 0 5H16M8 3.5c-.8 1 .8 2 0 3M12 3.5c-.8 1 .8 2 0 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
+
+// Which 2-hour stretch since the last break this is, e.g. "1730000000000:1" after 2 hours without one; null before.
+const restDue = () => (breakClock && sinceBreakS >= REST_EVERY_S ? `${breakClock.since}:${Math.floor(sinceBreakS / REST_EVERY_S)}` : null);
+
+// While driving: one spoken heads-up a few km before rain or a storm the forecast puts on the way, and a reminder
+// to rest after every 2 hours at the wheel without a break. The R&R chip names a stop for that (checkRest, which
+// runs first); this says it when there's none to name, so it's said once either way. After a reroute, the new
+// route's weather is fetched (from the server's hourly cache, so it's cheap).
+function checkWeather() {
+  if (state.settings.weather === false || !nav || !live) return;
+  const due = restDue();
+  if (due && due !== restReminded) {
+    restReminded = due;
+    const rest = restReminder(sinceBreakS, 0, drivesAtNight(Date.now(), 0));
+    speak(rest);
+    toast(rest, 8000);
+  }
+  if (weather?.route !== nav.route) return void loadWeather(nav.route);
+  const next = wetAhead(weather.answer, weather.points, live.along);
+  const key = next && `${nav.total}:${next.i}`;
+  if (!next || weatherSpoken.has(key)) return;
+  weatherSpoken.add(key);
+  speak(spokenWeather(next));
+}
+
 // `check`: a faster-route check's checkBody (faster-route.js), so the server can skip what an unwanted answer needs.
 async function requestRoutes(from, to, heading, via = [], { check = null } = {}) {
   const s = state.settings;
@@ -2319,14 +2492,16 @@ function routeAtTap(e) {
 // map, and pushed back up. It follows the finger like an iPhone sheet: while dragging, its height tracks
 // the finger (the route list shrinks, the header and Go stay put); a flick or a long enough drag settles it.
 function setupSheetDrag() {
-  collapsibleSheet($('preview'), $('route-list'), () => mode === 'preview' && routes.length && fitRoutes());
+  // Pulling the route sheet down to see the map is looking around, like moving the map: wait for Go.
+  collapsibleSheet($('preview'), $('route-list'), () => mode === 'preview' && routes.length && fitRoutes(), { pulled: () => autoGo.stop() });
   collapsibleSheet($('parking'), $('parking-list'), fitParking);
 }
 
 // A sheet that can be pulled down to a slim bar to see the map, and pushed back up. It follows the finger
 // like an iPhone sheet: while dragging, its height tracks the finger (the list shrinks, the header stays
-// put); a flick or a long enough drag settles it. settled() runs once it has, e.g. to refit the map.
-function collapsibleSheet(sheet, list, settled) {
+// put); a flick or a long enough drag settles it. settled() runs once it has, e.g. to refit the map. pulled() runs
+// as soon as the driver drags the sheet or taps its grabber to fold it down.
+function collapsibleSheet(sheet, list, settled, { pulled = () => {} } = {}) {
   let fullH = 0, peekH = 0, startH = 0, timer = null;
   const peeked = () => sheet.classList.contains('peek');
   // Both heights, measured by flipping the layout for a moment (no paint happens in between).
@@ -2351,13 +2526,17 @@ function collapsibleSheet(sheet, list, settled) {
     sheet.style.height = `${peek ? peekH : fullH}px`;
     timer = setTimeout(done, 300);
   };
-  sheet.querySelector('.grabber').onclick = () => set(!peeked());
+  sheet.querySelector('.grabber').onclick = () => {
+    if (!peeked()) pulled();
+    set(!peeked());
+  };
   sheetGesture(sheet, {
     // Not from inside a list that scrolls: that drag scrolls it (the header still pulls the sheet). Taking it as a
     // pull let the sheet snap back on release and the list never moved.
     start: (e) => !(e.target.closest(`#${list.id}`) && (list.scrollTop > 0 || list.scrollHeight > list.clientHeight + 1)),
     move: (dy) => {
       if (!sheet.classList.contains('dragging')) {
+        pulled();
         measure();
         startH = peeked() ? peekH : fullH;
         sheet.classList.remove('peek');
@@ -2432,7 +2611,8 @@ function renderRouteOptions() {
 }
 
 // Like Waze, the route sheet sets off on the chosen route by itself after a short wait. Picking another route
-// starts the wait again for that one; moving the map, Leave later or closing the sheet stops it.
+// starts the wait again for that one; moving the map, pulling the sheet down, Leave later or closing the sheet
+// stops it. Once stopped it stays stopped until another route is picked with the sheet up, or Go is tapped.
 const AUTO_GO_S = 8;
 const autoGo = (() => {
   let timer = null, left = 0;
@@ -2452,6 +2632,7 @@ const autoGo = (() => {
     buttonDisabled: go().disabled,
     pageHidden: document.hidden,
     blockingOverlayOpen: ['later', 'panel', 'search', 'auth'].some((id) => !$(id).classList.contains('hidden')),
+    sheetCollapsed: ['peek', 'dragging'].some((c) => $('preview').classList.contains(c)),
     closuresIgnored: routes.closuresIgnored,
   });
   const restart = () => {
@@ -2477,6 +2658,7 @@ function selectRoute(i) {
   renderPeekSummary();
   drawRoutes();
   drawRouteLabels();
+  loadWeather(routes[selected]);
   autoGo.restart();
 }
 
@@ -2623,7 +2805,14 @@ function startDrive() {
   tollsSpoken.clear();
   camerasWarned.clear();
   schoolsWarned.clear();
+  weatherSpoken.clear();
+  restReminded = null;
   $('toll-chip').classList.add('hidden');
+  $('rest-chip').classList.add('hidden');
+  breakClock = new BreakClock(Date.now());
+  restAlong = null;
+  restSpoken.clear();
+  loadRestStops();
   resetFaster();
   $('school-chip').classList.add('hidden');
   map.getSource('school-pin')?.setData(emptyFc());
@@ -2707,11 +2896,13 @@ function driveTick(fix) {
   drawDriveLine();
   drawManeuverArrow();
   if (live.prompt) speak(live.prompt);
-  // Tolls, speed cameras, school zones, road reports ahead and faster routes in traffic are for drivers.
+  // Tolls, R&Rs, speed cameras, school zones, weather ahead, road reports ahead and faster routes in traffic are for drivers.
   if (travel !== 'walk') {
     checkTolls();
+    checkRest(fix);
     checkCameras();
     checkSchools();
+    checkWeather();
     checkAlerts();
     checkFaster();
   }
@@ -3177,6 +3368,7 @@ async function endDrive(arrived) {
   drawTrail();
   resetFaster();
   $('toll-chip').classList.add('hidden');
+  $('rest-chip').classList.add('hidden');
   $('school-chip').classList.add('hidden');
   map.getSource('school-pin')?.setData(emptyFc());
   pinnedSchool = null;

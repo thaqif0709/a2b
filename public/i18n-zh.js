@@ -14,6 +14,7 @@ export default {
   'Report': '报告',
   'My A2B': '我的 A2B',
   'Search': '搜索',
+  'Find the nearest': '查找最近的',
   'Back': '返回',
   'Clear': '清除',
   'Route preview': '路线预览',

@@ -21,6 +21,7 @@ import { trainReportsRepo } from './lib/train-reports.js';
 import { suggestionsRepo } from './lib/suggestions.js';
 import { presenceRepo, limits, validDevice } from './lib/presence.js';
 import { usageRepo, USAGE_DAYS, dayOf } from './lib/usage.js';
+import { weatherAlong, MAX_POINTS as WEATHER_POINTS } from './lib/weather.js';
 import { planTransit, withRealWalks } from './lib/transit.js';
 import { decodePolyline } from '../public/geo.js';
 import { overlap, routeTime, worthOffering, MAX_OVERLAP, MAX_REST_CHARS } from '../public/faster-route.js';
@@ -32,7 +33,7 @@ const LOGIN_MAX_FAILURES = 8; // per address: wrong passwords for one account st
 const RECENTS_KEPT = 20;
 const FULL_MESSAGE = 'A2B is full right now. You will be let in when a spot opens.';
 const UNEXPECTED_MESSAGE = 'Something went wrong on our side. Please try again in a minute.';
-const SETTINGS_KEYS = { voice: 'boolean', speed_warning: 'boolean', units: ['metric', 'imperial'], theme: ['auto', 'day', 'night'], avoid_tolls: 'boolean', avoid_highways: 'boolean', avoid_ferries: 'boolean', alerts: 'boolean', traffic_probe: 'boolean', map_pois: 'boolean', night_vehicle_lights: 'boolean', lang: ['auto', 'en', 'ms'] };
+const SETTINGS_KEYS = { voice: 'boolean', speed_warning: 'boolean', units: ['metric', 'imperial'], theme: ['auto', 'day', 'night'], avoid_tolls: 'boolean', avoid_highways: 'boolean', avoid_ferries: 'boolean', alerts: 'boolean', traffic_probe: 'boolean', map_pois: 'boolean', night_vehicle_lights: 'boolean', weather: 'boolean', lang: ['auto', 'en', 'ms'] };
 
 export default {
   async fetch(request, env) {
@@ -66,6 +67,7 @@ export default {
       env.DB.prepare('DELETE FROM probe_segments WHERE updated_at < ?').bind(now - PROBE_RETENTION_MS),
       env.DB.prepare('DELETE FROM probe_devices WHERE updated_at < ?').bind(now - PROBE_RETENTION_MS),
       env.DB.prepare('DELETE FROM probe_limits WHERE last_at < ?').bind(now - PROBE_RETENTION_MS),
+      env.DB.prepare('DELETE FROM shared_cache WHERE expires_at < ?').bind(now),
     ]);
     await refreshChargers(env, { now }).catch((e) => console.warn('chargers', e.message)); // weekly, per source
   },
@@ -425,6 +427,20 @@ async function route(request, env, url) {
     const allow = () => usage.take('addresses', cap).catch(() => false);
     const places = await lookupAddress(env, q, Number.isFinite(lat) && Number.isFinite(lng) ? [lng, lat] : null, allow);
     return json({ places }, 200, { 'cache-control': 'no-store' });
+  }
+
+  // The weather at points along a route, each at the time the driver will pass it: pts=lng,lat,unix-seconds;...
+  if (path === '/api/weather' && method === 'GET') {
+    await needSpot();
+    const now = Date.now();
+    const points = String(url.searchParams.get('pts') ?? '')
+      .split(';')
+      .slice(0, WEATHER_POINTS)
+      .map((p) => p.split(',').map(Number))
+      .filter(([lng, lat, at]) => Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && at * 1000 > now - 3600_000 && at * 1000 < now + 7 * 86400_000)
+      .map(([lng, lat, at]) => ({ lng, lat, at: at * 1000 }));
+    if (!points.length) throw httpError('pts is required: lng,lat,time;...', 400);
+    return json(await weatherAlong(env, points, { now }), 200, { 'cache-control': 'private, max-age=600' });
   }
 
   if (path === '/api/parking' && method === 'GET') {

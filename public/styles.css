@@ -236,7 +236,7 @@ textarea.field { height: auto; padding: 12px 14px; resize: vertical; font: inher
    which has nothing to scroll sideways, so the row doesn't move. */
 #search-home, #results { overflow-x: hidden; overflow-y: auto; flex: 1; padding-bottom: calc(20px + var(--safe-bottom)); }
 /* Kinds of place to find the nearest of, in one row that scrolls sideways, above Home and Work. */
-.cats { display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden; padding: 14px 14px 0; scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; touch-action: pan-x pan-y; }
+.cats { display: flex; gap: 8px; overflow-x: auto; overflow-y: hidden; padding: 14px 14px 0; scrollbar-width: none; -webkit-overflow-scrolling: touch; overscroll-behavior-x: contain; touch-action: pan-y; } /* sideways drags are handled in app.js (scrollsSideways) */
 .cats::-webkit-scrollbar { display: none; }
 .cat { flex: none; display: inline-flex; align-items: center; gap: 8px; height: 40px; padding: 0 14px 0 5px; border-radius: 20px; background: var(--bg-2); font-weight: 600; font-size: 15px; white-space: nowrap; }
 .cat:active { filter: brightness(0.94); }

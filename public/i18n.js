@@ -15,6 +15,7 @@ export const LANGUAGES = [
   { code: 'en', name: 'English', word: 'Language' },
   { code: 'ms', name: 'Bahasa Melayu', word: 'Bahasa', locale: 'ms-MY', load: () => import('./i18n-ms.js') },
   { code: 'zh', name: '中文', word: '语言', locale: 'zh-MY', load: () => import('./i18n-zh.js') },
+  { code: 'ta', name: 'தமிழ்', word: 'மொழி', locale: 'ta-MY', load: () => import('./i18n-ta.js') },
 ];
 
 let lang = 'en';

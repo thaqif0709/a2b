@@ -14,6 +14,7 @@ const readyPreview = {
   buttonDisabled: false,
   pageHidden: false,
   blockingOverlayOpen: false,
+  sheetCollapsed: false,
   closuresIgnored: false,
 };
 
@@ -40,6 +41,16 @@ test('existing preview, location, visibility and overlay guards still block auto
   ]) {
     assert.equal(canAutoStartRoute({ ...readyPreview, ...change }), false);
   }
+});
+
+test('a route sheet pulled down to see the map waits for Go', () => {
+  assert.equal(canAutoStartRoute({ ...readyPreview, sheetCollapsed: true }), false);
+});
+
+test('dragging the route sheet or folding it with the grabber stops the countdown', async () => {
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  assert.match(app, /collapsibleSheet\(\$\('preview'\)[^\n]*pulled: \(\) => autoGo\.stop\(\)/);
+  assert.match(app, /sheetCollapsed: \['peek', 'dragging'\]\.some\(\(c\) => \$\('preview'\)\.classList\.contains\(c\)\)/);
 });
 
 test('riding routes auto-start like driving ones', () => {

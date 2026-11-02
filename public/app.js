@@ -2317,14 +2317,16 @@ function routeAtTap(e) {
 // map, and pushed back up. It follows the finger like an iPhone sheet: while dragging, its height tracks
 // the finger (the route list shrinks, the header and Go stay put); a flick or a long enough drag settles it.
 function setupSheetDrag() {
-  collapsibleSheet($('preview'), $('route-list'), () => mode === 'preview' && routes.length && fitRoutes());
+  // Pulling the route sheet down to see the map is looking around, like moving the map: wait for Go.
+  collapsibleSheet($('preview'), $('route-list'), () => mode === 'preview' && routes.length && fitRoutes(), { pulled: () => autoGo.stop() });
   collapsibleSheet($('parking'), $('parking-list'), fitParking);
 }
 
 // A sheet that can be pulled down to a slim bar to see the map, and pushed back up. It follows the finger
 // like an iPhone sheet: while dragging, its height tracks the finger (the list shrinks, the header stays
-// put); a flick or a long enough drag settles it. settled() runs once it has, e.g. to refit the map.
-function collapsibleSheet(sheet, list, settled) {
+// put); a flick or a long enough drag settles it. settled() runs once it has, e.g. to refit the map. pulled() runs
+// as soon as the driver drags the sheet or taps its grabber to fold it down.
+function collapsibleSheet(sheet, list, settled, { pulled = () => {} } = {}) {
   let fullH = 0, peekH = 0, startH = 0, timer = null;
   const peeked = () => sheet.classList.contains('peek');
   // Both heights, measured by flipping the layout for a moment (no paint happens in between).
@@ -2349,13 +2351,17 @@ function collapsibleSheet(sheet, list, settled) {
     sheet.style.height = `${peek ? peekH : fullH}px`;
     timer = setTimeout(done, 300);
   };
-  sheet.querySelector('.grabber').onclick = () => set(!peeked());
+  sheet.querySelector('.grabber').onclick = () => {
+    if (!peeked()) pulled();
+    set(!peeked());
+  };
   sheetGesture(sheet, {
     // Not from inside a list that scrolls: that drag scrolls it (the header still pulls the sheet). Taking it as a
     // pull let the sheet snap back on release and the list never moved.
     start: (e) => !(e.target.closest(`#${list.id}`) && (list.scrollTop > 0 || list.scrollHeight > list.clientHeight + 1)),
     move: (dy) => {
       if (!sheet.classList.contains('dragging')) {
+        pulled();
         measure();
         startH = peeked() ? peekH : fullH;
         sheet.classList.remove('peek');
@@ -2430,7 +2436,8 @@ function renderRouteOptions() {
 }
 
 // Like Waze, the route sheet sets off on the chosen route by itself after a short wait. Picking another route
-// starts the wait again for that one; moving the map, Leave later or closing the sheet stops it.
+// starts the wait again for that one; moving the map, pulling the sheet down, Leave later or closing the sheet
+// stops it. Once stopped it stays stopped until another route is picked with the sheet up, or Go is tapped.
 const AUTO_GO_S = 8;
 const autoGo = (() => {
   let timer = null, left = 0;
@@ -2450,6 +2457,7 @@ const autoGo = (() => {
     buttonDisabled: go().disabled,
     pageHidden: document.hidden,
     blockingOverlayOpen: ['later', 'panel', 'search', 'auth'].some((id) => !$(id).classList.contains('hidden')),
+    sheetCollapsed: ['peek', 'dragging'].some((c) => $('preview').classList.contains(c)),
     closuresIgnored: routes.closuresIgnored,
   });
   const restart = () => {

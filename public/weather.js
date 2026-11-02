@@ -7,6 +7,7 @@
 // forecasts themselves come from /api/weather.
 
 import { atDistance, cumulative } from './geo.js';
+import { REST_AFTER_S } from './rest-stops.js';
 
 const MAX_POINTS = 8; // the server's limit, destination included
 const MIN_STEP_M = 15_000; // a forecast square is ~11 km across; closer points would ask the same one twice
@@ -43,8 +44,9 @@ const NOW_MS = 20 * 60_000; // a point this close in time is "now"
 // Sticky: warm and damp enough that sweat doesn't dry. MET Malaysia has no humidity; WeatherKit or MET Norway do.
 const humid = (f) => Boolean(f && (f.humidity ?? 0) >= 0.7 && (f.temp ?? 0) >= 27);
 
-// Tiredness: a break every 2 hours on a long drive, and a word about drowsiness for drives at night.
-export const REST_EVERY_S = 2 * 3600;
+// Tiredness: a break every 2 hours on a long drive, and a word about drowsiness for drives at night. The same 2 hours
+// as the R&R chip's break suggestion (rest-stops.js).
+export const REST_EVERY_S = REST_AFTER_S;
 const LONG_S = 2 * 3600;
 const NIGHT_FROM = 20, NIGHT_TO = 6; // 8pm to 6am, the driver's own clock
 export function drivesAtNight(start, seconds, hourOf = (t) => new Date(t).getHours()) {

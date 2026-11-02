@@ -4,7 +4,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { weatherAlong, readMetText, metPeriod, warningsFor, nearestTown, skyFromCondition, cellOf, metNorwayAt } from '../src/lib/weather.js';
-import { weatherPoints, weatherQuery, describeTrip, wetAhead, spokenWeather, restTip, restReminder, drivesAtNight } from '../public/weather.js';
+import { weatherPoints, weatherQuery, describeTrip, wetAhead, spokenWeather, restTip, restReminder, drivesAtNight, REST_EVERY_S } from '../public/weather.js';
+import { REST_AFTER_S } from '../public/rest-stops.js';
+import { readFile } from 'node:fs/promises';
 import { formatDuration } from '../public/geo.js';
 import { cumulative } from '../public/geo.js';
 import { sharedCache } from '../src/lib/shared-cache.js';
@@ -286,4 +288,15 @@ test('the shared cache fetches once for drivers asking together, keeps answers u
   await assert.rejects(a.get('bad', 60, async () => { throw new Error('down'); }));
   assert.deepEqual(await a.get('bad', 60, async () => 'up'), 'up', 'the failure was not kept');
   assert.deepEqual(await sharedCache(null, { memory: new Map(), now }).get('k', 60, async () => 'no db'), 'no db', 'works without D1');
+});
+
+test('one break reminder after 2 hours: the R&R chip names a stop, the weather tips say it when there is none', async () => {
+  assert.equal(REST_EVERY_S, REST_AFTER_S, 'the same 2 hours');
+  const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const fn = (name) => app.slice(app.indexOf(`function ${name}(`), app.indexOf('\n}\n', app.indexOf(`function ${name}(`)));
+  assert.match(fn('checkRest'), /restReminded = restDue\(\)/, 'the R&R suggestion counts as the reminder');
+  assert.match(fn('checkWeather'), /due && due !== restReminded/, 'so the weather one is skipped');
+  assert.doesNotMatch(fn('checkWeather'), /driveStarted/, 'counted from the last break, not the start of the drive');
+  const loop = app.slice(app.indexOf('checkRest(fix);'), app.indexOf('checkWeather();'));
+  assert.ok(loop.length > 0, 'checkRest runs before checkWeather on each fix');
 });

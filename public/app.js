@@ -32,7 +32,7 @@ import { shouldCheck as shouldCheckFaster, pickFaster, offerText, checkBody, OFF
 import { signPlaces } from './signs.js';
 import { mapPlace } from './map-places.js';
 import { initSuggest, openSuggest, closeSuggest, suggesting, syncDriverPlaces } from './suggest.js';
-import { weatherPoints, weatherQuery, describeTrip, wetAhead, spokenWeather, restReminder, drivesAtNight } from './weather.js';
+import { weatherPoints, weatherQuery, describeTrip, wetAhead, spokenWeather, restReminder, drivesAtNight, REST_EVERY_S } from './weather.js';
 
 // Which map look to use for day or night (see map-themes.js). 'mapTheme' in local storage overrides it.
 function mapThemeId(t = themeNow) {
@@ -107,7 +107,6 @@ const camerasWarned = new Set(); // fixed speed cameras (route + index) already 
 const schoolsWarned = new Set(); // school zones (route + index) already announced this drive
 let weather = null; // { route, points, answer } for the route on screen or being driven (see weather.js)
 const weatherSpoken = new Set(); // wet stretches (route + point) already announced this drive
-let restsSaid = 0; // 2-hour rest reminders spoken this drive
 const cameraPins = [];
 
 // ================= Boot =================
@@ -687,6 +686,8 @@ let restRows = null; // rest-stops.json's rows once loaded
 let restAlong = null; // { nav, list }: this route's stops
 let breakClock = null;
 const restSpoken = new Set();
+let sinceBreakS = 0; // seconds at the wheel since the last break, from the latest fix
+let restReminded = null; // `${break}:${every 2 hours}` the break reminder was last given for, here or by checkWeather
 
 function loadRestStops() {
   if (restRows) return;
@@ -698,7 +699,7 @@ function loadRestStops() {
 
 function checkRest(fix) {
   const chip = $('rest-chip');
-  const sinceBreak = breakClock?.update(Date.now(), fix.speed) ?? 0;
+  const sinceBreak = (sinceBreakS = breakClock?.update(Date.now(), fix.speed) ?? 0);
   if (!restRows || !nav || !live) return;
   if (restAlong?.nav !== nav) restAlong = { nav, list: restStopsAlong(nav.coords, nav.cum, restRows) };
   const next = !stops.length && nextRestStop(live.along, restAlong.list, { sinceBreak, longDrive: nav.total >= LONG_DRIVE_M });
@@ -714,6 +715,7 @@ function checkRest(fix) {
   const key = `${breakClock.since}:${stop.name}`;
   if (remind && !restSpoken.has(key)) {
     restSpoken.add(key);
+    restReminded = restDue();
     const hours = Math.floor(sinceBreak / 3600);
     const which = { 'R&R': 'An R&R', 'Lay-by': 'A lay-by' }[stop.name] ?? stop.name;
     speak(`You've been driving for ${hours > 1 ? `over ${hours} hours` : 'a while'}. ${which} is ${spokenDistance(ahead, units)} ahead, if you'd like a break.`);
@@ -2381,14 +2383,19 @@ WEATHER_ICONS['heavy-rain'] = WEATHER_ICONS.rain;
 WEATHER_ICONS.haze = WEATHER_ICONS.windy = WEATHER_ICONS.cloudy;
 WEATHER_ICONS.rest = '<svg viewBox="0 0 24 24"><path d="M5 9h11v5a5 5 0 0 1-5 5h-1a5 5 0 0 1-5-5Z" fill="currentColor"/><path d="M16 10.5h1.5a2.5 2.5 0 0 1 0 5H16M8 3.5c-.8 1 .8 2 0 3M12 3.5c-.8 1 .8 2 0 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>';
 
+// Which 2-hour stretch since the last break this is, e.g. "1730000000000:1" after 2 hours without one; null before.
+const restDue = () => (breakClock && sinceBreakS >= REST_EVERY_S ? `${breakClock.since}:${Math.floor(sinceBreakS / REST_EVERY_S)}` : null);
+
 // While driving: one spoken heads-up a few km before rain or a storm the forecast puts on the way, and a reminder
-// to rest every 2 hours at the wheel. After a reroute, the new route's weather is fetched (from the server's hourly
-// cache, so it's cheap).
+// to rest after every 2 hours at the wheel without a break. The R&R chip names a stop for that (checkRest, which
+// runs first); this says it when there's none to name, so it's said once either way. After a reroute, the new
+// route's weather is fetched (from the server's hourly cache, so it's cheap).
 function checkWeather() {
   if (state.settings.weather === false || !nav || !live) return;
-  const rest = restReminder((Date.now() - driveStarted) / 1000, restsSaid, drivesAtNight(Date.now(), 0));
-  if (rest) {
-    restsSaid++;
+  const due = restDue();
+  if (due && due !== restReminded) {
+    restReminded = due;
+    const rest = restReminder(sinceBreakS, 0, drivesAtNight(Date.now(), 0));
     speak(rest);
     toast(rest, 8000);
   }
@@ -2756,7 +2763,7 @@ function startDrive() {
   camerasWarned.clear();
   schoolsWarned.clear();
   weatherSpoken.clear();
-  restsSaid = 0;
+  restReminded = null;
   $('toll-chip').classList.add('hidden');
   $('rest-chip').classList.add('hidden');
   breakClock = new BreakClock(Date.now());

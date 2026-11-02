@@ -60,7 +60,7 @@ export default {
   'Motorbike': 'Motosikal',
   'Walk': 'Jalan kaki',
   'Train': 'Tren',
-  'Leave later': 'Bertolak kemudian',
+  'Leave later': 'Pergi nanti', // pairs with Pergi sekarang, and fits its button on one line
   'Go now': 'Pergi sekarang',
   'Start': 'Mula',
   'Live times in Google Maps': 'Masa langsung di Google Maps',

@@ -1232,11 +1232,12 @@ function wireUi() {
     }
   };
   // A category button searches for that kind of place, as typing it would: the nearest ones (see searchByType), or
-  // the car parks around you.
+  // the car parks around you. Its label is put in the driver's language each time search opens (openSearchFor).
   $('search-cats').replaceChildren(...SEARCH_CATEGORIES.map((c) => {
     const icon = CATEGORY_ICONS[c.type];
-    const b = el('button', 'cat', `<span class="cat-ic" style="background:${icon.color}">${icon.svg}</span>${esc(c.label)}`);
+    const b = el('button', 'cat', `<span class="cat-ic" style="background:${icon.color}">${icon.svg}</span>${esc(tr(c.label))}`);
     b.type = 'button';
+    b.dataset.label = c.label;
     b.onclick = () => {
       $('search-input').value = c.query;
       $('search-clear').classList.remove('hidden');
@@ -1385,6 +1386,7 @@ function openSearchFor(target) {
   $('search-input').placeholder = target ? tr('Search for an address') : tr('Where to?');
   // Petrol or a clinic makes sense to drive to or stop at on the way, not as Home, Work or a trip's start.
   $('search-cats').classList.toggle('hidden', Boolean(target) && target !== 'stop');
+  for (const b of $('search-cats').children) b.lastChild.data = tr(b.dataset.label); // a language picked since
   showSearchHome();
   // Focus now, inside the tap: iPhones only bring the keyboard up for a focus made during the tap itself, and
   // ignored the old delayed one. The delayed one stays as a fallback for browsers that need a frame first.

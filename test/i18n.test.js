@@ -6,6 +6,7 @@ import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { LANGUAGES, pickLang, useLang, tr, trPlural, trServer, locale } from '../public/i18n.js';
 import { validatePassword } from '../src/lib/auth.js';
+import { SEARCH_CATEGORIES } from '../public/places.js';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 const unescape = (s) => s.replace(/\\(.)/g, '$1');
@@ -60,7 +61,10 @@ function serverMessages() {
   return found.map((s) => unescape(s.replace(/\$\{[^}]+\}/g, '{n}'))).filter((s) => !DEVELOPER.has(s));
 }
 
-const used = () => new Set([...appMessages(), ...pageMessages(), ...serverMessages()]);
+// The search screen's category buttons, put through tr() by app.js.
+const categoryLabels = () => SEARCH_CATEGORIES.map((c) => c.label);
+
+const used = () => new Set([...appMessages(), ...pageMessages(), ...serverMessages(), ...categoryLabels()]);
 
 test('every message has its Malay (and how far the other languages are)', (t) => {
   const all = [...used()].filter((s) => !SAME.has(s));

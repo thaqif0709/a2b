@@ -43,6 +43,7 @@ export default {
   // ---------- index.html: browsing and search ----------
   'km/h': 'km/j',
   'Where to?': 'Ke mana?',
+  'Search for an address': 'Cari alamat',
   'Turn on location so A2B can show where you are.': 'Hidupkan lokasi supaya A2B boleh tunjukkan di mana anda berada.',
   'Try again': 'Cuba lagi',
   'Home': 'Rumah',

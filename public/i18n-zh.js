@@ -44,6 +44,7 @@ export default {
   // ---------- index.html: browsing and search ----------
   'km/h': 'km/h', // as Chinese-language speedometers show it
   'Where to?': '去哪里？',
+  'Search for an address': '搜索地址',
   'Turn on location so A2B can show where you are.': '开启定位，A2B 才能显示你的位置。',
   'Try again': '重试',
   'Home': '家',

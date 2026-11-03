@@ -22,7 +22,7 @@ import { initPanels, openMenu, openAuth, openSettings, renderAvatar, refreshMe }
 import { startPresence, checkIn } from './presence.js';
 import { noteProbeFix, startProbeSender, discardProbeBuffer } from './probe.js';
 import { welcome, hideSplash } from './welcome.js';
-import { useLang } from './i18n.js';
+import { useLang, tr } from './i18n.js';
 import { watchUpdates, updateCheckpoint } from './update.js';
 import { prefetchRouteTiles } from './offline.js';
 import { isSchoolTime, schoolAhead, schoolLimit } from './school-zones.js';
@@ -1382,7 +1382,7 @@ function openSearchFor(target) {
   const label = { home: 'Set your Home address', work: 'Set your Work address', save: 'Search for a place to save', stop: 'Add a stop on your way', from: 'Where are you starting from?' }[target];
   $('search-target').textContent = label ?? '';
   $('search-target').classList.toggle('hidden', !label);
-  $('search-input').placeholder = target ? 'Search for an address' : 'Where to?';
+  $('search-input').placeholder = target ? tr('Search for an address') : tr('Where to?');
   // Petrol or a clinic makes sense to drive to or stop at on the way, not as Home, Work or a trip's start.
   $('search-cats').classList.toggle('hidden', Boolean(target) && target !== 'stop');
   showSearchHome();
@@ -1401,8 +1401,8 @@ function showSearchHome() {
 }
 
 function renderSearchHome() {
-  $('home-sub').textContent = state.home ? state.home.address || state.home.name : 'Set location';
-  $('work-sub').textContent = state.work ? state.work.address || state.work.name : 'Set location';
+  $('home-sub').textContent = state.home ? state.home.address || state.home.name : tr('Set location');
+  $('work-sub').textContent = state.work ? state.work.address || state.work.name : tr('Set location');
   const { saved, recent } = state.places;
   $('saved-head').classList.toggle('hidden', !saved.length);
   $('recent-head').classList.toggle('hidden', !recent.length);

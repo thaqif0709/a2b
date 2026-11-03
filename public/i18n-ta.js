@@ -44,6 +44,7 @@ export default {
   // ---------- index.html: browsing and search ----------
   'km/h': 'km/h', // as speedometers show it
   'Where to?': 'எங்கே செல்ல வேண்டும்?',
+  'Search for an address': 'முகவரியைத் தேடு',
   'Turn on location so A2B can show where you are.': 'நீங்கள் எங்கே இருக்கிறீர்கள் என A2B காட்ட, இருப்பிடத்தை இயக்குங்கள்.',
   'Try again': 'மீண்டும் முயலுங்கள்',
   'Home': 'வீடு',

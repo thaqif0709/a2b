@@ -6,24 +6,25 @@ import assert from 'node:assert/strict';
 import { fuelCost, fuelLabel } from '../public/trip-cost.js';
 import { fuelPrices, forgetFuelPrices } from '../src/lib/fuel.js';
 
-const PRICES = { date: '2026-10-22', ron95: 4.32, ron95_budi95: 1.99, ron97: 4.8, diesel: 5.07, diesel_eastmsia: 2.15 };
-const KL = [101.69, 3.14], KUCHING = [110.34, 1.55];
+const PRICES = { date: '2026-10-22', ron95: 4.32, ron95_budi95: 1.99, ron97: 4.8, diesel: 5.07, diesel_budi: 2.1 };
 
 test('fuel for a drive: its length, what the car uses and the pump price', () => {
   // 100 km in a medium car (7.5 L/100 km) on subsidised RON95: 7.5 L at RM 1.99.
-  assert.equal(fuelCost(100_000, {}, PRICES, KL).toFixed(2), '14.93');
-  assert.equal(fuelCost(100_000, { fuel: 'ron97', size: 'large' }, PRICES, KL).toFixed(2), '48.00');
-  assert.equal(fuelCost(100_000, { fuel: 'ron95', size: 'small' }, PRICES, KL).toFixed(2), '25.92');
+  assert.equal(fuelCost(100_000, {}, PRICES).toFixed(2), '14.93');
+  assert.equal(fuelCost(100_000, { fuel: 'ron97', size: 'large' }, PRICES).toFixed(2), '48.00');
+  assert.equal(fuelCost(100_000, { fuel: 'ron95', size: 'small' }, PRICES).toFixed(2), '25.92');
 });
 
-test('diesel is cheaper in Sabah and Sarawak', () => {
-  assert.equal(fuelCost(100_000, { fuel: 'diesel' }, PRICES, KL).toFixed(2), '38.03');
-  assert.equal(fuelCost(100_000, { fuel: 'diesel' }, PRICES, KUCHING).toFixed(2), '16.13');
+test('diesel at the full price or the subsidised BUDI price, the same anywhere in Malaysia', () => {
+  assert.equal(fuelCost(100_000, { fuel: 'diesel' }, PRICES).toFixed(2), '38.03');
+  assert.equal(fuelCost(100_000, { fuel: 'diesel_budi' }, PRICES).toFixed(2), '15.75');
+  const { diesel_budi, ...noBudi } = PRICES;
+  assert.equal(fuelCost(100_000, { fuel: 'diesel_budi' }, noBudi).toFixed(2), '38.03', 'without its price: full diesel, not petrol');
 });
 
 test('no estimate for an electric car, or without prices', () => {
-  assert.equal(fuelCost(100_000, { fuel: 'ev' }, PRICES, KL), null);
-  assert.equal(fuelCost(100_000, {}, null, KL), null);
+  assert.equal(fuelCost(100_000, { fuel: 'ev' }, PRICES), null);
+  assert.equal(fuelCost(100_000, {}, null), null);
   assert.equal(fuelLabel(null), '');
 });
 
@@ -31,6 +32,7 @@ test('the label: rounded as people say it, and which fuel', () => {
   assert.equal(fuelLabel(3.43), '~RM 3.40 petrol');
   assert.equal(fuelLabel(14.93), '~RM 14.90 petrol');
   assert.equal(fuelLabel(123.4, 'diesel'), '~RM 123 diesel');
+  assert.equal(fuelLabel(15.75, 'diesel_budi'), '~RM 15.80 diesel');
 });
 
 test('pump prices: the newest week’s, asked for a few times a day, the last ones kept when the service is down', async () => {
@@ -43,7 +45,7 @@ test('pump prices: the newest week’s, asked for a few times a day, the last on
     if (down) return new Response('', { status: 503 });
     return Response.json([
       { date: '2026-10-22', series_type: 'change_weekly', ron95: -0.3, ron97: -0.3 },
-      { date: '2026-10-22', series_type: 'level', ron95: 4.32, ron95_budi95: 1.99, ron97: 4.8, diesel: 5.07, diesel_eastmsia: 2.15, ron95_skps: 2.05 },
+      { date: '2026-10-22', series_type: 'level', ron95: 4.32, ron95_budi95: 1.99, ron97: 4.8, diesel: 5.07, diesel_eastmsia: 5.07, diesel_budi: 2.1, ron95_skps: 2.05 },
       { date: '2026-10-15', series_type: 'level', ron95: 4.62, ron97: 5.1, diesel: 5.17 },
     ]);
   };

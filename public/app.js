@@ -2606,7 +2606,7 @@ function loadFuelPrices() {
     .catch(() => (fuelAsked = null)); // asked again with the next routes
 }
 const carFuel = () => ({ fuel: local.get('fuel', DEFAULT_FUEL), size: local.get('carSize', DEFAULT_SIZE) });
-const routeFuel = (r) => (travel === 'drive' ? fuelLabel(fuelCost(r.distance, carFuel(), fuelPrices, r.coords?.[0]), carFuel().fuel) : ''); // not on foot
+const routeFuel = (r) => (travel === 'drive' ? fuelLabel(fuelCost(r.distance, carFuel(), fuelPrices), carFuel().fuel) : ''); // not on foot
 
 function fitRoutes() {
   const b = new maplibregl.LngLatBounds();

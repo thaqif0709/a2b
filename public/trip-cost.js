@@ -5,12 +5,14 @@
 // official weekly prices, from the server: src/lib/fuel.js). Shown next to the tolls on each route, so the
 // toll-free route's real cost is easy to compare. An estimate, and said to be one.
 
-// The fuel a car takes, as this phone's settings call it, and the price list's name for it.
+// The fuel a car takes, as this phone's settings call it, and the price list's name for it. The BUDI ones are the
+// subsidised prices, for drivers who get the subsidy: who does is up to them, not something A2B can tell.
 export const FUELS = [
   ['ron95_budi95', 'RON95 BUDI95'],
   ['ron95', 'RON95'],
   ['ron97', 'RON97'],
   ['diesel', 'Diesel'],
+  ['diesel_budi', 'Diesel BUDI'],
   ['ev', 'Electric'],
 ];
 // How much a car of each size uses, litres per 100 km: a Myvi or Axia, a Civic or Vios, an SUV or MPV.
@@ -21,14 +23,14 @@ export const SIZES = [
 ];
 export const DEFAULT_FUEL = 'ron95_budi95';
 export const DEFAULT_SIZE = 'medium';
-const EAST_LNG = 109; // Sabah and Sarawak: east of here, where diesel has its own (lower) price
 
-// The fuel for a drive of `metres` starting at `from` ([lng, lat]), in ringgit, or null when there's nothing to
-// estimate (an electric car, or no prices yet).
-export function fuelCost(metres, { fuel = DEFAULT_FUEL, size = DEFAULT_SIZE } = {}, prices, from) {
+const isDiesel = (fuel) => fuel.startsWith('diesel');
+
+// The fuel for a drive of `metres`, in ringgit, or null when there's nothing to estimate (an electric car, or no
+// prices yet). A subsidised price missing from the list falls back to the full one of the same fuel.
+export function fuelCost(metres, { fuel = DEFAULT_FUEL, size = DEFAULT_SIZE } = {}, prices) {
   if (!prices || fuel === 'ev') return null;
-  const key = fuel === 'diesel' && from?.[0] > EAST_LNG && prices.diesel_eastmsia ? 'diesel_eastmsia' : fuel;
-  const price = prices[key] ?? prices.ron95;
+  const price = prices[fuel] ?? prices[isDiesel(fuel) ? 'diesel' : 'ron95'];
   const per100 = (SIZES.find(([id]) => id === size) ?? SIZES[1])[2];
   if (!(price > 0) || !(metres > 0)) return null;
   return (metres / 1000) * (per100 / 100) * price;
@@ -38,5 +40,5 @@ export function fuelCost(metres, { fuel = DEFAULT_FUEL, size = DEFAULT_SIZE } = 
 export function fuelLabel(amount, fuel = DEFAULT_FUEL) {
   if (amount == null) return '';
   const rm = amount < 100 ? (Math.round(amount * 10) / 10).toFixed(2) : Math.round(amount).toString();
-  return `~RM ${rm} ${fuel === 'diesel' ? 'diesel' : 'petrol'}`;
+  return `~RM ${rm} ${isDiesel(fuel) ? 'diesel' : 'petrol'}`;
 }

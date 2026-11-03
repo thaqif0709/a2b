@@ -86,7 +86,7 @@ Keep the screen on while you drive (A2B keeps it awake). Only use it when it's s
 
 ## Run it on your computer
 
-You need **Node.js 22.13 or newer**. No accounts or API keys are needed.
+You need **Node.js 22.20 or newer**. No accounts or API keys are needed.
 
 ```bash
 npm install

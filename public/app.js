@@ -27,6 +27,7 @@ import { prefetchRouteTiles } from './offline.js';
 import { isSchoolTime, schoolAhead, schoolLimit } from './school-zones.js';
 import { DeadReckoner, shouldEstimate, nearTunnel, pointAt, BAD_ACCURACY_M } from './dead-reckoning.js';
 import { matchesWordStarts } from './text.js';
+import { fuelCost, fuelLabel, DEFAULT_FUEL, DEFAULT_SIZE } from './trip-cost.js';
 import { restStopsAlong, nextRestStop, BreakClock } from './rest-stops.js';
 import { shouldCheck as shouldCheckFaster, pickFaster, offerText, checkBody, OFFER_FOR_MS, KEEP_FOR_MS } from './faster-route.js';
 import { signPlaces } from './signs.js';
@@ -308,11 +309,13 @@ async function onUserChanged() {
   renderSearchHome();
 }
 
-// A finger swipes a sideways row, but a mouse can't, and the row hides its scrollbar: the wheel and a drag move it
-// too. A drag doesn't count as a click on the button it started on.
+// A sideways row that hides its scrollbar: moved by the wheel, and by dragging it with a mouse or a finger. The row
+// leaves only vertical pans to the browser (touch-action: pan-y on .cats): iPhone Safari wouldn't scroll it sideways
+// inside the search list, so a sideways drag is ours everywhere, with a little momentum after a flick. A drag doesn't
+// count as a click on the button it started on.
 function scrollsSideways(row) {
   row.addEventListener('wheel', (e) => {
-    const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? 0 : e.deltaY; // a sideways trackpad swipe already scrolls it
+    const d = Math.abs(e.deltaX) > Math.abs(e.deltaY) ? e.deltaX : e.deltaY;
     const end = row.scrollWidth - row.clientWidth;
     if (!d || (d < 0 && row.scrollLeft <= 0) || (d > 0 && row.scrollLeft >= end - 1)) return; // let the page scroll
     row.scrollLeft += d;
@@ -320,22 +323,43 @@ function scrollsSideways(row) {
   }, { passive: false });
   let drag = null;
   let draggedAt = 0;
+  let glide = 0;
   row.addEventListener('pointerdown', (e) => {
-    if (e.pointerType === 'mouse' && e.button === 0) drag = { id: e.pointerId, x: e.clientX, left: row.scrollLeft, moved: false };
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    cancelAnimationFrame(glide);
+    drag = { id: e.pointerId, x: e.clientX, y: e.clientY, left: row.scrollLeft, moved: false, v: 0, lastX: e.clientX, lastT: e.timeStamp };
   });
   row.addEventListener('pointermove', (e) => {
     if (!drag || e.pointerId !== drag.id) return;
     const dx = e.clientX - drag.x;
     if (!drag.moved) {
       if (Math.abs(dx) < 6) return;
+      if (Math.abs(e.clientY - drag.y) > Math.abs(dx)) return void (drag = null); // an up-and-down swipe: the list's
       drag.moved = true;
       row.setPointerCapture(e.pointerId);
     }
+    const dt = e.timeStamp - drag.lastT;
+    if (dt > 0) drag.v = 0.8 * ((e.clientX - drag.lastX) / dt) + 0.2 * drag.v; // px per ms, smoothed
+    drag.lastX = e.clientX;
+    drag.lastT = e.timeStamp;
     row.scrollLeft = drag.left - dx;
   });
   const end = (e) => {
     if (!drag || e.pointerId !== drag.id) return;
-    if (drag.moved) draggedAt = Date.now();
+    if (drag.moved) {
+      draggedAt = Date.now();
+      // Keep going after a flick, slowing down, as a native scroll would.
+      let v = -drag.v * 16; // px per frame
+      const step = () => {
+        if (Math.abs(v) < 0.5) return;
+        const before = row.scrollLeft;
+        row.scrollLeft += v;
+        if (row.scrollLeft === before) return; // hit an end
+        v *= 0.94;
+        glide = requestAnimationFrame(step);
+      };
+      if (e.type === 'pointerup') glide = requestAnimationFrame(step);
+    }
     drag = null;
   };
   row.addEventListener('pointerup', end);
@@ -1728,6 +1752,7 @@ async function openPreview(place) {
   }
   const asked = travel;
   try {
+    loadFuelPrices();
     const found = await requestRoutes(from ?? map.getCenter().toArray(), [place.lng, place.lat]);
     // Gone, or switched to Walk or Train while these were on their way: they mustn't come back (or start a drive).
     if (mode !== 'preview' || dest !== place || travel !== asked) return;
@@ -2557,9 +2582,27 @@ function renderPeekSummary() {
   }
   const r = routes[selected];
   $('peek-summary').textContent = r
-    ? [formatDuration(r.duration), formatDistance(r.distance, state.settings.units), r.tolls?.length ? tollSummary(r.tolls) : r.toll ? 'Toll' : ''].filter(Boolean).join(' · ')
+    ? [formatDuration(r.duration), formatDistance(r.distance, state.settings.units), r.tolls?.length ? tollSummary(r.tolls) : r.toll ? 'Toll' : '', routeFuel(r)].filter(Boolean).join(' · ')
     : '';
 }
+
+// ---------- Fuel on each route ----------
+// "~RM 3.40 petrol" beside the tolls, from this week's pump prices (asked for once a session) and the car set in
+// Settings (kept on this phone). See trip-cost.js.
+let fuelPrices = null, fuelAsked = null;
+function loadFuelPrices() {
+  fuelAsked ??= api('/api/fuel')
+    .then((r) => {
+      fuelPrices = r.prices;
+      if (fuelPrices && mode === 'preview' && routes.length) {
+        renderRouteOptions();
+        renderPeekSummary();
+      }
+    })
+    .catch(() => (fuelAsked = null)); // asked again with the next routes
+}
+const carFuel = () => ({ fuel: local.get('fuel', DEFAULT_FUEL), size: local.get('carSize', DEFAULT_SIZE) });
+const routeFuel = (r) => (travel === 'drive' ? fuelLabel(fuelCost(r.distance, carFuel(), fuelPrices, r.coords?.[0]), carFuel().fuel) : ''); // not on foot
 
 function fitRoutes() {
   const b = new maplibregl.LngLatBounds();
@@ -2594,6 +2637,8 @@ function renderRouteOptions() {
     if (r.tolls?.length) badges.push(`<span class="badge warn">${esc(tollSummary(r.tolls))}</span>`);
     else if (r.toll) badges.push('<span class="badge warn">Toll</span>');
     else if (r.toll_free_bike) badges.push('<span class="badge">No toll for motorcycles</span>');
+    const fuel = routeFuel(r);
+    if (fuel) badges.push(`<span class="badge">${esc(fuel)}</span>`);
     if (r.ferry) badges.push('<span class="badge warn">Ferry</span>');
     const reps = (r.reports ?? []).length;
     if (reps) badges.push(`<span class="badge">${reps} report${reps > 1 ? 's' : ''}</span>`);

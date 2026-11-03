@@ -13,6 +13,7 @@ import { FUELS, SIZES, DEFAULT_FUEL, DEFAULT_SIZE } from './trip-cost.js';
 import { onlineLine } from './presence.js';
 import { tileCount, clearOfflineTiles, originUsage } from './offline.js';
 import { openReview, suggestionSummary, syncDriverPlaces } from './suggest.js';
+import { LANGUAGES, useLang } from './i18n.js';
 
 let ctx; // callbacks from app.js
 let authMode = 'signup';
@@ -48,6 +49,7 @@ export async function refreshMe() {
       // The account's settings win over this device's, so they follow the driver between phones.
       Object.assign(state.settings, user.settings);
       local.set('settings', state.settings);
+      useLang(state.settings.lang);
     }
   } catch {
     state.user = null;
@@ -290,6 +292,15 @@ function choiceRow(key, label, options) {
     .join('')}</div></div>`;
 }
 
+// A list rather than buttons: it has room for every language. Under "Language", the word in each of the others,
+// so a driver who doesn't read English can still find it.
+function langRow() {
+  const options = [['auto', 'Auto'], ...LANGUAGES.map((l) => [l.code, l.name])];
+  return `<label class="set-row"><span>Language<small>${LANGUAGES.slice(1).map((l) => l.word).join(' · ')}</small></span><select class="set-select" id="s-lang" translate="no">${options
+    .map(([v, l]) => `<option value="${v}" ${state.settings.lang === v ? 'selected' : ''}>${l}</option>`)
+    .join('')}</select></label>`;
+}
+
 // What sharing speeds really means, in plain words, before the driver says yes. Off until then.
 export function openProbeConsent() {
   const body = openPanel('Share speeds for live traffic', `
@@ -318,6 +329,7 @@ export function openProbeConsent() {
 export function openSettings() {
   const u = state.user;
   const body = openPanel('Settings', `
+    <div class="set-group">${langRow()}</div>
     <div class="set-group"><h3>Sound and alerts</h3>
       ${toggleRow('voice', 'Voice directions')}
       ${toggleRow('alerts', 'Report alerts while driving', 'Police, crashes, hazards and closures ahead')}
@@ -404,6 +416,11 @@ export function openSettings() {
       if (group.dataset.choice === 'theme') ctx.applyTheme();
     };
   });
+  $('s-lang').onchange = async (e) => {
+    const saving = saveSettings({ lang: e.target.value });
+    await useLang(e.target.value); // straight away, not once the account has it
+    await saving;
+  };
   // Saved maps live on this device only (like the vehicle), so they bypass the synced settings.
   $('s-offline').onchange = (e) => local.set('offlineMaps', e.target.checked);
   $('s-offline-clear').onclick = async () => {

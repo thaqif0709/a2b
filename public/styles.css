@@ -588,6 +588,7 @@ body.walking #speedo, body.walking #limit, body.walking #toll-chip, body.walking
 .choice { display: flex; background: var(--bg-2); border-radius: 10px; padding: 3px; }
 .choice button { padding: 6px 10px; border-radius: 8px; font-size: 14px; font-weight: 600; color: var(--muted); }
 .choice button.on { background: var(--bg); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15); }
+.set-select { max-width: 52%; padding: 7px 10px; border: 0; border-radius: 10px; background: var(--bg-2); color: var(--text); font-size: 14px; font-weight: 600; }
 .choice.wrap { flex-wrap: wrap; justify-content: flex-end; max-width: 60%; }
 .swatch-row { flex-wrap: wrap; row-gap: 10px; }
 .swatches { display: flex; flex-wrap: wrap; gap: 10px; justify-content: flex-end; }
@@ -686,10 +687,15 @@ body.driving .toast { top: calc(140px + var(--safe-top)); }
 .splash.out { opacity: 0; pointer-events: none; }
 @keyframes splash-in { from { transform: scale(0.8); opacity: 0; } to { transform: none; opacity: 1; } }
 
-/* First visit welcome: the waiting-screen card, a step above it. */
-.welcome { z-index: 19; }
+/* First visit welcome: the waiting-screen card, a step above it. Its top stays put rather than the card being
+   centred: each language makes it a different height, and the language buttons at its top mustn't move under the
+   finger. It scrolls on a short screen. */
+.welcome { z-index: 19; align-items: start; overflow-y: auto; padding-top: calc(max(24px, 6vh) + var(--safe-top)); }
 .welcome .gate-card { text-align: left; justify-items: start; }
 .welcome .gate-card img, .welcome .gate-card h2 { justify-self: center; }
+.w-lang { justify-self: center; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.w-lang button { padding: 6px 12px; border-radius: 999px; font-size: 14px; font-weight: 600; color: var(--muted); background: var(--bg-2); }
+.w-lang button.on { background: var(--primary); color: var(--primary-ink); }
 .w-list { list-style: none; margin: 4px 0 0; padding: 0; display: grid; gap: 10px; font-size: 15px; line-height: 1.4; }
 .w-list li { display: flex; gap: 10px; }
 .w-list span { flex: none; width: 22px; text-align: center; }

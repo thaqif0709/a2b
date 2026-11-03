@@ -22,6 +22,7 @@ import { initPanels, openMenu, openAuth, openSettings, renderAvatar, refreshMe }
 import { startPresence, checkIn } from './presence.js';
 import { noteProbeFix, startProbeSender, discardProbeBuffer } from './probe.js';
 import { welcome, hideSplash } from './welcome.js';
+import { useLang, tr } from './i18n.js';
 import { watchUpdates, updateCheckpoint } from './update.js';
 import { prefetchRouteTiles } from './offline.js';
 import { isSchoolTime, schoolAhead, schoolLimit } from './school-zones.js';
@@ -200,6 +201,7 @@ boot();
 
 async function boot() {
   loadLocalSettings();
+  const langReady = useLang(state.settings.lang); // under the splash; the Welcome card waits for it
   applyTheme(true);
   const last = local.get('lastPos');
   map = new maplibregl.Map({
@@ -258,7 +260,7 @@ async function boot() {
   refreshSound();
   // A shared-drive link goes straight to the drive; everyone else sees the welcome once, which then asks for location.
   if (/^\/drive\//.test(location.pathname)) startLocation();
-  else welcome(startLocation);
+  else langReady.then(() => welcome(startLocation));
   setInterval(() => loadReports(true), REPORT_REFRESH_MS);
   // Dead spots don't stop the drive: the loaded route keeps guiding, and everything needing the
   // network (rerouting, reports) resumes on its own when the signal is back.
@@ -1230,11 +1232,12 @@ function wireUi() {
     }
   };
   // A category button searches for that kind of place, as typing it would: the nearest ones (see searchByType), or
-  // the car parks around you.
+  // the car parks around you. Its label is put in the driver's language each time search opens (openSearchFor).
   $('search-cats').replaceChildren(...SEARCH_CATEGORIES.map((c) => {
     const icon = CATEGORY_ICONS[c.type];
-    const b = el('button', 'cat', `<span class="cat-ic" style="background:${icon.color}">${icon.svg}</span>${esc(c.label)}`);
+    const b = el('button', 'cat', `<span class="cat-ic" style="background:${icon.color}">${icon.svg}</span>${esc(tr(c.label))}`);
     b.type = 'button';
+    b.dataset.label = c.label;
     b.onclick = () => {
       $('search-input').value = c.query;
       $('search-clear').classList.remove('hidden');
@@ -1380,9 +1383,10 @@ function openSearchFor(target) {
   const label = { home: 'Set your Home address', work: 'Set your Work address', save: 'Search for a place to save', stop: 'Add a stop on your way', from: 'Where are you starting from?' }[target];
   $('search-target').textContent = label ?? '';
   $('search-target').classList.toggle('hidden', !label);
-  $('search-input').placeholder = target ? 'Search for an address' : 'Where to?';
+  $('search-input').placeholder = target ? tr('Search for an address') : tr('Where to?');
   // Petrol or a clinic makes sense to drive to or stop at on the way, not as Home, Work or a trip's start.
   $('search-cats').classList.toggle('hidden', Boolean(target) && target !== 'stop');
+  for (const b of $('search-cats').children) b.lastChild.data = tr(b.dataset.label); // a language picked since
   showSearchHome();
   // Focus now, inside the tap: iPhones only bring the keyboard up for a focus made during the tap itself, and
   // ignored the old delayed one. The delayed one stays as a fallback for browsers that need a frame first.
@@ -1399,8 +1403,8 @@ function showSearchHome() {
 }
 
 function renderSearchHome() {
-  $('home-sub').textContent = state.home ? state.home.address || state.home.name : 'Set location';
-  $('work-sub').textContent = state.work ? state.work.address || state.work.name : 'Set location';
+  $('home-sub').textContent = state.home ? state.home.address || state.home.name : tr('Set location');
+  $('work-sub').textContent = state.work ? state.work.address || state.work.name : tr('Set location');
   const { saved, recent } = state.places;
   $('saved-head').classList.toggle('hidden', !saved.length);
   $('recent-head').classList.toggle('hidden', !recent.length);

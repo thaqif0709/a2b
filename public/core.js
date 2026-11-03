@@ -3,10 +3,12 @@
 
 // Shared app state, settings, storage and the API client.
 
+import { tr, trServer } from './i18n.js';
+
 export const $ = (id) => document.getElementById(id);
 
 export const DEFAULT_SETTINGS = {
-  voice: true, alerts: true, speed_warning: true, units: 'metric', theme: 'auto', avoid_tolls: false, avoid_highways: false, avoid_ferries: false, traffic_probe: false, map_pois: true, night_vehicle_lights: true, weather: true,
+  voice: true, alerts: true, speed_warning: true, units: 'metric', theme: 'auto', avoid_tolls: false, avoid_highways: false, avoid_ferries: false, traffic_probe: false, map_pois: true, night_vehicle_lights: true, weather: true, lang: 'auto',
 };
 
 export const state = {
@@ -63,7 +65,7 @@ export async function api(path, { method = 'GET', body, retry = true } = {}) {
     credentials: 'same-origin',
     signal: AbortSignal.timeout?.(API_TIMEOUT_MS),
   }).catch(() => {
-    throw Object.assign(new Error("Can't reach A2B. Check your connection and try again."), { status: 0 });
+    throw Object.assign(new Error(tr("Can't reach A2B. Check your connection and try again.")), { status: 0 });
   });
   const data = await res.json().catch(() => ({}));
   // Turned away for want of a spot: usually this device's spot lapsed (the app was away for over 5 minutes) or
@@ -71,8 +73,8 @@ export async function api(path, { method = 'GET', body, retry = true } = {}) {
   if (data.code === 'full' && retry && (await presenceHook.recheck?.())) return api(path, { method, body, retry: false });
   // Without a message of our own, a 429 or 5xx came from Cloudflare itself, e.g. the free plan's daily cap.
   const busy = res.status === 429 || res.status >= 500;
-  const fallback = busy ? 'A2B is busy right now (it runs on free servers during the beta). Try again in a minute.' : `Something went wrong (${res.status}).`;
-  if (!res.ok) throw Object.assign(new Error(data.error || fallback), { status: res.status, code: data.code });
+  const fallback = busy ? tr('A2B is busy right now (it runs on free servers during the beta). Try again in a minute.') : tr('Something went wrong ({status}).', { status: res.status });
+  if (!res.ok) throw Object.assign(new Error(trServer(data.error) || fallback), { status: res.status, code: data.code });
   return data;
 }
 
@@ -202,12 +204,12 @@ export function initials(name) {
 
 export function timeAgo(ms) {
   const s = Math.max(0, (Date.now() - ms) / 1000);
-  if (s < 60) return 'just now';
+  if (s < 60) return tr('just now');
   const m = Math.round(s / 60);
-  if (m < 60) return `${m} min ago`;
+  if (m < 60) return tr('{n} min ago', { n: m });
   const h = Math.round(m / 60);
-  if (h < 24) return `${h} h ago`;
-  return `${Math.round(h / 24)} d ago`;
+  if (h < 24) return tr('{n} h ago', { n: h });
+  return tr('{n} d ago', { n: Math.round(h / 24) });
 }
 
 // ---------- Voice ----------

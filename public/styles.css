@@ -687,8 +687,10 @@ body.driving .toast { top: calc(140px + var(--safe-top)); }
 .splash.out { opacity: 0; pointer-events: none; }
 @keyframes splash-in { from { transform: scale(0.8); opacity: 0; } to { transform: none; opacity: 1; } }
 
-/* First visit welcome: the waiting-screen card, a step above it. */
-.welcome { z-index: 19; }
+/* First visit welcome: the waiting-screen card, a step above it. Its top stays put rather than the card being
+   centred: each language makes it a different height, and the language buttons at its top mustn't move under the
+   finger. It scrolls on a short screen. */
+.welcome { z-index: 19; align-items: start; overflow-y: auto; padding-top: calc(max(24px, 6vh) + var(--safe-top)); }
 .welcome .gate-card { text-align: left; justify-items: start; }
 .welcome .gate-card img, .welcome .gate-card h2 { justify-self: center; }
 .w-lang { justify-self: center; display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }

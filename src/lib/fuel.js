@@ -8,11 +8,13 @@
 const URL_PRICES = 'https://api.data.gov.my/data-catalogue?id=fuelprice&sort=-date&limit=4';
 const UA = 'a2b-navigation/0.1 (+https://a2b-beta.pages.dev)';
 const FRESH_MS = 6 * 3600_000;
-const FIELDS = ['ron95', 'ron95_budi95', 'ron97', 'diesel', 'diesel_eastmsia'];
+// diesel_budi: the subsidised BUDI Diesel price. data.gov.my lists it without describing it; East Malaysia moved to
+// BUDI Diesel on 1 July 2026, and its diesel_eastmsia has been the Peninsular price since, so that one isn't used.
+const FIELDS = ['ron95', 'ron95_budi95', 'ron97', 'diesel', 'diesel_budi'];
 
 let kept = null; // { at, prices }
 
-// { date, ron95, ron95_budi95, ron97, diesel, diesel_eastmsia } in ringgit a litre, or null.
+// { date, ron95, ron95_budi95, ron97, diesel, diesel_budi } in ringgit a litre, or null.
 export async function fuelPrices({ now = Date.now() } = {}) {
   if (kept && now - kept.at < FRESH_MS) return kept.prices;
   try {

@@ -8,7 +8,7 @@
 // Two map caches: small long-lived files (map library, style, TileJSON, fonts, sprites) live in
 // MAPS and are never trimmed, so trimming and "Clear offline maps" can't evict the library or the
 // labels. Only versioned vector tiles live in TILES, which is trimmed to MAX_TILES.
-const CACHE = 'a2b-v46';
+const CACHE = 'a2b-v47';
 const PLACES = 'a2b-places-data-v1'; // persistent place-shard cache (public/places.js)
 const TILES = 'a2b-tiles-v1'; // versioned tiles only; kept across activates; cleared from Settings › Offline maps
 const MAPS = 'a2b-maps-v1'; // library, style, TileJSON, fonts, sprites; never trimmed

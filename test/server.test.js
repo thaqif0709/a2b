@@ -103,7 +103,7 @@ globalThis.fetch = async (url, init = {}) => {
       + `<node id="2" lat="${s}" lon="${w}"><tag k="barrier" v="toll_booth"/><tag k="name" v="Far booth"/></node></osm>`);
   }
   if (u.startsWith('https://api.data.gov.my/data-catalogue?id=fuelprice')) {
-    return Response.json([{ date: '2026-10-22', series_type: 'level', ron95: 4.32, ron95_budi95: 1.99, ron97: 4.8, diesel: 5.07, diesel_eastmsia: 2.15 }]);
+    return Response.json([{ date: '2026-10-22', series_type: 'level', ron95: 4.32, ron95_budi95: 1.99, ron97: 4.8, diesel: 5.07, diesel_eastmsia: 5.07, diesel_budi: 2.1 }]);
   }
   if (u.startsWith('https://overpass-api.de/')) {
     overpassCalls++;
@@ -1111,7 +1111,7 @@ test('presence check-ins admit new devices without a per-network throttle', asyn
 test('this week’s pump prices, for the fuel cost on routes', async () => {
   const r = await client()('GET', '/api/fuel');
   assert.equal(r.status, 200);
-  assert.deepEqual(r.body.prices, { date: '2026-10-22', ron95: 4.32, ron95_budi95: 1.99, ron97: 4.8, diesel: 5.07, diesel_eastmsia: 2.15 });
+  assert.deepEqual(r.body.prices, { date: '2026-10-22', ron95: 4.32, ron95_budi95: 1.99, ron97: 4.8, diesel: 5.07, diesel_budi: 2.1 });
 });
 
 test('an exit’s sign comes with its step, and the cues name it', async () => {

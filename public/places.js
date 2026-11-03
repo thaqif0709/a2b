@@ -15,12 +15,41 @@ const MAX_RESULTS = 8;
 const RADIUS_KM = 60; // beyond this a place isn't "nearby" (the other search covers the rest)
 const MAX_FILES_PER_WORD = 8;
 
-const cache = new Map(); // url -> Promise<json|null>
+const inflight = new Map(); // url -> Promise<json|null>
+const PLACES_CACHE = 'a2b-places-data-v1';
+
+function shouldPersist(init) {
+  return init?.cache !== 'no-cache' && init?.cache !== 'no-store';
+}
+
 function getJson(url, init) {
-  if (!cache.has(url)) {
-    cache.set(url, fetch(url, init).then((r) => (r.ok ? r.json() : null)).catch(() => null));
-  }
-  return cache.get(url);
+  if (inflight.has(url)) return inflight.get(url);
+  const persist = shouldPersist(init);
+  const promise = (async () => {
+    if (persist && typeof caches !== 'undefined' && typeof caches.open === 'function') {
+      try {
+        const cache = await caches.open(PLACES_CACHE);
+        const hit = await cache.match(url);
+        if (hit) return await hit.json();
+      } catch {}
+    }
+    try {
+      const res = await fetch(url, init);
+      if (!res || !res.ok) return null;
+      const data = await res.json();
+      if (persist && typeof caches !== 'undefined' && typeof caches.open === 'function') {
+        try {
+          const cache = await caches.open(PLACES_CACHE);
+          await cache.put(url, new Response(JSON.stringify(data), { headers: { 'content-type': 'application/json' } }));
+        } catch {}
+      }
+      return data;
+    } catch {
+      return null;
+    }
+  })();
+  inflight.set(url, promise);
+  return promise;
 }
 
 let indexPromise = null;

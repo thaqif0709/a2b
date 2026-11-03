@@ -15,6 +15,7 @@ import { loadCameras, camerasAlong } from './lib/cameras.js';
 import { loadSchools, schoolsAlong } from './lib/schools.js';
 import { parkingNear, parkingQuery, parkingResults } from './lib/parking.js';
 import { plazaDetails } from './lib/tolls.js';
+import { fuelPrices } from './lib/fuel.js';
 import { refreshChargers, allChargers } from './lib/chargers.js';
 import { reportsRepo } from './lib/reports.js';
 import { trainReportsRepo } from './lib/train-reports.js';
@@ -455,6 +456,12 @@ async function route(request, env, url) {
     const res = json({ parking: await parkingNear(env, [lng, lat]) }, 200, { 'cache-control': 'public, max-age=86400' });
     if (cache) await cache.put(key, res.clone());
     return res;
+  }
+
+  // This week's pump prices, for the fuel estimate on routes: src/lib/fuel.js.
+  if (path === '/api/fuel' && method === 'GET') {
+    await needSpot();
+    return json({ prices: await fuelPrices() }, 200, { 'cache-control': 'private, max-age=21600' });
   }
 
   // EV chargers (src/lib/chargers.js): all of them, a few hundred small rows, for the phone to search and draw. Only

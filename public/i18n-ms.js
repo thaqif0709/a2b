@@ -154,6 +154,13 @@ export default {
     'Sesetengah tempat dikhaskan untuk pemandu yang ada akaun, jadi daftar (percuma) supaya anda masuk lebih cepat.',
   '{active} of {max} drivers on A2B now': '{active} daripada {max} pemandu di A2B sekarang',
 
+  // ---------- panels.js: Settings › Fuel ----------
+  'Fuel spent': 'Minyak dibelanjakan',
+  "An estimate: how far you drove by car with A2B, at your car's fuel use and that week's pump price. Electric cars count as nothing. Kept on this phone only.": 'Anggaran: jarak yang anda pandu dengan kereta menggunakan A2B, ikut penggunaan minyak kereta anda dan harga pam minggu itu. Kereta elektrik dikira sifar. Disimpan dalam telefon ini sahaja.',
+  'This week': 'Minggu ini',
+  'This month': 'Bulan ini',
+  'All time': 'Sepanjang masa',
+
   // ---------- core.js and geo.js ----------
   "Can't reach A2B. Check your connection and try again.": 'Tidak dapat menghubungi A2B. Semak sambungan anda dan cuba lagi.',
   'A2B is busy right now (it runs on free servers during the beta). Try again in a minute.':

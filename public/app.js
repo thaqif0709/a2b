@@ -29,6 +29,7 @@ import { isSchoolTime, schoolAhead, schoolLimit } from './school-zones.js';
 import { DeadReckoner, shouldEstimate, nearTunnel, pointAt, BAD_ACCURACY_M } from './dead-reckoning.js';
 import { matchesWordStarts } from './text.js';
 import { fuelCost, fuelLabel, DEFAULT_FUEL, DEFAULT_SIZE } from './trip-cost.js';
+import { Odometer, logDriven } from './fuel-log.js';
 import { restStopsAlong, nextRestStop, BreakClock } from './rest-stops.js';
 import { shouldCheck as shouldCheckFaster, pickFaster, offerText, checkBody, OFFER_FOR_MS, KEEP_FOR_MS } from './faster-route.js';
 import { signPlaces } from './signs.js';
@@ -1032,6 +1033,7 @@ function handleFix(fix, first = false) {
   // Traffic sharing only buffers real drives: walking, browsing the map, and demo drives never become traffic.
   // Only cars' speeds are shared: walking speeds would look like a jam, and motorcycles filter past jams.
   if (mode === 'drive' && travel === 'drive' && !sim) noteProbeFix(fix);
+  if (mode === 'drive' && travel === 'drive' && !sim) noteDriven(fix); // the fuel spent: by car, for real
   local.set('lastPos', fix.lngLat.map((v) => Math.round(v * 1e4) / 1e4));
   if (mode === 'watch') return; // the viewer's own position isn't part of someone else's drive
   lastFixAt = Date.now(); // a train trip reads state.pos each second (rideTick), while it's fresh
@@ -1321,6 +1323,7 @@ function wireUi() {
   });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && (mode === 'drive' || mode === 'ride')) requestWakeLock();
+    if (document.visibilityState === 'hidden') logFuel(); // the phone may close the page from here
   });
 }
 
@@ -2608,6 +2611,30 @@ function loadFuelPrices() {
 const carFuel = () => ({ fuel: local.get('fuel', DEFAULT_FUEL), size: local.get('carSize', DEFAULT_SIZE) });
 const routeFuel = (r) => (travel === 'drive' ? fuelLabel(fuelCost(r.distance, carFuel(), fuelPrices), carFuel().fuel) : ''); // not on foot
 
+// ---------- Fuel spent ----------
+// What real drives by car actually covered, priced as it's driven and added to this phone's log every half
+// kilometre or so (so a page the phone closes mid-drive keeps most of it), and when the drive ends. Settings shows
+// the totals. See fuel-log.js.
+const LOG_EVERY_M = 500;
+let odometer = null, logAt = LOG_EVERY_M;
+
+function noteDriven(fix) {
+  if (!odometer) return;
+  odometer.add(fix);
+  if (odometer.metres < logAt) return;
+  logFuel();
+  logAt = odometer.metres + LOG_EVERY_M; // from 0 once logged; still waiting for prices, asks again 500 m on
+}
+
+// Waits for this week's prices while the drive goes on; at its end (`end`), logs the distance even without them.
+function logFuel(end = false) {
+  if (!odometer?.metres) return;
+  const car = carFuel();
+  const rm = fuelCost(odometer.metres, car, fuelPrices); // null for an electric car, or without prices
+  if (rm == null && car.fuel !== 'ev' && !end) return loadFuelPrices();
+  local.set('fuelLog', logDriven(local.get('fuelLog'), odometer.take(), rm));
+}
+
 function fitRoutes() {
   const b = new maplibregl.LngLatBounds();
   for (const r of routes) for (const c of r.coords) b.extend(c);
@@ -2872,6 +2899,9 @@ function startDrive() {
   renderStopMenu();
   alerted.clear();
   driveStarted = Date.now();
+  odometer = new Odometer();
+  logAt = LOG_EVERY_M;
+  loadFuelPrices(); // to price what's driven (asked already, with the routes, unless that failed)
   saveTrip('drive');
   routeLabels.splice(0).forEach((m) => m.remove());
   $('preview').classList.add('hidden');
@@ -3398,6 +3428,8 @@ async function endDrive(arrived) {
   stopSimulation();
   stopTunnelWatch();
   discardProbeBuffer(); // fixes buffered on this drive must not leak into a later batch
+  logFuel(true);
+  odometer = null;
   parkingFor = null;
   $('parking-label').textContent = 'Parking nearby';
   $('parking').classList.add('hidden');

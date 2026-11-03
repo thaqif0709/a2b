@@ -155,6 +155,13 @@ export default {
     '部分位子为有账户的司机保留，所以（免费）注册可以更快进入。',
   '{active} of {max} drivers on A2B now': 'A2B 现有 {active}/{max} 位司机',
 
+  // ---------- panels.js: Settings › Fuel ----------
+  'Fuel spent': '油费支出',
+  "An estimate: how far you drove by car with A2B, at your car's fuel use and that week's pump price. Electric cars count as nothing. Kept on this phone only.": '估算：你用 A2B 开车行驶的距离，按你车子的油耗和当周油价计算。电动车不计油费。只保存在这部手机上。',
+  'This week': '本周',
+  'This month': '本月',
+  'All time': '全部',
+
   // ---------- core.js and geo.js ----------
   "Can't reach A2B. Check your connection and try again.": '无法连接 A2B。请检查网络后重试。',
   'A2B is busy right now (it runs on free servers during the beta). Try again in a minute.':

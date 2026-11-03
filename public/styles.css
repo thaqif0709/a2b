@@ -552,6 +552,8 @@ body.walking #speedo, body.walking #limit, body.walking #toll-chip, body.walking
 .stat { background: var(--bg-2); border-radius: 12px; padding: 8px; text-align: center; }
 .stat b { font-size: 18px; }
 .stat small { display: block; font-size: 12px; }
+.fuel-spent { padding: 0 18px 12px; }
+.fuel-spent b { font-size: 16px; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .menu-list { padding: 8px 0; }
 .menu-row { width: 100%; display: flex; align-items: center; gap: 14px; padding: 13px 18px; text-align: left; font-size: 17px; }
 .menu-row:active { background: var(--bg-2); }

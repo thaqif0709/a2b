@@ -36,9 +36,13 @@ export function fuelCost(metres, { fuel = DEFAULT_FUEL, size = DEFAULT_SIZE } = 
   return (metres / 1000) * (per100 / 100) * price;
 }
 
-// "~RM 3.40 petrol" for a route card, or '' when there's no estimate: to 10 sen, whole ringgit from RM 100.
+// "~RM 3.40": to 10 sen, whole ringgit from RM 100.
+export function rmLabel(amount) {
+  return `~RM ${amount < 100 ? (Math.round(amount * 10) / 10).toFixed(2) : Math.round(amount).toString()}`;
+}
+
+// "~RM 3.40 petrol" for a route card, or '' when there's no estimate.
 export function fuelLabel(amount, fuel = DEFAULT_FUEL) {
   if (amount == null) return '';
-  const rm = amount < 100 ? (Math.round(amount * 10) / 10).toFixed(2) : Math.round(amount).toString();
-  return `~RM ${rm} ${isDiesel(fuel) ? 'diesel' : 'petrol'}`;
+  return `${rmLabel(amount)} ${isDiesel(fuel) ? 'diesel' : 'petrol'}`;
 }

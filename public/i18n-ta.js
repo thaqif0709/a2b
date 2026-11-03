@@ -157,6 +157,13 @@ export default {
     'சில இடங்கள் கணக்கு உள்ள ஓட்டுநர்களுக்கு ஒதுக்கப்பட்டுள்ளன, எனவே (இலவசமாக) பதிவு செய்தால் விரைவில் உள்ளே செல்லலாம்.',
   '{active} of {max} drivers on A2B now': 'இப்போது A2B-இல் {max}-இல் {active} ஓட்டுநர்கள்',
 
+  // ---------- panels.js: Settings › Fuel ----------
+  'Fuel spent': 'எரிபொருள் செலவு',
+  "An estimate: how far you drove by car with A2B, at your car's fuel use and that week's pump price. Electric cars count as nothing. Kept on this phone only.": 'ஒரு மதிப்பீடு: A2B உடன் நீங்கள் காரில் ஓட்டிய தூரம், உங்கள் காரின் எரிபொருள் பயன்பாடு மற்றும் அந்த வாரத்தின் பம்ப் விலையில். மின்சார கார்களுக்குச் செலவு இல்லை. இந்தத் தொலைபேசியில் மட்டுமே வைக்கப்படும்.',
+  'This week': 'இந்த வாரம்',
+  'This month': 'இந்த மாதம்',
+  'All time': 'எல்லா நேரமும்',
+
   // ---------- core.js and geo.js ----------
   "Can't reach A2B. Check your connection and try again.": 'A2B-ஐ அணுக முடியவில்லை. இணைப்பைச் சரிபார்த்து மீண்டும் முயலுங்கள்.',
   'A2B is busy right now (it runs on free servers during the beta). Try again in a minute.':

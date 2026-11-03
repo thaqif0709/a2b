@@ -9,11 +9,13 @@ import { stopSharing } from './probe.js';
 import { pickVoice } from './voice.js';
 import { appVersion } from './update.js';
 import { VEHICLES, COLORS, DEFAULT_COLOR } from './vehicle3d.js';
-import { FUELS, SIZES, DEFAULT_FUEL, DEFAULT_SIZE } from './trip-cost.js';
+import { FUELS, SIZES, DEFAULT_FUEL, DEFAULT_SIZE, rmLabel } from './trip-cost.js';
+import { fuelSummary } from './fuel-log.js';
+import { formatDistance } from './geo.js';
 import { onlineLine } from './presence.js';
 import { tileCount, clearOfflineTiles, originUsage } from './offline.js';
 import { openReview, suggestionSummary, syncDriverPlaces } from './suggest.js';
-import { LANGUAGES, useLang } from './i18n.js';
+import { LANGUAGES, useLang, tr } from './i18n.js';
 
 let ctx; // callbacks from app.js
 let authMode = 'signup';
@@ -326,6 +328,14 @@ export function openProbeConsent() {
   };
 }
 
+// What the drives on this phone have cost in fuel (see fuel-log.js): kept here, not with the account.
+function fuelSpent() {
+  const s = fuelSummary(local.get('fuelLog'));
+  const tile = (label, { m, rm }) => `<div class="stat"><small>${label}</small><b>${rmLabel(rm)}</b><small>${formatDistance(m, state.settings.units)}</small></div>`;
+  return `<div class="set-row"><span>${tr('Fuel spent')}<small>${tr("An estimate: how far you drove by car with A2B, at your car's fuel use and that week's pump price. Electric cars count as nothing. Kept on this phone only.")}</small></span></div>
+      <div class="stats fuel-spent">${tile(tr('This week'), s.week)}${tile(tr('This month'), s.month)}${tile(tr('All time'), s.all)}</div>`;
+}
+
 export function openSettings() {
   const u = state.user;
   const body = openPanel('Settings', `
@@ -365,6 +375,7 @@ export function openSettings() {
       <div class="set-row"><span>Car size<small>Small 6, medium 7.5, SUV or MPV 10 litres per 100 km</small></span><div class="choice" id="s-car-size">${SIZES
         .map(([v, l]) => `<button data-v="${v}" class="${local.get('carSize', DEFAULT_SIZE) === v ? 'on' : ''}">${l}</button>`)
         .join('')}</div></div>
+      ${fuelSpent()}
     </div>
     <div class="set-group"><h3>Offline maps</h3>
       <label class="set-row"><span>Save maps for drives<small>Keep the map along your route on this phone, for tunnels and dead spots</small></span><input type="checkbox" class="switch" id="s-offline" ${local.get('offlineMaps', true) ? 'checked' : ''}></label>

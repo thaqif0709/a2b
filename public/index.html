@@ -90,6 +90,8 @@
       <button id="btn-from-clear" class="icon-btn hidden" aria-label="Start from your location"><svg viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg></button>
     </div>
     <div id="travel-seg" class="seg travel-seg" role="tablist"><button data-travel="drive">Drive</button><button data-travel="motorcycle">Motorbike</button><button data-travel="walk">Walk</button><button data-travel="transit">Train</button></div>
+    <div id="preview-stops" aria-label="Stops in travel order"></div>
+    <button id="btn-preview-add-stop" class="btn ghost">Add a stop · best order automatically</button>
     <div id="route-list" class="route-list"></div>
     <div id="route-weather" class="route-weather hidden" aria-live="polite"></div>
     <p id="route-status" class="hint"></p>
@@ -157,6 +159,7 @@
       </button>
       <div id="eta-menu" class="eta-menu">
         <div id="trip-dest" class="trip-dest"></div>
+        <div id="trip-stops" aria-label="Stops in travel order"></div>
         <button id="btn-add-stop" class="menu-row"><span class="m-ic addstop"></span><span id="add-stop-label">Add a stop</span></button>
         <button id="btn-parking" class="menu-row"><span class="m-ic parking"></span><span id="parking-label">Parking nearby</span></button>
         <button id="btn-share-drive" class="menu-row"><span class="m-ic share"></span><span id="share-label">Share drive</span></button>

@@ -76,6 +76,7 @@ let dest = null;
 // How to get there: 'drive' | 'motorcycle' | 'walk' | 'transit'. Not remembered: every trip starts on Drive, so someone who walked once
 // isn't given footpaths (no cameras, alerts or tolls) next time they're in the car. See resetTravel.
 let travel = 'drive';
+let passedStopSteps = new Set();
 let stops = []; // places to visit on the way, in order, not yet reached
 let origin = null, originMarker = null; // where routes start when it isn't where you are (picked in the preview)
 let routes = [];
@@ -149,7 +150,8 @@ const tripSheet = (() => {
 
   function init() {
     justDragged = sheetGesture(bar(), {
-      start: () => {
+      start: (e) => {
+        if (open && e.target.closest('#eta-menu')) return false;
         from = open ? 0 : closedOffset();
         return true;
       },
@@ -1303,9 +1305,10 @@ function wireUi() {
   };
   $('btn-share-drive').onclick = shareDrive;
   $('btn-stop-share').onclick = stopSharing;
+  $('btn-preview-add-stop').onclick = () => { autoGo.stop(); openSearchFor('stop'); };
   $('btn-add-stop').onclick = () => {
     tripSheet.set(false);
-    if (stops.length) return removeStop();
+    if (stops.length >= 3) return toast('You can add up to 3 stops. Remove one to add another.');
     openSearchFor('stop');
   };
   $('btn-arrived-done').onclick = () => {
@@ -1714,10 +1717,13 @@ function updateSaveStar() {
 
 // ================= Preview: destination + route options =================
 async function openPreview(place) {
+  if (!resuming && dest && (dest.lng !== place.lng || dest.lat !== place.lat)) stops = [];
+  if (travel === 'transit') stops = [];
   armBack();
   hideContextMenu();
   mode = 'preview';
   dest = place;
+  renderStopMenu();
   routes = [];
   selected = 0;
   $('browse-ui').classList.add('hidden');
@@ -1760,7 +1766,7 @@ async function openPreview(place) {
   const asked = travel;
   try {
     loadFuelPrices();
-    const found = await requestRoutes(from ?? map.getCenter().toArray(), [place.lng, place.lat]);
+    const found = await requestRoutes(from ?? map.getCenter().toArray(), [place.lng, place.lat], undefined, stops);
     // Gone, or switched to Walk or Train while these were on their way: they mustn't come back (or start a drive).
     if (mode !== 'preview' || dest !== place || travel !== asked) return;
     routes = found;
@@ -1906,7 +1912,7 @@ let resuming = null, resumeLeg = 0, savedLeg = -1;
 
 function saveTrip(kind) {
   savedLeg = kind === 'ride' && guide ? guide.i : -1;
-  local.set('activeTrip', { kind, travel, dest, at: Date.now(), ...(kind === 'ride' && guide && { trip: guide.trip, leg: guide.i }) });
+  local.set('activeTrip', { kind, travel, dest, ...(kind === 'drive' && { stops }), at: Date.now(), ...(kind === 'ride' && guide && { trip: guide.trip, leg: guide.i }) });
 }
 
 function forgetTrip() {
@@ -1931,6 +1937,7 @@ function offerResume() {
     $('resume').classList.add('hidden');
     speak(`Continuing to ${t.dest.name}.`); // inside the tap: phones only allow speech that a tap started
     resuming = t;
+    stops = Array.isArray(t.stops) ? t.stops.slice(0, 3) : [];
     resumeLeg = 0;
     travel = t.kind === 'ride' ? 'transit' : ['walk', 'motorcycle'].includes(t.travel) ? t.travel : 'drive';
     syncVehicle();
@@ -2481,12 +2488,12 @@ function checkWeather() {
 }
 
 // `check`: a faster-route check's checkBody (faster-route.js), so the server can skip what an unwanted answer needs.
-async function requestRoutes(from, to, heading, via = [], { check = null } = {}) {
+async function requestRoutes(from, to, heading, via = [], { check = null, optimize = false } = {}) {
   const s = state.settings;
   const { routes: rs, closures_ignored: closuresIgnored, construction_avoided: constructionAvoided } = await api('/api/route', {
     method: 'POST',
     body: {
-      from, to, heading, travel,
+      from, to, heading, travel, optimize,
       ...(check && { check }),
       via: via.map((p) => [p.lng, p.lat]),
       units: s.units,
@@ -2868,6 +2875,7 @@ function toLocalInput(d) {
 
 // ================= Driving =================
 function startDrive() {
+  if (rerouting) return;
   autoGo.stop();
   const route = routes[selected];
   if (!route) return;
@@ -2892,10 +2900,10 @@ function startDrive() {
   map.getSource('school-pin')?.setData(emptyFc());
   pinnedSchool = null;
   startTunnelWatch();
+  passedStopSteps = new Set();
   nav = new Navigator(route, { units: state.settings.units });
   nav.spoken.add('depart');
   live = null;
-  stops = [];
   renderStopMenu();
   alerted.clear();
   driveStarted = Date.now();
@@ -2985,10 +2993,14 @@ function driveTick(fix) {
   }
   if (share && !fix.estimated) pushShare(); // viewers see the last real position, not a guess
 
-  const stopStep = nav.steps.findIndex((st) => st.type === 'stop');
-  if (stops.length && stopStep >= 0 && live.stepIndex >= stopStep) {
+  // Consume each intermediate arrival once on this route, using a real fix near the stop.
+  for (let i = 0; i <= live.stepIndex && stops.length; i++) {
+    if (nav.steps[i]?.type !== 'stop' || passedStopSteps.has(i) || fix.estimated) continue;
+    if (distance(fix.lngLat, [stops[0].lng, stops[0].lat]) > Math.max(60, Math.min(fix.accuracy ?? 0, 100))) break;
+    passedStopSteps.add(i);
     toast(`Reached ${stops.shift().name}`);
     renderStopMenu();
+    saveTrip('drive');
   }
 
   $('offroute').classList.toggle('hidden', !live.offRoute);
@@ -3193,6 +3205,7 @@ async function reroute(fix, { force = false, note } = {}) {
 function adoptRoute(route, at) {
   keepTrail(at);
   hideFaster();
+  passedStopSteps = new Set();
   nav = new Navigator(route, { units: state.settings.units });
   nav.spoken.add('depart');
   computeOnRoute();
@@ -3276,13 +3289,41 @@ if (typeof location !== 'undefined' && ['localhost', '127.0.0.1'].includes(locat
 }
 
 async function addStop(place) {
-  if (mode !== 'drive' || !state.pos) return;
-  stops = [place];
-  renderStopMenu();
+  if (!['drive', 'preview'].includes(mode) || rerouting || !dest || travel === 'transit') return;
+  if (!state.pos && !(mode === 'preview' && origin)) return toast('Waiting for your location.');
+  const askedMode = mode;
+  const askedTravel = travel;
+  autoGo.stop();
+  if (stops.length >= 3) return toast('You can add up to 3 stops.');
+  if ([dest, ...stops].some((p) => distance([p.lng, p.lat], [place.lng, place.lat]) < 30)) return toast('This place is already on your trip.');
+  const pending = [...stops, place];
+  const target = dest;
+  rerouting = true;
   toast(`Adding a stop at ${place.name}…`);
-  await reroute(state.pos, { force: true, note: `Stop added. Going via ${place.name}.` });
-  if (stopMarker) stopMarker.remove();
-  stopMarker = new maplibregl.Marker({ element: el('div', 'drop-pin', DROP_PIN), anchor: 'bottom' }).setLngLat([place.lng, place.lat]).addTo(map);
+  try {
+    const from = mode === 'preview' && origin ? [origin.lng, origin.lat] : state.pos.lngLat;
+    const rs = await requestRoutes(from, [target.lng, target.lat], mode === 'drive' ? state.pos.heading ?? undefined : undefined, pending, { optimize: true });
+    if (mode !== askedMode || dest !== target || travel !== askedTravel) return;
+    const route = rs[0];
+    stops = route.stopOrder ? route.stopOrder.map((i) => pending[i]) : pending;
+    if (mode === 'preview') {
+      routes = rs;
+      selected = 0;
+      renderRouteOptions();
+      renderPeekSummary();
+      drawRoutes();
+      fitRoutes();
+      loadWeather(route);
+      $('btn-go').disabled = false;
+    } else adoptRoute(route, state.pos.lngLat);
+    renderStopMenu();
+    if (mode === 'drive') saveTrip('drive');
+    speak(`Stop added. Next stop: ${stops[0].name}.`);
+  } catch (e) {
+    toast(e.message || 'Could not add this stop. Please try again.');
+  } finally {
+    rerouting = false;
+  }
 }
 
 // ---------- Parking near the destination ----------
@@ -3382,24 +3423,58 @@ async function chooseParking(p) {
   if (state.pos) await reroute(state.pos, { force: true, note: p ? `Going to ${p.name}.` : `Going to ${dest.name}.` });
 }
 
-async function removeStop() {
-  stops = [];
-  stopMarker?.remove();
-  stopMarker = null;
-  renderStopMenu();
-  if (state.pos) await reroute(state.pos, { force: true, note: 'Stop removed.' });
+async function removeStop(index) {
+  if (!['drive', 'preview'].includes(mode) || rerouting || !dest) return;
+  if (!state.pos && !(mode === 'preview' && origin)) return toast('Waiting for your location.');
+  const askedMode = mode;
+  const askedTravel = travel;
+  autoGo.stop();
+  const pending = stops.filter((_, i) => i !== index);
+  const target = dest;
+  rerouting = true;
+  try {
+    const from = mode === 'preview' && origin ? [origin.lng, origin.lat] : state.pos.lngLat;
+    const rs = await requestRoutes(from, [target.lng, target.lat], mode === 'drive' ? state.pos.heading ?? undefined : undefined, pending);
+    if (mode !== askedMode || dest !== target || travel !== askedTravel) return;
+    stops = pending;
+    if (mode === 'preview') {
+      routes = rs;
+      selected = 0;
+      renderRouteOptions();
+      renderPeekSummary();
+      drawRoutes();
+      fitRoutes();
+      loadWeather(rs[0]);
+    } else adoptRoute(rs[0], state.pos.lngLat);
+    renderStopMenu();
+    if (mode === 'drive') saveTrip('drive');
+    speak('Stop removed.');
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    rerouting = false;
+  }
 }
 
 function renderStopMenu() {
-  $('add-stop-label').textContent = stops.length ? `Remove stop (${stops[0].name})` : 'Add a stop';
-  // Where this drive is going, so it's easy to check the right place was picked.
+  $('add-stop-label').textContent = stops.length ? `Add a stop (${stops.length}/3)` : 'Add a stop';
   $('trip-dest').innerHTML = dest
-    ? `<span class="trip-pin">${DEST_PIN}</span><span><b>${esc(dest.name)}</b><small>${esc([stops[0] && `via ${stops[0].name}`, dest.address].filter(Boolean).join(' · '))}</small></span>`
+    ? `<span class="trip-pin">${DEST_PIN}</span><span><b>${esc(dest.name)}</b><small>${esc([stops.length && `via ${stops.map((p) => p.name).join(' → ')}`, dest.address].filter(Boolean).join(' · '))}</small></span>`
     : '';
-  if (!stops.length && stopMarker) {
-    stopMarker.remove();
-    stopMarker = null;
+  $('btn-preview-add-stop').classList.toggle('hidden', travel === 'transit');
+  for (const list of [$('trip-stops'), $('preview-stops')]) {
+    list.innerHTML = '';
+    stops.forEach((p, i) => {
+      const button = el('button', 'menu-row');
+      button.textContent = `${i + 1}. ${p.name} · Remove`;
+      button.setAttribute('aria-label', `Remove stop ${i + 1}: ${p.name}`);
+      button.onclick = () => removeStop(i);
+      list.append(button);
+    });
   }
+  stopMarker?.remove();
+  stopMarker = null;
+  if (stops[0]) stopMarker = new maplibregl.Marker({ element: el('div', 'drop-pin', DROP_PIN), anchor: 'bottom' }).setLngLat([stops[0].lng, stops[0].lat]).addTo(map);
 }
 
 function overview() {

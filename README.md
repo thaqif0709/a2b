@@ -315,3 +315,7 @@ timetables from Prasarana and KTMB through [data.gov.my](https://data.gov.my) (C
 forecasts and warnings from [MET Malaysia](https://www.met.gov.my) through [data.gov.my](https://data.gov.my) (CC BY
 4.0), humidity from [MET Norway](https://api.met.no) (CC BY 4.0), and from
 [Apple Weather](https://weatherkit.apple.com/legal-attribution.html) when WeatherKit is set up.
+
+### Multiple stops on a drive
+
+Pick your final destination, then use **Add a stop** on the route preview or in Trip options while driving. Up to three intermediate stops can be added. Adding a stop asks the existing Valhalla routing service for the best road-based order, keeping the start and final destination fixed. Regular reroutes preserve that order. Each stop has its own Remove button; a failed addition keeps the previous route. Train trips do not support intermediate stops.

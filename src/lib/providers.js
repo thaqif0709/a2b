@@ -221,7 +221,10 @@ export function buildRouteRequest({ from, to, via = [], avoid = {}, units = 'met
 // { routes, dropped }: dropped is true when no route got round the avoided spots, so they were ignored.
 export async function fetchRoutes(env, opts) {
   const body = buildRouteRequest(opts);
-  const res = await upstream(env.ROUTING_URL || 'https://valhalla1.openstreetmap.de/route', {
+  const base = env.ROUTING_URL || 'https://valhalla1.openstreetmap.de/route';
+  const optimize = opts.optimize === true && opts.via?.length > 1;
+  const endpoint = optimize ? base.replace(/\/route(?=\?|$)/, '/optimized_route') : base;
+  const res = await upstream(endpoint, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'user-agent': UA },
     body: JSON.stringify(body),
@@ -233,7 +236,17 @@ export async function fetchRoutes(env, opts) {
     throw httpError(data.error || 'No route found between these places.', res.status === 400 ? 404 : 502);
   }
   const trips = [data.trip, ...(data.alternates ?? []).map((a) => a.trip)].filter(Boolean);
-  return { routes: trips.map((t) => normalizeTrip(t, opts.units)), dropped: false };
+  return { routes: trips.map((t) => {
+    const route = normalizeTrip(t, opts.units);
+    if (optimize) {
+      const order = t.locations?.slice(1, -1).map((l) => l.original_index - 1);
+      if (!order || order.length !== opts.via.length || new Set(order).size !== order.length || order.some((i) => !Number.isInteger(i) || i < 0 || i >= opts.via.length)) {
+        throw httpError('The router could not order these stops. Please try again.', 502);
+      }
+      route.stopOrder = order;
+    }
+    return route;
+  }), dropped: false };
 }
 
 // The middle of the road a driver is on, found by the router (heading picks the right road at a junction).

@@ -5,6 +5,9 @@
 // glance while driving. {name} and the like are filled in by the app and stay as they are.
 
 export default {
+  'Stops in travel order': 'Hentian mengikut urutan perjalanan',
+  'Add a stop · best order automatically': 'Tambah hentian · susunan terbaik secara automatik',
+  'The router could not order these stops. Please try again.': 'Hentian ini tidak dapat disusun. Sila cuba lagi.',
   // ---------- index.html: labels read out by screen readers ----------
   'Map': 'Peta',
   'Sound': 'Bunyi',

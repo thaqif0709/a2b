@@ -820,3 +820,9 @@ body.driving .toast { top: calc(140px + var(--safe-top)); }
   .ride-sheet { max-height: min(var(--tall), 62dvh); }
   #ride-ui .map-tools { bottom: calc(14px + var(--safe-bottom)); }
 }
+
+/* Multiple stops leave the remaining trip actions reachable on short screens. */
+.eta-bar.open { touch-action: pan-y; }
+.eta-grab, .eta-main { touch-action: none; }
+.eta-bar.open .eta-menu { max-height: calc(100dvh - 190px); overflow-y: auto; overscroll-behavior: contain; }
+.eta-menu > #trip-stops { grid-column: 1 / -1; }

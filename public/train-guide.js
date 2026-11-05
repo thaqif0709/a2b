@@ -148,7 +148,7 @@ export function alreadyOn(leg, track, fix, approach = leg.approach?.length > 1 ?
 }
 
 // ---------- What to say ----------
-const stationName = (s) => (s.name === 'Destination' ? 'your destination' : `${s.name} station`);
+const stationName = (s) => (s.name === 'Destination' ? 'your destination' : `${s.name} ${s.kind === 'Bus' ? 'stop' : 'station'}`);
 export const boardText = (leg) => `Take the ${leg.line.name} towards ${leg.towards}.`;
 export const ridingText = (leg, stopsToGo) => `${stopsToGo} stop${stopsToGo > 1 ? 's' : ''} to ${leg.to.name}.`;
 export const alertText = (leg) => `Next stop: ${leg.to.name}. Get off here.`;
@@ -159,7 +159,7 @@ export const walkText = (leg) => `Walk to ${stationName(leg.to)}.`;
 // otherwise the vehicle from Settings
 // (the chevron unless the car was picked).
 export function markerFor({ mode, legMode, vehicle }) {
-  if (mode === 'ride') return legMode === 'train' ? 'train' : 'chevron';
+  if (mode === 'ride') return (legMode === 'train' || legMode === 'bus') ? 'train' : 'chevron';
   return vehicle === 'car' ? 'car' : 'chevron';
 }
 
@@ -199,7 +199,7 @@ export class TrainGuide {
     this.closest = Infinity; // on a walk: the nearest you've been to where it goes
     this.walkLeft = null;
     this.track = this.trackFor(this.i);
-    if (leg.mode === 'train') {
+    if ((leg.mode === 'train' || leg.mode === 'bus')) {
       this.times = leg.stations.map((s) => s[3]);
       this.alongs = stationAlongs(this.track, leg.stations);
       // Drawn along the real track, not just station to station (KTM's feed has no tracks: on a curve that straight
@@ -226,9 +226,9 @@ export class TrainGuide {
     this.enterLeg(now);
     const leg = this.leg;
     const after = this.trip.legs[this.i + 1];
-    if (leg.mode === 'train') events.push({ type: was.mode === 'train' ? 'change' : 'at-station', text: was.mode === 'train' ? changeText(leg) : boardText(leg) });
-    else if (was.mode === 'train' && after?.mode === 'train') events.push({ type: 'change', text: `Get off. ${changeText(after)}` });
-    else if (was.mode === 'train') events.push({ type: 'alight', text: `Get off here. ${walkText(leg)}` });
+    if ((leg.mode === 'train' || leg.mode === 'bus')) events.push({ type: (was.mode === 'train' || was.mode === 'bus') ? 'change' : 'at-station', text: (was.mode === 'train' || was.mode === 'bus') ? changeText(leg) : boardText(leg) });
+    else if ((was.mode === 'train' || was.mode === 'bus') && (after?.mode === 'train' || after?.mode === 'bus')) events.push({ type: 'change', text: `Get off. ${changeText(after)}` });
+    else if ((was.mode === 'train' || was.mode === 'bus')) events.push({ type: 'alight', text: `Get off here. ${walkText(leg)}` });
   }
 
   // On the train, from `along` metres along this leg's track (0 and `eta` seconds out when still heading for its
@@ -252,7 +252,7 @@ export class TrainGuide {
   catchUp(now, fix, events) {
     for (let k = this.trip.legs.length - 1; k > this.i; k--) {
       const leg = this.trip.legs[k];
-      if (leg.mode !== 'train') continue;
+      if ((leg.mode !== 'train' && leg.mode !== 'bus')) continue;
       const hit = alreadyOn(leg, this.trackFor(k), fix);
       if (!hit) continue;
       this.i = k;
@@ -308,7 +308,7 @@ export class TrainGuide {
     if (this.done) return null;
     const leg = this.leg;
     if (leg.mode === 'walk') return leg.to.name === 'Destination' ? 'I’ve arrived' : `I’m at ${leg.to.name}`;
-    if (this.phase === 'wait') return 'I’m on the train';
+    if (this.phase === 'wait') return leg.mode === 'bus' ? 'I’m on the bus' : 'I’m on the train';
     return `I’m at ${leg.stations[this.approaching ? 0 : nextStop(this.alongs, this.along)][0]}`;
   }
 

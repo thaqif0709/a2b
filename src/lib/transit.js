@@ -10,6 +10,7 @@
 
 import DATA from './transit-data.json' with { type: 'json' };
 import { distance, decodePolyline, angleDiff } from '../../public/geo.js';
+import * as BusTransit from './bus-transit.js';
 import { trackOf, snap, pointAt } from '../../public/train-guide.js';
 
 const WALK_MPS = 1.25; // ~4.5 km/h
@@ -22,7 +23,7 @@ const CHANGE_PENALTY_S = 240; // a change of train is worse than its minutes alo
 // A minute on foot counts as this many on a train when choosing a way there: a few minutes more on board beats a
 // long walk to a further station or between lines (people would rather ride than walk 20 minutes in the heat).
 const WALK_COST = 2;
-const MAX_OPTIONS = 3;
+export const MAX_OPTIONS = 3;
 const MAX_SEARCHES = 16; // looking for different ways there: each search is under a millisecond
 const ALT_DEPTH = 3;
 const SLOWER_OK = (best) => best * 1.4 + 600; // an option this much slower than the fastest isn't worth showing
@@ -326,15 +327,29 @@ function toTrip(found, from, to, dayStart) {
   return summarise(legs, ms(found.t0));
 }
 
+// Guarded, read-only combined search: train trips remain unchanged and bus alternatives are
+// returned in `options` (train + bus, sorted by effort, capped at MAX_OPTIONS).
+export function planTransitCombined(from, to, at = Date.now(), { moving = null } = {}) {
+  const plan = planTransit(from, to, at, { moving });
+  let busPlan = null;
+  try { busPlan = BusTransit.planTransit(from, to, at, { moving }); } catch {}
+  const trainTrips = plan.trips ?? [];
+  const busTrips = busPlan?.trips ?? [];
+  const options = [...trainTrips, ...busTrips].sort((a, b) => effort(a) - effort(b)).slice(0, MAX_OPTIONS);
+  const selectedPlan = options[0]?.legs.some((l) => l.mode === 'bus') ? busPlan : plan;
+  return { ...selectedPlan, trips: options, options, trainTrips, busTrips };
+}
+
 export function summarise(legs, depart) {
   const duration = legs.reduce((a, l) => a + l.duration + (l.wait ?? 0), 0);
   return {
-    ...(legs.some((l) => l.last) && { lastTrain: true }),
+    ...(legs.some((l) => l.last && l.mode === 'train') && { lastTrain: true }),
+    ...(legs.some((l) => l.last && l.mode === 'bus') && { lastBus: true }),
     depart,
     arrive: depart + duration * 1000,
     duration,
     walk: legs.filter((l) => l.mode === 'walk').reduce((a, l) => a + l.distance, 0),
-    changes: Math.max(0, legs.filter((l) => l.mode === 'train').length - 1),
+    changes: Math.max(0, legs.filter((l) => l.mode === 'train' || l.mode === 'bus').length - 1),
     legs,
   };
 }
@@ -503,12 +518,14 @@ export async function withRealWalks(env, plan, { now = Date.now() } = {}) {
         t = l.arrive;
         continue;
       }
-      const ride = rides.get(l);
-      const b = ride && board(ride.p, ride.i, (t - ride.dayStart) / 1000);
+      const ride = l.mode === 'bus' ? BusTransit.rideFor(l) : rides.get(l);
+      const boarding = l.mode === 'bus' ? BusTransit.board : board;
+      const stationsFor = l.mode === 'bus' ? BusTransit.rideStations : rideStations;
+      const b = ride && boarding(ride.p, ride.i, (t - ride.dayStart) / 1000);
       if (b) {
         l.depart = ride.dayStart + b.dep * 1000;
         l.arrive = ride.dayStart + b.arrive(ride.j) * 1000;
-        l.stations = rideStations(ride.p, ride.i, ride.j, b.dep); // a later KTM train can run to other times
+        l.stations = stationsFor(ride.p, ride.i, ride.j, b.dep); // a later KTM train can run to other times
       } else {
         const shift = t + l.wait * 1000 - l.depart; // no train after all: keep the old wait rather than drop the trip
         l.depart += shift;

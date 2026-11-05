@@ -443,8 +443,8 @@ function addMapLayers() {
     // A trip by train (see drawTransit): walks dashed, rides in their line's colour.
     map.addSource('transit', { type: 'geojson', data: emptyFc() });
     map.addLayer({ id: 'transit-walk', type: 'line', source: 'transit', filter: ['==', ['get', 'mode'], 'walk'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': WALK_DOTS[themeNow], 'line-width': 6, 'line-dasharray': [0.1, 2] } }, before);
-    map.addLayer({ id: 'transit-ride-casing', type: 'line', source: 'transit', filter: ['==', ['get', 'mode'], 'train'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 7, 16, 13] } }, before);
-    map.addLayer({ id: 'transit-ride', type: 'line', source: 'transit', filter: ['==', ['get', 'mode'], 'train'], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['get', 'color'], 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 4, 16, 9] } }, before);
+    map.addLayer({ id: 'transit-ride-casing', type: 'line', source: 'transit', filter: ['in', ['get', 'mode'], ['literal', ['train', 'bus']]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 7, 16, 13] } }, before);
+    map.addLayer({ id: 'transit-ride', type: 'line', source: 'transit', filter: ['in', ['get', 'mode'], ['literal', ['train', 'bus']]], layout: { 'line-cap': 'round', 'line-join': 'round' }, paint: { 'line-color': ['get', 'color'], 'line-width': ['interpolate', ['linear'], ['zoom'], 10, 4, 16, 9] } }, before);
     map.addLayer({ id: 'transit-stops', type: 'circle', source: 'transit', filter: ['==', ['get', 'mode'], 'stop'], paint: { 'circle-radius': 6, 'circle-color': '#ffffff', 'circle-stroke-color': ['get', 'color'], 'circle-stroke-width': 3 } });
     // Petrol stations, hospitals, clinics and convenience stores around the map (see drawPois). Under the base map's
     // own places, so a station or landmark keeps its spot and these fill the gaps around it.
@@ -1798,6 +1798,7 @@ function renderFrom() {
 }
 
 function renderTravel() {
+  $('travel-seg').querySelector('[data-travel=transit]').textContent = tr('Ride');
   for (const b of $('travel-seg').querySelectorAll('button')) b.classList.toggle('on', b.dataset.travel === travel);
   $('preview').classList.toggle('transit', travel === 'transit');
 }
@@ -1807,8 +1808,9 @@ async function showTransit(place, from, status) {
     const plan = await api('/api/transit', { method: 'POST', body: { from, to: [place.lng, place.lat], moving: origin ? null : movingNow() } });
     if (mode !== 'preview' || dest !== place || travel !== 'transit') return;
     transit = { place, trips: plan.trips, selected: 0, reports: plan.reports ?? [] };
-    const night = plan.night ? `${plan.note} The first trains leave around ${formatClock(new Date(plan.firstTrain))}.` : plan.note;
-    const last = plan.trips[0]?.lastTrain ? 'Last train tonight: miss it and there’s no later one this way.' : '';
+    const night = plan.night ? `${plan.note} The first services leave around ${formatClock(new Date(plan.firstTrain ?? plan.firstBus))}.` : plan.note;
+    const lastTrip = plan.trips[0];
+    const last = (lastTrip?.lastTrain || lastTrip?.lastBus) ? `Last ${lastTrip?.lastBus ? 'bus' : 'train'} tonight: miss it and there’s no later one this way.` : '';
     const elsewhere = origin ? `From ${origin.name}. Leave later puts the trip in your calendar.` : '';
     $('route-status').textContent = [status, elsewhere, last, night, plan.trips.length ? 'Times are estimates from the official timetables.' : ''].filter(Boolean).join(' ');
     renderTransit();
@@ -1836,7 +1838,7 @@ function movingNow() {
 }
 
 const WALK_ICON = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="13" cy="4" r="2" fill="currentColor"/><path d="m9 21 2.5-7 2.5 2.5V21M8 11l2-4 4 1 2 4M11.5 14 10 8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
-const lineChip = (l) => `<span class="t-line" style="background:${esc(l.line.color)};color:${esc(l.line.text)}">${esc(l.line.short)}</span>`;
+const lineChip = (l) => `<span class="t-line" style="background:${esc(l.line.color)};color:${esc(l.line.text)}">${esc(l.line.kind === 'Bus' ? `🚌 ${l.line.short}` : l.line.short)}</span>`;
 const mins = (s) => formatDuration(Math.max(60, s));
 
 function renderTransit() {
@@ -1876,10 +1878,11 @@ function reportedOn(trip) {
 function stepHtml(l) {
   const units = state.settings.units;
   if (l.mode === 'walk') {
-    const to = l.to.name === 'Destination' ? (dest?.name ?? 'your destination') : `${l.to.name} station`;
+    const to = l.to.name === 'Destination' ? (dest?.name ?? 'your destination') : `${l.to.name}${l.to.kind === 'Bus' ? ' stop' : ' station'}`;
     return `<li><span>Walk to ${esc(to)}<small>${mins(l.duration)} · ${formatDistance(l.distance, units)}</small></span></li>`;
   }
-  const when = (l.last ? '<b class="t-last">Last train</b> · ' : '') + (l.aboard ? 'You’re on it' : l.every ? `Every ${l.every} min` : `Train at ${formatClock(new Date(l.depart))}`);
+  const rideKind = l.mode === 'bus' ? 'Bus' : 'Train';
+  const when = (l.last ? `<b class="t-last">Last ${rideKind}</b> · ` : '') + (l.aboard ? 'You’re on it' : l.every ? `Every ${l.every} min` : `${rideKind} at ${formatClock(new Date(l.depart))}`);
   return `<li class="ride" style="--dot:${esc(l.line.color)}"><span>${lineChip(l)} ${l.aboard ? 'Stay on the ' : ''}${esc(l.line.name)} towards ${esc(l.towards)}
     <small>${when} · ${l.stops} stop${l.stops > 1 ? 's' : ''} to ${esc(l.to.name)}, ${mins(l.duration)}</small></span></li>`;
 }
@@ -1892,7 +1895,7 @@ function drawTransit() {
   const features = [];
   for (const l of trip?.legs ?? []) {
     features.push({ type: 'Feature', properties: { mode: l.mode, color: l.line?.color ?? '#5f6b76' }, geometry: { type: 'LineString', coordinates: l.coords } });
-    if (l.mode === 'train') for (const s of [l.from, l.to]) features.push({ type: 'Feature', properties: { mode: 'stop', color: l.line.color, name: s.name }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] } });
+    if (l.mode === 'train' || l.mode === 'bus') for (const s of [l.from, l.to]) features.push({ type: 'Feature', properties: { mode: 'stop', color: l.line.color, name: s.name }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] } });
   }
   src.setData({ type: 'FeatureCollection', features });
 }
@@ -2196,7 +2199,7 @@ function renderRide(view) {
   const units = state.settings.units;
   $('ride-banner').classList.toggle('alert', Boolean(view.alerted));
   const icon = $('ride-icon');
-  if (leg.mode === 'train') {
+  if (leg.mode === 'train' || leg.mode === 'bus') {
     icon.style.setProperty('--line', leg.line.color);
     icon.style.setProperty('--line-text', leg.line.text);
     icon.textContent = leg.line.short;
@@ -2208,7 +2211,7 @@ function renderRide(view) {
     $('ride-title').textContent = formatDistance(view.left, units);
     $('ride-sub').textContent = sentence(walkText(leg));
   } else if (view.kind === 'wait') {
-    $('ride-title').textContent = leg.every ? `Every ${leg.every} min` : `Train at ${formatClock(new Date(leg.depart))}`;
+    $('ride-title').textContent = leg.every ? `Every ${leg.every} min` : `${leg.mode === 'bus' ? 'Bus' : 'Train'} at ${formatClock(new Date(leg.depart))}`;
     $('ride-sub').textContent = `${leg.line.name} towards ${leg.towards}`;
   } else {
     $('ride-title').textContent = view.alerted ? `Get off at ${leg.to.name}` : `Next: ${view.next}`;
@@ -2226,7 +2229,7 @@ function renderRide(view) {
     : view.kind === 'wait' ? `${leg.line.name} towards ${leg.towards}` : sentence(walkText(leg))) + (arrive ? ` · ETA at ${formatClock(arrive)}` : '');
   // The list: this ride's stations, or on foot what's left of the trip.
   const list = $('ride-stops');
-  if (leg.mode === 'train') {
+  if (leg.mode === 'train' || leg.mode === 'bus') {
     const last = leg.stations.length - 1;
     const states = view.stations ?? leg.stations.map(([name], k) => ({ name, state: k === last ? 'alight' : k === 0 ? 'next' : 'later' }));
     list.style.setProperty('--dot', leg.line.color);

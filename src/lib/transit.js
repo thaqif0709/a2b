@@ -336,22 +336,20 @@ export function planTransitCombined(from, to, at = Date.now(), { moving = null }
   const trainTrips = plan.trips ?? [];
   const busTrips = busPlan?.trips ?? [];
   const options = [...trainTrips, ...busTrips].sort((a, b) => effort(a) - effort(b)).slice(0, MAX_OPTIONS);
-  const note = plan.note ?? busPlan?.note ?? null;
-  const night = plan.night ?? busPlan?.night;
-  const firstTrain = plan.firstTrain ?? busPlan?.firstBus;
-  const outdated = plan.outdated ?? busPlan?.outdated;
-  return { ...plan, ...(night !== undefined && { night }), ...(firstTrain !== undefined && { firstTrain }), ...(outdated !== undefined && { outdated }), note, trainTrips, busTrips, options };
+  const selectedPlan = options[0]?.legs.some((l) => l.mode === 'bus') ? busPlan : plan;
+  return { ...selectedPlan, trips: options, options, trainTrips, busTrips };
 }
 
 export function summarise(legs, depart) {
   const duration = legs.reduce((a, l) => a + l.duration + (l.wait ?? 0), 0);
   return {
-    ...(legs.some((l) => l.last) && { lastTrain: true }),
+    ...(legs.some((l) => l.last && l.mode === 'train') && { lastTrain: true }),
+    ...(legs.some((l) => l.last && l.mode === 'bus') && { lastBus: true }),
     depart,
     arrive: depart + duration * 1000,
     duration,
     walk: legs.filter((l) => l.mode === 'walk').reduce((a, l) => a + l.distance, 0),
-    changes: Math.max(0, legs.filter((l) => l.mode === 'train').length - 1),
+    changes: Math.max(0, legs.filter((l) => l.mode === 'train' || l.mode === 'bus').length - 1),
     legs,
   };
 }
@@ -520,12 +518,14 @@ export async function withRealWalks(env, plan, { now = Date.now() } = {}) {
         t = l.arrive;
         continue;
       }
-      const ride = rides.get(l);
-      const b = ride && board(ride.p, ride.i, (t - ride.dayStart) / 1000);
+      const ride = l.mode === 'bus' ? BusTransit.rideFor(l) : rides.get(l);
+      const boarding = l.mode === 'bus' ? BusTransit.board : board;
+      const stationsFor = l.mode === 'bus' ? BusTransit.rideStations : rideStations;
+      const b = ride && boarding(ride.p, ride.i, (t - ride.dayStart) / 1000);
       if (b) {
         l.depart = ride.dayStart + b.dep * 1000;
         l.arrive = ride.dayStart + b.arrive(ride.j) * 1000;
-        l.stations = rideStations(ride.p, ride.i, ride.j, b.dep); // a later KTM train can run to other times
+        l.stations = stationsFor(ride.p, ride.i, ride.j, b.dep); // a later KTM train can run to other times
       } else {
         const shift = t + l.wait * 1000 - l.depart; // no train after all: keep the old wait rather than drop the trip
         l.depart += shift;

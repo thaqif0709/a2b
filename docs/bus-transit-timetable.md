@@ -122,3 +122,6 @@ Implication: Phase 1 should be feasible without a massive bundle if we simplify 
 
 - Base branch for this work: `claude/bus-transit-timetable` off `main`.
 - Related memory: monthly GTFS rebuild and train timetables expiry. Refresh this plan when the next transit release lands.
+## Merge preparation (5 November 2026)
+
+The API now returns ranked bus and rail alternatives in `trips`, sharing the existing three-walk routing budget. Bus legs are reboarded against their own timetable after real walks are applied. Bus stop labels, last-service messages, map filters and active ride lists are covered by the integration fixes. These are separate bus-only and rail-only journeys; transfers between buses and rail remain future work.

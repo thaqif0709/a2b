@@ -60,6 +60,7 @@ for (const p of patterns) p.stops.forEach((s, pos) => stops[s].visits.push([p.k,
 const nearby = DATA.nearby.map((list) => list.map(([to, m]) => ({ to, m, secs: walkSeconds(m) + TRANSFER_EXTRA_S, cost: walkCost(m) + TRANSFER_EXTRA_S })));
 // Each train leg's pattern and stops, kept off the leg itself so they aren't sent: withRealWalks re-boards with them.
 const rides = new WeakMap();
+export const rideFor = (leg) => rides.get(leg);
 const shapes = new Map();
 const shapeOf = (id) => {
   if (!id || !DATA.shapes[id]) return null;
@@ -276,7 +277,7 @@ export function rideStations(p, i, j, dep) {
 
 function stationOf(i) {
   const s = stops[i];
-  return { name: s.name, code: s.code, lat: s.lat, lng: s.lng };
+  return { name: s.name, code: s.code, lat: s.lat, lng: s.lng, kind: 'Bus' };
 }
 
 // The line drawn for a ride from stop index i to j of a pattern: along its track where the feed has one.
@@ -340,7 +341,7 @@ function toTrip(found, from, to, dayStart) {
 export function summarise(legs, depart) {
   const duration = legs.reduce((a, l) => a + l.duration + (l.wait ?? 0), 0);
   return {
-    ...(legs.some((l) => l.last) && { lastTrain: true }),
+    ...(legs.some((l) => l.last) && { lastBus: true }),
     depart,
     arrive: depart + duration * 1000,
     duration,
@@ -372,7 +373,7 @@ export function planTransit(from, to, at = Date.now(), { moving = null } = {}) {
   if (!access(to).length) return note('No bus stop within walking distance of the destination.');
 
   const trips = alternatives(from, to, day, dayStart, aboard);
-  if (!trips.length) return note(stale ? 'No other trains can get you there at this time.' : 'No trains can get you there at this time.');
+  if (!trips.length) return note(stale ? 'No other buses can get you there at this time.' : 'No buses can get you there at this time.');
   // Late at night the first trip waits for the morning's first train: say so rather than offer a long wait.
   const firstBus = trips[0].legs.find((l) => l.mode === 'bus');
   const overnight = day.secs < NIGHT_ENDS_S || (firstBus.depart - dayStart) / 1000 >= DAY;

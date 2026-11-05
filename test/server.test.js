@@ -1166,7 +1166,7 @@ test('weather along a route needs a spot and sensible points', async () => {
   assert.deepEqual(res.body.warnings, []);
 });
 
-test('trips by train need a spot, a start and a destination', async () => {
+test('transit trips need a spot, a start and a destination', async () => {
   assert.equal((await client('transit-no-spot')('POST', '/api/transit', { from: [101.6865, 3.134], to: [101.7116, 3.1579] })).status, 503);
   const c = client();
   assert.equal((await c('POST', '/api/transit', { from: [101.6865, 3.134] })).status, 400);
@@ -1174,7 +1174,7 @@ test('trips by train need a spot, a start and a destination', async () => {
   assert.equal(res.status, 200);
   assert.ok(Array.isArray(res.body.trips));
   assert.equal(typeof res.body.walk, 'number');
-  for (const trip of res.body.trips) assert.ok(trip.legs.some((l) => l.mode === 'train') && trip.arrive > trip.depart);
+  for (const trip of res.body.trips) assert.ok(trip.legs.some((l) => l.mode === 'train' || l.mode === 'bus') && trip.arrive > trip.depart);
   // Each ride carries its stations in order with the seconds after boarding, for following the trip on the phone.
   for (const l of res.body.trips.flatMap((t) => t.legs).filter((x) => x.mode === 'train')) {
     assert.equal(l.stations.length, l.stops + 1);

@@ -148,7 +148,7 @@ export function alreadyOn(leg, track, fix, approach = leg.approach?.length > 1 ?
 }
 
 // ---------- What to say ----------
-const stationName = (s) => (s.name === 'Destination' ? 'your destination' : `${s.name} station`);
+const stationName = (s) => (s.name === 'Destination' ? 'your destination' : `${s.name} ${s.kind === 'Bus' ? 'stop' : 'station'}`);
 export const boardText = (leg) => `Take the ${leg.line.name} towards ${leg.towards}.`;
 export const ridingText = (leg, stopsToGo) => `${stopsToGo} stop${stopsToGo > 1 ? 's' : ''} to ${leg.to.name}.`;
 export const alertText = (leg) => `Next stop: ${leg.to.name}. Get off here.`;
@@ -227,7 +227,7 @@ export class TrainGuide {
     const leg = this.leg;
     const after = this.trip.legs[this.i + 1];
     if ((leg.mode === 'train' || leg.mode === 'bus')) events.push({ type: (was.mode === 'train' || was.mode === 'bus') ? 'change' : 'at-station', text: (was.mode === 'train' || was.mode === 'bus') ? changeText(leg) : boardText(leg) });
-    else if ((was.mode === 'train' || was.mode === 'bus') && after?.mode === 'train') events.push({ type: 'change', text: `Get off. ${changeText(after)}` });
+    else if ((was.mode === 'train' || was.mode === 'bus') && (after?.mode === 'train' || after?.mode === 'bus')) events.push({ type: 'change', text: `Get off. ${changeText(after)}` });
     else if ((was.mode === 'train' || was.mode === 'bus')) events.push({ type: 'alight', text: `Get off here. ${walkText(leg)}` });
   }
 
@@ -308,7 +308,7 @@ export class TrainGuide {
     if (this.done) return null;
     const leg = this.leg;
     if (leg.mode === 'walk') return leg.to.name === 'Destination' ? 'I’ve arrived' : `I’m at ${leg.to.name}`;
-    if (this.phase === 'wait') return 'I’m on the train';
+    if (this.phase === 'wait') return leg.mode === 'bus' ? 'I’m on the bus' : 'I’m on the train';
     return `I’m at ${leg.stations[this.approaching ? 0 : nextStop(this.alongs, this.along)][0]}`;
   }
 

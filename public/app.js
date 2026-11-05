@@ -1854,11 +1854,11 @@ function renderTransit() {
   transit.trips.forEach((trip, i) => {
     const b = el('button', `route-opt t-opt${i === transit.selected ? ' on' : ''}`);
     const legs = trip.legs
-      .filter((l) => l.mode === 'train' || l.duration >= 60)
+      .filter((l) => l.mode !== 'walk' || l.duration >= 60)
       .map((l) => (l.mode === 'walk' ? `<span class="t-walk">${WALK_ICON}${Math.round(l.duration / 60)}</span>` : lineChip(l)))
       .join('<span class="t-sep">›</span>');
     const facts = [`arrive ${formatClock(new Date(trip.arrive))}`, trip.changes ? `${trip.changes} change${trip.changes > 1 ? 's' : ''}` : 'no changes'];
-    if (trip.lastTrain) facts.push('<span class="t-last">last train</span>');
+    if (trip.lastTrain || trip.lastBus) facts.push(`<span class="t-last">last ${trip.lastBus ? 'bus' : 'train'}</span>`);
     const steps = i === transit.selected ? `<ol class="t-steps">${trip.legs.map(stepHtml).join('')}</ol>` : '';
     b.innerHTML = `<span class="r-time">${formatDuration(trip.duration)}</span><span class="r-info"><b>${facts.join(' · ')}</b><br><span class="t-legs">${legs}</span>${reportedOn(trip)}</span>${steps}`;
     b.onclick = () => {
@@ -2069,13 +2069,14 @@ function rideHere(station = null) {
 // A station tapped in the list: what saying you're there would do (board the train, move you on, get you off), and
 // "I'm here" to do it. The big button needs no asking: its label already says where.
 function askHere(k) {
-  if (mode !== 'ride' || !guide || guide.leg.mode !== 'train') return;
+  if (mode !== 'ride' || !guide || !['train', 'bus'].includes(guide.leg.mode)) return;
   const leg = guide.leg, at = guide.i, last = leg.stations.length - 1;
   const name = leg.stations[k][0], after = guide.trip.legs[at + 1];
   const waiting = guide.phase === 'wait';
-  $('here-title').textContent = waiting ? (k ? `On the train, at ${name}?` : 'On the train?') : `You’re at ${name}?`;
+  const vehicle = leg.mode === 'bus' ? 'bus' : 'train';
+  $('here-title').textContent = waiting ? (k ? `On the ${vehicle}, at ${name}?` : `On the ${vehicle}?`) : `You’re at ${name}?`;
   $('here-sub').textContent = k === last
-    ? after?.mode === 'train' ? `That’s where you change, to the ${after.line.name}.` : 'That’s your stop: you get off here.'
+    ? (after?.mode === 'train' || after?.mode === 'bus') ? `That’s where you change, to the ${after.line.name}.` : 'That’s your stop: you get off here.'
     : waiting && !k ? `Leaving ${name} now. ${last} stop${last > 1 ? 's' : ''} to ${leg.to.name}.`
     : `${last - k} stop${last - k > 1 ? 's' : ''} to ${leg.to.name} from there.`;
   $('btn-here-yes').onclick = () => {
@@ -2394,7 +2395,7 @@ function endRide(arrived) {
   if (!arrived) return backToBrowse();
   speak('You have arrived.');
   $('arrived-name').textContent = name;
-  $('arrived-stats').textContent = `By train in ${formatDuration(took / 1000)}`;
+  $('arrived-stats').textContent = `Ride completed in ${formatDuration(took / 1000)}`;
   $('arrived').classList.remove('hidden');
   $('browse-ui').classList.add('hidden');
   map.easeTo({ pitch: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 600 });

@@ -125,3 +125,12 @@ Implication: Phase 1 should be feasible without a massive bundle if we simplify 
 ## Merge preparation (5 November 2026)
 
 The API now returns ranked bus and rail alternatives in `trips`, sharing the existing three-walk routing budget. Bus legs are reboarded against their own timetable after real walks are applied. Bus stop labels, last-service messages, map filters and active ride lists are covered by the integration fixes. These are separate bus-only and rail-only journeys; transfers between buses and rail remain future work.
+
+
+## Connected bus and rail journeys (November 2026)
+
+`transit-planner.js` is the extracted existing rail planner, used by both the preserved rail-only API and the connected Ride network. `transit-network.js` joins the committed bus and rail GTFS data and adds bidirectional walking transfers within 400 m. Each end considers nearby bus stops and stations separately so dense bus stops cannot hide a station. Ride options may contain both modes in either direction.
+
+The combined search is capped at eight searches and three options. No additional timetable provider or download is needed. Transfer walks get priority within the existing maximum of three cached walking-route lookups. A one-minute boarding/platform margin is retained after real walking routes replace estimates. Subsequent legs are reboarded against their own timetables; journeys missing the final departure or containing a confirmed unreachable transfer are removed. A temporary walking-service failure retains the labelled estimate.
+
+Ride previews and active guidance use the existing bus and train leg types. The rail-only planner API remains available for reports and existing callers. No D1 migration or paid service is required. Timetable-based ETAs remain estimates, not live bus arrival predictions.

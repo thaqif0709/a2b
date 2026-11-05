@@ -826,3 +826,18 @@ body.driving .toast { top: calc(140px + var(--safe-top)); }
 .eta-grab, .eta-main { touch-action: none; }
 .eta-bar.open .eta-menu { max-height: calc(100dvh - 190px); overflow-y: auto; overscroll-behavior: contain; }
 .eta-menu > #trip-stops { grid-column: 1 / -1; }
+
+.stop-row { display: flex; align-items: center; gap: 12px; padding: 8px 16px; }
+.stop-info { flex: 1; min-width: 0; }
+.stop-name { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; text-align: left; width: 100%; line-height: 1.3; }
+.stop-estimate { display: block; color: var(--muted); font-size: 13px; margin-top: 3px; }
+.stop-remove { flex: none; min-height: 44px; padding: 8px; color: var(--primary); }
+#preview-stops { max-height: 24dvh; overflow-y: auto; flex-shrink: 0; }
+#preview-stops:empty { display: none; }
+
+/* Scroll trip details together; keep destination and Go visible even with long stop names. */
+#preview > #preview-details { flex: 0 1 auto; min-height: 0; overflow-y: auto; touch-action: pan-y; overscroll-behavior: contain; }
+#preview-details #route-list { overflow: visible; }
+#preview-details #preview-stops { max-height: none; overflow: visible; }
+#preview.peek #preview-details { display: none; }
+#preview.dragging > #preview-details { flex: 1 1 auto; overflow: hidden; }

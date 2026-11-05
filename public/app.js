@@ -3,7 +3,7 @@
 
 import { REPORT_TYPES, reportLabel, reportIcon, canReportFrom, TRAIN_REPORT_TYPES, trainReportIcon } from './report-types.js';
 import { distance, bearing, cumulative, encodePolyline, formatDistance, formatDuration, formatClock } from './geo.js';
-import { Navigator, Simulator, reportsAlong, sliceAlong, spokenDistance, roundaboutTurn } from './nav.js';
+import { stopEstimates, Navigator, Simulator, reportsAlong, sliceAlong, spokenDistance, roundaboutTurn } from './nav.js';
 import { canAutoStartRoute } from './route-preview.js';
 import { TrainGuide, markerFor, walkText } from './train-guide.js';
 import { Glide } from './motion.js';
@@ -2530,7 +2530,7 @@ function routeAtTap(e) {
 // the finger (the route list shrinks, the header and Go stay put); a flick or a long enough drag settles it.
 function setupSheetDrag() {
   // Pulling the route sheet down to see the map is looking around, like moving the map: wait for Go.
-  collapsibleSheet($('preview'), $('route-list'), () => mode === 'preview' && routes.length && fitRoutes(), { pulled: () => autoGo.stop() });
+  collapsibleSheet($('preview'), $('preview-details'), () => mode === 'preview' && routes.length && fitRoutes(), { pulled: () => autoGo.stop() });
   collapsibleSheet($('parking'), $('parking-list'), fitParking);
 }
 
@@ -2689,6 +2689,7 @@ function renderRouteOptions() {
     b.onclick = () => selectRoute(i);
     box.append(b);
   });
+  renderStopMenu();
 }
 
 // Like Waze, the route sheet sets off on the chosen route by itself after a short wait. Picking another route
@@ -3166,6 +3167,7 @@ function renderEta() {
   const [n, u] = formatDistance(remaining, state.settings.units).split(' ');
   $('eta-dist').textContent = n;
   $('eta-dist-unit').textContent = u;
+  renderStopEstimates();
 }
 
 // Off route with no connection, "Recalculating…" is a lie: say what's actually wrong instead.
@@ -3465,16 +3467,37 @@ function renderStopMenu() {
   for (const list of [$('trip-stops'), $('preview-stops')]) {
     list.innerHTML = '';
     stops.forEach((p, i) => {
-      const button = el('button', 'menu-row');
-      button.textContent = `${i + 1}. ${p.name} · Remove`;
-      button.setAttribute('aria-label', `Remove stop ${i + 1}: ${p.name}`);
-      button.onclick = () => removeStop(i);
-      list.append(button);
+      const row = el('div', 'stop-row');
+      const name = el('button', 'stop-name');
+      name.textContent = `${i + 1}. ${p.name}`;
+      name.title = p.name;
+      name.onclick = () => toast(p.name, 6000);
+      const info = el('span', 'stop-info');
+      info.append(name, el('small', 'stop-estimate'));
+      const remove = el('button', 'stop-remove', esc(tr('Remove')));
+      remove.setAttribute('aria-label', `Remove stop ${i + 1}: ${p.name}`);
+      remove.onclick = () => removeStop(i);
+      row.append(info, remove);
+      list.append(row);
     });
   }
+  renderStopEstimates();
   stopMarker?.remove();
   stopMarker = null;
   if (stops[0]) stopMarker = new maplibregl.Marker({ element: el('div', 'drop-pin', DROP_PIN), anchor: 'bottom' }).setLngLat([stops[0].lng, stops[0].lat]).addTo(map);
+}
+
+function renderStopEstimates() {
+  const driving = mode === 'drive';
+  const route = driving ? nav?.route : routes[selected];
+  const estimates = route ? stopEstimates(route, driving ? { along: live?.along ?? 0, passed: passedStopSteps, cum: nav.cum } : {}) : [];
+  const now = Date.now();
+  for (const id of ['trip-stops', 'preview-stops']) {
+    $(id).querySelectorAll('.stop-estimate').forEach((node, i) => {
+      const estimate = estimates[i];
+      node.textContent = estimate ? `${formatDistance(estimate.metres, state.settings.units)} · ETA ${formatClock(new Date(now + estimate.seconds * 1000))}` : '';
+    });
+  }
 }
 
 function overview() {

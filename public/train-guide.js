@@ -227,7 +227,7 @@ export class TrainGuide {
     const leg = this.leg;
     const after = this.trip.legs[this.i + 1];
     if ((leg.mode === 'train' || leg.mode === 'bus')) events.push({ type: (was.mode === 'train' || was.mode === 'bus') ? 'change' : 'at-station', text: (was.mode === 'train' || was.mode === 'bus') ? changeText(leg) : boardText(leg) });
-    else if ((was.mode === 'train' || was.mode === 'bus') && (after?.mode === 'train' || after?.mode === 'bus')) events.push({ type: 'change', text: `Get off. ${changeText(after)}` });
+    else if ((was.mode === 'train' || was.mode === 'bus') && (after?.mode === 'train' || after?.mode === 'bus')) events.push({ type: 'change', text: `Get off. ${walkText(leg)} ${changeText(after)}` });
     else if ((was.mode === 'train' || was.mode === 'bus')) events.push({ type: 'alight', text: `Get off here. ${walkText(leg)}` });
   }
 

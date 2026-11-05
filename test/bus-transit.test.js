@@ -60,7 +60,7 @@ test('real walks reboard bus legs and keep the shared three-request budget', asy
   assert.ok(calls > 0 && calls <= 3);
   for (const trip of plan.trips) {
     const buses = trip.legs.filter((l) => l.mode === 'bus');
-    assert.equal(trip.changes, buses.length - 1);
+    assert.equal(trip.changes, trip.legs.filter((l) => l.mode !== 'walk').length - 1);
     let at = trip.depart;
     for (const leg of trip.legs) {
       if (leg.mode === 'walk') at += leg.duration * 1000;

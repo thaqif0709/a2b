@@ -3,6 +3,8 @@
 
 // Small geometry helpers on [lng, lat] pairs. Shared by the app and the Worker.
 
+import { tr, locale } from './i18n.js';
+
 const R = 6371008.8;
 const rad = (d) => (d * Math.PI) / 180;
 const deg = (r) => (r * 180) / Math.PI;
@@ -116,9 +118,9 @@ export function formatDuration(s) {
   if (min < 60) return `${min} min`;
   const h = Math.floor(min / 60);
   const m = min % 60;
-  return m ? `${h} h ${m} min` : `${h} h`;
+  return m ? tr('{h} h {m} min', { h, m }) : tr('{h} h', { h });
 }
 
 export function formatClock(date) {
-  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return date.toLocaleTimeString(locale(), { hour: 'numeric', minute: '2-digit' });
 }

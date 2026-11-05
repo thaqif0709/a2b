@@ -13,14 +13,14 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon-192.png">
-  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="/vendor/maplibre-gl-4.7.1/maplibre-gl.css">
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <!-- Launch splash: covers the blank map until it's drawn (welcome.js hides it) -->
   <div id="splash" class="splash" aria-hidden="true">
     <img src="/icon.svg" alt="" width="96" height="96">
-    <b>A2B</b>
+    <b translate="no">A2B</b>
     <span class="splash-spin"></span>
   </div>
   <div id="map" aria-label="Map"></div>
@@ -57,6 +57,7 @@
     </header>
     <div id="search-target" class="search-target hidden"></div>
     <div id="search-home">
+      <div id="search-cats" class="cats" role="group" aria-label="Find the nearest"></div>
       <div class="quick">
         <button class="quick-tile" id="tile-home"><span class="q-ic home"></span><span><b>Home</b><small id="home-sub">Set location</small></span></button>
         <button class="quick-tile" id="tile-work"><span class="q-ic work"></span><span><b>Work</b><small id="work-sub">Set location</small></span></button>
@@ -90,6 +91,7 @@
     </div>
     <div id="travel-seg" class="seg travel-seg" role="tablist"><button data-travel="drive">Drive</button><button data-travel="motorcycle">Motorbike</button><button data-travel="walk">Walk</button><button data-travel="transit">Train</button></div>
     <div id="route-list" class="route-list"></div>
+    <div id="route-weather" class="route-weather hidden" aria-live="polite"></div>
     <p id="route-status" class="hint"></p>
     <div class="sheet-actions">
       <button id="btn-leave-later" class="btn ghost">Leave later</button>
@@ -128,6 +130,7 @@
       <div id="then" class="then hidden"><span>Then</span><span id="then-icon" class="then-icon"></span></div>
     </div>
     <div id="toll-chip" class="toll-chip hidden" role="status"></div>
+    <button id="rest-chip" class="toll-chip rest-chip hidden" type="button"></button>
     <div id="faster-card" class="faster-card hidden" role="status">
       <span class="faster-text"><b>Faster route</b><span class="faster-line"></span></span>
       <button id="btn-faster-keep" class="faster-keep">Keep</button>
@@ -305,6 +308,7 @@
   <!-- ===== First visit welcome (welcome.js) ===== -->
   <section id="welcome" class="gate welcome hidden" aria-label="Welcome to A2B">
     <div class="gate-card">
+      <div id="welcome-lang" class="w-lang" translate="no"></div>
       <img src="/icon.svg" alt="" width="64" height="64">
       <h2>Welcome to A2B</h2>
       <p>Free navigation for Malaysia, built by one person with an AI coding assistant and still improving.</p>
@@ -366,7 +370,7 @@
   <div id="toast" class="toast hidden" role="status"></div>
   <div id="ctx" class="ctx hidden"></div>
 
-  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="/vendor/maplibre-gl-4.7.1/maplibre-gl.js"></script>
   <script type="module" src="/app.js"></script>
 </body>
 </html>

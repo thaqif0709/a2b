@@ -54,7 +54,10 @@ Keep the screen on while you drive (A2B keeps it awake). Only use it when it's s
 | 🏫 **School zones** | At school times (6:30–7:45, 12:30–2:30, 5:45–6:45 on school days, Sunday to Thursday in Kedah, Kelantan and Terengganu), "School zone ahead. Slow down to 30." about 300 m before each school on the route, with a "30 km/h zone" chip and a pin on the school until you're past. School holidays aren't known, so it still warns on those days. |
 | 📸 **Speed cameras** | Fixed AES and AWAS cameras on your route, with a voice warning and the limit about 800 m before each. |
 | 💰 **Tolls** | Toll plazas along the route, with the car price and ways to pay (Touch 'n Go, RFID, SmartTAG) where mapped. |
+| ⛽ **Fuel cost** | Roughly what each route costs in petrol or diesel at this week's official pump price, for the fuel and car size set in Settings, next to its tolls. |
+| ☕ **R&R ahead** | On long drives, the next R&R on your side of the road shows about 3 km before it; after two hours without a break, the next one is suggested out loud. Tap to stop there. |
 | 🅿️ **Parking** | Car parks near your destination, paid or free, with type and spaces. Pick one and the drive reroutes there. Or search "parking", "parking klcc" or "letak kereta pavilion". |
+| 🌦️ **Weather and rest** | Whether it may rain when you arrive or on the way, at the time you'll be there, with MET Malaysia's warnings and short tips (an umbrella or raincoat, darker clothes, a jacket for the highlands, light sleeves when it's humid). A tip to rest every 2 hours on long or night drives, a spoken reminder after each 2 hours at the wheel, and a voice heads-up a few km before possible heavy rain. |
 | 🚧 **Roadworks** | Routes avoid roads that look to be still under construction, and roads drivers report as closed. |
 | 🚓 **Reports** | Traffic, police, crashes, hazards, blocked lanes, closures and cameras, with voice alerts ahead and "still there?" checks after. |
 | 🚗 **Your car** | A 3D chevron or car in the colour you like, a speedometer that turns red over the limit, and the road you've driven greyed out. |
@@ -83,7 +86,7 @@ Keep the screen on while you drive (A2B keeps it awake). Only use it when it's s
 
 ## Run it on your computer
 
-You need **Node.js 22.13 or newer**. No accounts or API keys are needed.
+You need **Node.js 22.20 or newer**. No accounts or API keys are needed.
 
 ```bash
 npm install
@@ -107,12 +110,44 @@ The database tables are created on the first request (or run `npm run db:migrate
 `wrangler.toml`:
 
 - `MAX_ACTIVE` and `MAX_GUESTS`: how many devices can use the app at once, and how many of those can be guests.
+- WeatherKit (optional, secrets): `WEATHERKIT_TEAM_ID` (your Apple team id), `WEATHERKIT_SERVICE_ID` (a Services
+  ID with WeatherKit turned on), `WEATHERKIT_KEY_ID` and `WEATHERKIT_KEY` (the id and contents of a `.p8` key with
+  WeatherKit enabled, from Certificates, Identifiers & Profiles). Set each with `npx wrangler secret put`. Without
+  them, the weather comes from MET Malaysia.
 - `TESTER_EMAILS` (a secret: `npx wrangler secret put TESTER_EMAILS`): accounts that get the testing tools and the
   usage dashboard.
 - `OCM_KEY` (a secret, optional): an [Open Charge Map](https://openchargemap.org/site/develop/api) API key, free, for
   more EV chargers than OpenStreetMap has.
 
 To use your own domain, add it under *Workers & Pages → a2b → Settings → Domains & Routes*.
+
+**Updating MapLibre and three.js.** The map library ([MapLibre GL JS](https://maplibre.org)) and the 3D vehicle
+library ([three.js](https://threejs.org)) are served from `public/vendor/<name>-<version>/`, not from a CDN, so a
+network that blocks or stalls the CDN can't stop the app from opening. They don't update by themselves. To move to
+a new version:
+
+1. Download the new files from npm, which checks them against the registry's checksums:
+
+   ```bash
+   npm pack maplibre-gl@<version>    # and/or three@<version>
+   tar -xzf maplibre-gl-<version>.tgz
+   ```
+
+2. Copy them into a new folder named `<name>-<version>` (not `<name>@<version>`: Cloudflare redirects `@` to `%40`,
+   an extra round trip for every file), with the licence, and delete the old folder:
+   - MapLibre: `package/dist/maplibre-gl.js`, `package/dist/maplibre-gl.css` and `package/LICENSE.txt` into
+     `public/vendor/maplibre-gl-<version>/`
+   - three.js: `package/build/three.module.js` and `package/LICENSE` (as `LICENSE.txt`) into
+     `public/vendor/three-<version>/`
+3. Change the version in every place that names it:
+   - MapLibre: the `<link>` and `<script>` in `public/index.html`, and `MAPLIBRE` in `public/sw.js`
+   - three.js: `THREE_URL` in `public/vehicle3d.js`, and `VENDOR` in `public/sw.js`
+4. Bump `CACHE` in `public/sw.js` (e.g. `a2b-v41` → `a2b-v42`), so phones pick up the new files and drop the old ones.
+5. Check the release notes for breaking changes, run `npm test`, try the map, a route and a drive in a browser,
+   then deploy as usual.
+
+Never point the app back at a CDN URL: the Content-Security-Policy in `public/_headers` only allows the app's own
+scripts, so a CDN script is blocked.
 
 </details>
 
@@ -128,12 +163,17 @@ Everything A2B uses is free and needs no key:
 | Search | [Photon](https://photon.komoot.io) (`GEOCODER_URL`) | Community-run, fair use. |
 | Live traffic (optional) | [TomTom Routing API](https://developer.tomtom.com) (`TOMTOM_KEY` secret) | Times each route with today's traffic; free up to a monthly quota. Without a key, routes use typical speeds. Answers aren't stored. |
 | House addresses (optional) | [TomTom Geocoding API](https://developer.tomtom.com) (same `TOMTOM_KEY`, with the Search API enabled) | Asked only for a search that looks like an address ("129, BK 5/6, Puchong") that Photon and the shop files don't have, at most `ADDRESS_LOOKUPS_PER_DAY` (600) a day. Answers aren't stored. |
+| Weather (optional) | [Apple WeatherKit REST API](https://developer.apple.com/weatherkit/) (`WEATHERKIT_*` secrets, below) | Hourly forecasts for the exact spot; included with an Apple Developer Program membership (500,000 calls a month). Each ~11 km square is fetched at most once an hour. |
+| Weather | [MET Malaysia open data](https://developer.data.gov.my/realtime-api/weather) | 7-day forecasts for ~420 towns and live warnings. Used without WeatherKit, or when it fails; fetched once an hour for the whole country. Town positions are in `src/lib/met-towns.json` (`npm run met-towns`). |
+| Humidity at the destination | [MET Norway Locationforecast](https://api.met.no/weatherapi/locationforecast/2.0/documentation) | Free, also for commercial use, with credit. Only when the forecast has no humidity (MET Malaysia's doesn't), for what-to-wear tips. Each ~11 km square at most once an hour. |
 | Train timetables (LRT, MRT, Monorail, BRT, KTM Komuter) | [data.gov.my GTFS](https://developer.data.gov.my/realtime-api/gtfs-static) (Prasarana, KTMB) | Built with `npm run transit` into `src/lib/transit-data.json`, kept in git. Each feed runs to an end date the build prints; rebuild before then. Walks to and from stations use the routing server's walking routes. |
 | Toll plaza and car park details | [OpenStreetMap API](https://wiki.openstreetmap.org/wiki/API) | Looked up once and cached. |
 | Shops and places | [Overture Maps](https://overturemaps.org) | Built into small files the phone searches (`npm run places`), by name and by street. |
 | Places drivers added or fixed | A2B drivers, approved by a tester | Kept in the database; phones download what changed since they last asked. |
 | Roads under construction | [Overture Maps](https://overturemaps.org) (OpenStreetMap roads) | Built with `npm run construction`, kept in git. |
 | Fixed speed cameras (AES, AWAS) | OpenStreetMap, found through Photon | Built with `npm run cameras` into `public/cameras.json`, kept in git. |
+| Pump prices | [data.gov.my](https://data.gov.my/data-catalogue/fuelprice) (weekly, CC BY 4.0) | Asked for a few times a day at most, for the fuel cost on routes. |
+| R&Rs and lay-bys | OpenStreetMap, through the [Overpass API](https://overpass-api.de) | Built with `npm run rest-stops` into `public/rest-stops.json`, kept in git. |
 | Schools | OpenStreetMap, through the [Overpass API](https://overpass-api.de) | Built with `npm run schools` into `public/schools.json` (kindergartens, tuition centres and colleges left out), kept in git. |
 | EV chargers | OpenStreetMap ([Overpass API](https://overpass-api.de)), [Open Charge Map](https://openchargemap.org) (`OCM_KEY` secret, optional), Overture Maps | Kept in the database and refreshed weekly by the nightly job (the first list arrives with its first run after deploying). Open Charge Map's openly licensed chargers (CC BY-SA 4.0) are added when a free key is set (`npx wrangler secret put OCM_KEY`). |
 
@@ -175,17 +215,21 @@ public/                 the web app
   map-themes.js         map colours for day and night
   presence.js           keeping a spot, and the waiting screen when it's full
   welcome.js            launch splash and first-visit welcome
+  i18n.js, i18n-*.js    the app's languages: tr() looks a message up by its English; each language's words in its own file
   update.js             noticing a newer version: quiet refresh, or a small "New version ready" pill
   follow.js             watching a shared drive
   sheet-drag.js         bottom sheets that follow the finger
   geo.js, icons.js      maths, formatting, turn arrows and pins
   report-types.js       report types, lifetimes and points (shared with the server)
   sw.js, manifest       installable app, offline shell
+  vendor/               MapLibre GL JS and three.js, served from our own domain (see "Updating MapLibre and three.js")
 src/
   worker.js             the API
   lib/providers.js      search (Photon) and routing (Valhalla), speed limits, reports along a route
   lib/construction.js   spotting roads that are probably still being built
   lib/traffic.js        live traffic for a route (TomTom)
+  lib/weather.js        the weather along a route (WeatherKit, MET Malaysia, MET Norway)
+  lib/shared-cache.js   outside services' answers shared by every driver (memory and D1)
   lib/transit.js        trips by train (LRT, MRT, Monorail, BRT, KTM Komuter)
   lib/cameras.js        fixed speed cameras along a route
   lib/tolls.js          toll plazas and their prices
@@ -263,6 +307,11 @@ over the internet included, you must offer them its source code under the same l
 
 Map data © [OpenStreetMap contributors](https://www.openstreetmap.org/copyright) (ODbL). Places and roads under
 construction from the [Overture Maps Foundation](https://overturemaps.org) (see `public/places/NOTICE.txt` once built).
+Map drawn with [MapLibre GL JS](https://maplibre.org) (BSD 3-Clause) and the 3D vehicle with [three.js](https://threejs.org)
+(MIT); their licences are in `public/vendor/`.
 Map tiles by [OpenFreeMap](https://openfreemap.org), routing by [Valhalla](https://github.com/valhalla/valhalla),
 search by [Photon](https://github.com/komoot/photon), live traffic and house addresses by [TomTom](https://www.tomtom.com). Train
-timetables from Prasarana and KTMB through [data.gov.my](https://data.gov.my) (CC BY 4.0).
+timetables from Prasarana and KTMB through [data.gov.my](https://data.gov.my) (CC BY 4.0). Weather
+forecasts and warnings from [MET Malaysia](https://www.met.gov.my) through [data.gov.my](https://data.gov.my) (CC BY
+4.0), humidity from [MET Norway](https://api.met.no) (CC BY 4.0), and from
+[Apple Weather](https://weatherkit.apple.com/legal-attribution.html) when WeatherKit is set up.

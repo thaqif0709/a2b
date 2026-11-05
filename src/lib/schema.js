@@ -70,7 +70,9 @@ CREATE TABLE IF NOT EXISTS train_reports (
 );
 CREATE INDEX IF NOT EXISTS train_reports_live ON train_reports (line, expires_at);
 CREATE INDEX IF NOT EXISTS train_reports_user ON train_reports (user_id, created_at);
-CREATE TABLE IF NOT EXISTS train_report_votes (report_id INTEGER NOT NULL, user_id INTEGER NOT NULL, vote TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (report_id, user_id))
+CREATE TABLE IF NOT EXISTS train_report_votes (report_id INTEGER NOT NULL, user_id INTEGER NOT NULL, vote TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (report_id, user_id));
+CREATE TABLE IF NOT EXISTS shared_cache (key TEXT PRIMARY KEY, body TEXT NOT NULL, expires_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS shared_cache_expiry ON shared_cache (expires_at)
 `;
 
 let ready = null;

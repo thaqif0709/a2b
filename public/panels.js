@@ -9,9 +9,13 @@ import { stopSharing } from './probe.js';
 import { pickVoice } from './voice.js';
 import { appVersion } from './update.js';
 import { VEHICLES, COLORS, DEFAULT_COLOR } from './vehicle3d.js';
+import { FUELS, SIZES, DEFAULT_FUEL, DEFAULT_SIZE, rmLabel } from './trip-cost.js';
+import { fuelSummary } from './fuel-log.js';
+import { formatDistance } from './geo.js';
 import { onlineLine } from './presence.js';
 import { tileCount, clearOfflineTiles, originUsage } from './offline.js';
 import { openReview, suggestionSummary, syncDriverPlaces } from './suggest.js';
+import { LANGUAGES, useLang, tr } from './i18n.js';
 
 let ctx; // callbacks from app.js
 let authMode = 'signup';
@@ -47,6 +51,7 @@ export async function refreshMe() {
       // The account's settings win over this device's, so they follow the driver between phones.
       Object.assign(state.settings, user.settings);
       local.set('settings', state.settings);
+      useLang(state.settings.lang);
     }
   } catch {
     state.user = null;
@@ -289,6 +294,15 @@ function choiceRow(key, label, options) {
     .join('')}</div></div>`;
 }
 
+// A list rather than buttons: it has room for every language. Under "Language", the word in each of the others,
+// so a driver who doesn't read English can still find it.
+function langRow() {
+  const options = [['auto', 'Auto'], ...LANGUAGES.map((l) => [l.code, l.name])];
+  return `<label class="set-row"><span>Language<small>${LANGUAGES.slice(1).map((l) => l.word).join(' · ')}</small></span><select class="set-select" id="s-lang" translate="no">${options
+    .map(([v, l]) => `<option value="${v}" ${state.settings.lang === v ? 'selected' : ''}>${l}</option>`)
+    .join('')}</select></label>`;
+}
+
 // What sharing speeds really means, in plain words, before the driver says yes. Off until then.
 export function openProbeConsent() {
   const body = openPanel('Share speeds for live traffic', `
@@ -314,13 +328,23 @@ export function openProbeConsent() {
   };
 }
 
+// What the drives on this phone have cost in fuel (see fuel-log.js): kept here, not with the account.
+function fuelSpent() {
+  const s = fuelSummary(local.get('fuelLog'));
+  const tile = (label, { m, rm }) => `<div class="stat"><small>${label}</small><b>${rmLabel(rm)}</b><small>${formatDistance(m, state.settings.units)}</small></div>`;
+  return `<div class="set-row"><span>${tr('Fuel spent')}<small>${tr("An estimate: how far you drove by car with A2B, at your car's fuel use and that week's pump price. Electric cars count as nothing. Kept on this phone only.")}</small></span></div>
+      <div class="stats fuel-spent">${tile(tr('This week'), s.week)}${tile(tr('This month'), s.month)}${tile(tr('All time'), s.all)}</div>`;
+}
+
 export function openSettings() {
   const u = state.user;
   const body = openPanel('Settings', `
+    <div class="set-group">${langRow()}</div>
     <div class="set-group"><h3>Sound and alerts</h3>
       ${toggleRow('voice', 'Voice directions')}
       ${toggleRow('alerts', 'Report alerts while driving', 'Police, crashes, hazards and closures ahead')}
       ${toggleRow('speed_warning', 'Speeding warning', 'Speedometer turns red above the posted limit')}
+      ${toggleRow('weather', 'Weather and rest tips', 'Rain on your route, what to bring, and when to rest')}
     </div>
     <div class="set-group"><h3>Voice</h3><div id="voice-list"></div></div>
     <div class="set-group"><h3>Navigation</h3>
@@ -339,9 +363,19 @@ export function openSettings() {
       <div class="set-row"><span>Vehicle<small>How you appear on the map</small></span><div class="choice" id="s-vehicle">${VEHICLES
         .map(([v, l]) => `<button data-v="${v}" class="${local.get('vehicle', 'chevron') === v ? 'on' : ''}">${l}</button>`)
         .join('')}</div></div>
+      ${toggleRow('night_vehicle_lights', 'Night vehicle lights', 'Soft vehicle-light glow in night mode. On by default.')}
       <div class="set-row swatch-row"><span>Colour</span><div class="swatches" id="s-vehicle-color">${COLORS
         .map(([c, l]) => `<button data-c="${c}" aria-label="${l}" title="${l}" class="${local.get('vehicleColor', DEFAULT_COLOR) === c ? 'on' : ''}" style="--c:${c}"></button>`)
         .join('')}</div></div>
+    </div>
+    <div class="set-group"><h3>Fuel</h3>
+      <div class="set-row"><span>Your car takes<small>For the fuel cost on each route, at this week's pump price</small></span><div class="choice wrap" id="s-fuel">${FUELS
+        .map(([v, l]) => `<button data-v="${v}" class="${local.get('fuel', DEFAULT_FUEL) === v ? 'on' : ''}">${l}</button>`)
+        .join('')}</div></div>
+      <div class="set-row"><span>Car size<small>Small 6, medium 7.5, SUV or MPV 10 litres per 100 km</small></span><div class="choice" id="s-car-size">${SIZES
+        .map(([v, l]) => `<button data-v="${v}" class="${local.get('carSize', DEFAULT_SIZE) === v ? 'on' : ''}">${l}</button>`)
+        .join('')}</div></div>
+      ${fuelSpent()}
     </div>
     <div class="set-group"><h3>Offline maps</h3>
       <label class="set-row"><span>Save maps for drives<small>Keep the map along your route on this phone, for tunnels and dead spots</small></span><input type="checkbox" class="switch" id="s-offline" ${local.get('offlineMaps', true) ? 'checked' : ''}></label>
@@ -377,7 +411,9 @@ export function openSettings() {
         return;
       }
       if (c.dataset.set === 'traffic_probe' && !c.checked) stopSharing();
-      await saveSettings({ [c.dataset.set]: c.checked });
+      const saving = saveSettings({ [c.dataset.set]: c.checked });
+      if (c.dataset.set === 'night_vehicle_lights') ctx.setupVehicle();
+      await saving;
       if (c.dataset.set === 'voice') ctx.refreshSound();
       if (c.dataset.set === 'map_pois') ctx.drawPois();
     };
@@ -391,6 +427,11 @@ export function openSettings() {
       if (group.dataset.choice === 'theme') ctx.applyTheme();
     };
   });
+  $('s-lang').onchange = async (e) => {
+    const saving = saveSettings({ lang: e.target.value });
+    await useLang(e.target.value); // straight away, not once the account has it
+    await saving;
+  };
   // Saved maps live on this device only (like the vehicle), so they bypass the synced settings.
   $('s-offline').onchange = (e) => local.set('offlineMaps', e.target.checked);
   $('s-offline-clear').onclick = async () => {
@@ -416,6 +457,15 @@ export function openSettings() {
     local.set('vehicleColor', b.dataset.c);
     ctx.setupVehicle();
   };
+  // Kept on this device too, like the vehicle: they only change the fuel estimate.
+  for (const [id, key] of [['s-fuel', 'fuel'], ['s-car-size', 'carSize']]) {
+    $(id).onclick = (e) => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      $(id).querySelectorAll('button').forEach((x) => x.classList.toggle('on', x === b));
+      local.set(key, b.dataset.v);
+    };
+  }
   if (state.tester) {
     $('s-sim').onchange = (e) => {
       state.simulate = e.target.checked;
@@ -721,7 +771,9 @@ function openAbout() {
     <p>Map data © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap contributors</a>.
        Map tiles by <a href="https://openfreemap.org" target="_blank" rel="noopener">OpenFreeMap</a>.
        Routing by <a href="https://valhalla.github.io/valhalla/" target="_blank" rel="noopener">Valhalla</a>, search by <a href="https://photon.komoot.io" target="_blank" rel="noopener">Photon</a>, live traffic and house addresses by <a href="https://www.tomtom.com" target="_blank" rel="noopener">TomTom</a>,
+       weather by <a href="https://www.met.gov.my" target="_blank" rel="noopener">MET Malaysia</a> (data.gov.my), <a href="https://api.met.no" target="_blank" rel="noopener">MET Norway</a> and <a href="https://weatherkit.apple.com/legal-attribution.html" target="_blank" rel="noopener"> Weather</a>,
        train timetables from Prasarana and KTMB via <a href="https://data.gov.my" target="_blank" rel="noopener">data.gov.my</a>.
+       Pump prices from <a href="https://data.gov.my/data-catalogue/fuelprice" target="_blank" rel="noopener">data.gov.my</a>.
        Shops and places also from <a href="https://overturemaps.org" target="_blank" rel="noopener">Overture Maps Foundation</a> (Meta, Microsoft, Foursquare, AllThePlaces and others; <a href="/places/NOTICE.txt" target="_blank">licences</a>).
        EV chargers also from <a href="https://openchargemap.org" target="_blank" rel="noopener">Open Charge Map</a> (<a href="https://creativecommons.org/licenses/by-sa/4.0/" target="_blank" rel="noopener">CC BY-SA 4.0</a>).</p>
     <p>A2B is free and open source. <a href="https://github.com/thaqif0709/a2b" target="_blank" rel="noopener">Source code</a>, ideas and bug reports welcome, or send feedback from Settings.</p>

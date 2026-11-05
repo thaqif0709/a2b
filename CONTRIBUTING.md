@@ -16,7 +16,7 @@ spot on [openstreetmap.org](https://www.openstreetmap.org): fixing it there fixe
 
 ## Running A2B on your computer
 
-You need Node.js 22.13 or newer (the tests use its built-in SQLite). No Cloudflare account or API keys are needed to work on it.
+You need Node.js 22.20 or newer (the tests use its built-in SQLite, which mishandles numbered parameters like `?1` before 22.20). No Cloudflare account or API keys are needed to work on it.
 
 ```bash
 npm install

@@ -14,6 +14,7 @@ import { parkingQuery } from '../src/lib/parking.js';
 import { cameraBearing } from '../scripts/build-cameras.mjs';
 import { REPORT_TYPES, TRAIN_REPORT_POINTS } from '../public/report-types.js';
 import { encodePolyline as encode, decodePolyline } from '../public/geo.js';
+import { LANGUAGES } from '../public/i18n.js';
 
 // ---------- Fake upstream services ----------
 const LINE = Array.from({ length: 21 }, (_, i) => [13.4, 52.5 + 0.00045 * i]); // ~1 km north
@@ -55,6 +56,9 @@ globalThis.fetch = async (url, init = {}) => {
     const address = { streetNumber: '129', streetName: 'Jalan BK 5/6', freeformAddress: '129, Jalan BK 5/6, Bandar Kinrara, 47180 Puchong, Selangor', countrySubdivision: 'Selangor' };
     return Response.json({ results: [{ type: 'Point Address', address, position: { lat: 3.0414207, lon: 101.6477069 } }] });
   }
+  if (u.includes('api.data.gov.my/weather/forecast')) return Response.json([]);
+  if (u.includes('api.data.gov.my/weather/warning')) return Response.json([]);
+  if (u.includes('api.met.no')) return Response.json({ properties: { timeseries: [] } });
   if (u.includes('api.tomtom.com')) {
     tomtomCalls++;
     lastTomtomMode = new URL(u).searchParams.get('travelMode');
@@ -97,6 +101,9 @@ globalThis.fetch = async (url, init = {}) => {
     return new Response(`<osm><node id="1" lat="${(s + n) / 2 + 0.0001}" lon="${(w + e) / 2}"><tag k="barrier" v="toll_booth"/><tag k="name" v="Plaza Tol Ujian"/>`
       + '<tag k="charge" v="2.10 MYR/motorcar;1.10 MYR/taxi"/><tag k="payment:touchngo" v="yes"/><tag k="payment:touchngo_smarttag" v="yes"/><tag k="payment:touchngo_rfid" v="yes"/></node>'
       + `<node id="2" lat="${s}" lon="${w}"><tag k="barrier" v="toll_booth"/><tag k="name" v="Far booth"/></node></osm>`);
+  }
+  if (u.startsWith('https://api.data.gov.my/data-catalogue?id=fuelprice')) {
+    return Response.json([{ date: '2026-10-22', series_type: 'level', ron95: 4.32, ron95_budi95: 1.99, ron97: 4.8, diesel: 5.07, diesel_eastmsia: 5.07, diesel_budi: 2.1 }]);
   }
   if (u.startsWith('https://overpass-api.de/')) {
     overpassCalls++;
@@ -173,7 +180,7 @@ function client(device) {
 // open even when A2B is full). Everything else (accounts, places, reports, trips) doesn't.
 function needsSpot(method, path) {
   if (path === '/api/presence') return false;
-  if (method === 'GET' && (path.startsWith('/api/search') || path.startsWith('/api/address') || path.startsWith('/api/reverse') || path.startsWith('/api/parking') || path.startsWith('/api/chargers'))) return true;
+  if (method === 'GET' && (path.startsWith('/api/search') || path.startsWith('/api/address') || path.startsWith('/api/reverse') || path.startsWith('/api/parking') || path.startsWith('/api/fuel') || path.startsWith('/api/chargers') || path.startsWith('/api/weather'))) return true;
   return method === 'POST' && (path === '/api/route' || path === '/api/transit');
 }
 
@@ -293,9 +300,13 @@ test('an unexpected server error reads as a plain apology, not its internals', a
 });
 
 test('profile: home, work and settings', async () => {
-  const r = await alice('PATCH', '/api/me', { home: { name: 'Home', address: '1 Road', lat: 52.5, lng: 13.4 }, settings: { units: 'imperial', voice: false, bogus: 1, theme: 'purple' } });
+  const r = await alice('PATCH', '/api/me', { home: { name: 'Home', address: '1 Road', lat: 52.5, lng: 13.4 }, settings: { units: 'imperial', voice: false, bogus: 1, theme: 'purple', lang: 'ms' } });
   assert.deepEqual(r.body.user.home, { name: 'Home', address: '1 Road', lat: 52.5, lng: 13.4 });
-  assert.deepEqual(r.body.user.settings, { units: 'imperial', voice: false });
+  assert.deepEqual(r.body.user.settings, { units: 'imperial', voice: false, lang: 'ms' });
+  for (const { code } of LANGUAGES) {
+    const saved = await alice('PATCH', '/api/me', { settings: { lang: code } });
+    assert.equal(saved.body.user.settings.lang, code, `${code} is kept on the account`);
+  }
   assert.equal((await alice('PATCH', '/api/me', { password: 'newpassword', current_password: 'wrong' })).status, 403);
 });
 
@@ -311,6 +322,10 @@ test('saved and recent places', async () => {
   assert.equal((await bob('DELETE', `/api/places/${saved.body.place.id}`)).status, 200);
   r = await alice('GET', '/api/places');
   assert.equal(r.body.saved[0].name, 'My gym', "Bob can't delete Alice's place");
+  assert.equal((await alice('DELETE', '/api/places?kind=recent')).status, 200);
+  r = await alice('GET', '/api/places');
+  assert.equal(r.body.recent.length, 0, 'bulk clear empties recent history');
+  assert.equal((await alice('DELETE', '/api/places?kind=foo')).status, 400);
   assert.equal((await client()('GET', '/api/places')).status, 401);
 });
 
@@ -1093,6 +1108,12 @@ test('presence check-ins admit new devices without a per-network throttle', asyn
   }
 });
 
+test('this week’s pump prices, for the fuel cost on routes', async () => {
+  const r = await client()('GET', '/api/fuel');
+  assert.equal(r.status, 200);
+  assert.deepEqual(r.body.prices, { date: '2026-10-22', ron95: 4.32, ron95_budi95: 1.99, ron97: 4.8, diesel: 5.07, diesel_budi: 2.1 });
+});
+
 test('an exit’s sign comes with its step, and the cues name it', async () => {
   const coords = [[13.4, 52.5], [13.4, 52.505], [13.401, 52.51]];
   const trip = fakeTrip(coords, 120);
@@ -1130,6 +1151,19 @@ test('EV chargers: the whole list, fetched from OpenStreetMap by the nightly job
   assert.deepEqual(r.body.chargers, [['Suria KLCC EV', 101.7119, 3.1579, 'CCS2 · up to 60 kW', 'ev_charging_station']]);
   await worker.scheduled({}, env);
   assert.equal(overpassCalls, calls + 1, 'not again within the week');
+});
+
+test('weather along a route needs a spot and sensible points', async () => {
+  const anon = client('weather-no-spot');
+  assert.equal((await anon('GET', '/api/weather?pts=101.69,3.15,1')).status, 503, 'no spot yet');
+  const c = client();
+  assert.equal((await c('GET', '/api/weather')).status, 400);
+  assert.equal((await c('GET', '/api/weather?pts=101.69,3.15,1')).status, 400, 'a time long past');
+  const at = Math.round(Date.now() / 1000) + 600;
+  const res = await c('GET', `/api/weather?pts=101.69,3.15,${at};999,3.15,${at}`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.points.length, 1, 'the impossible point is dropped');
+  assert.deepEqual(res.body.warnings, []);
 });
 
 test('trips by train need a spot, a start and a destination', async () => {
@@ -1241,4 +1275,18 @@ test('train reports: riders report on a line, others see them on it and on trips
   assert.equal(v.body.removed, true);
   assert.equal((await client()('GET', `/api/train-reports?lines=${KJ}`)).body.reports.length, 0);
   assert.equal((await dan('POST', `/api/train-reports/${id}/vote`, { vote: 'still' })).status, 404);
+});
+
+test('night vehicle lights persist across sessions and accept only boolean preferences', async () => {
+  const first = client();
+  const account = { email: 'night-lights@example.test', password: 'night-lights-test-password', name: 'Night lights test', settings: { night_vehicle_lights: false } };
+  const signup = await first('POST', '/api/auth/signup', account);
+  assert.equal(signup.status, 201);
+  assert.equal(signup.body.user.settings.night_vehicle_lights, false);
+  const second = client();
+  assert.equal((await second('POST', '/api/auth/login', account)).status, 200);
+  assert.equal((await second('GET', '/api/me')).body.user.settings.night_vehicle_lights, false);
+  assert.equal((await second('PATCH', '/api/me', { settings: { night_vehicle_lights: true } })).body.user.settings.night_vehicle_lights, true);
+  await second('PATCH', '/api/me', { settings: { night_vehicle_lights: 'false' } });
+  assert.equal((await first('GET', '/api/me')).body.user.settings.night_vehicle_lights, true, 'invalid values must not overwrite the saved boolean');
 });

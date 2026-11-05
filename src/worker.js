@@ -15,12 +15,14 @@ import { loadCameras, camerasAlong } from './lib/cameras.js';
 import { loadSchools, schoolsAlong } from './lib/schools.js';
 import { parkingNear, parkingQuery, parkingResults } from './lib/parking.js';
 import { plazaDetails } from './lib/tolls.js';
+import { fuelPrices } from './lib/fuel.js';
 import { refreshChargers, allChargers } from './lib/chargers.js';
 import { reportsRepo } from './lib/reports.js';
 import { trainReportsRepo } from './lib/train-reports.js';
 import { suggestionsRepo } from './lib/suggestions.js';
 import { presenceRepo, limits, validDevice } from './lib/presence.js';
 import { usageRepo, USAGE_DAYS, dayOf } from './lib/usage.js';
+import { weatherAlong, MAX_POINTS as WEATHER_POINTS } from './lib/weather.js';
 import { planTransitCombined as planTransit, withRealWalks } from './lib/transit.js';
 import * as BusTransit from './lib/bus-transit.js';
 import { decodePolyline } from '../public/geo.js';
@@ -33,7 +35,7 @@ const LOGIN_MAX_FAILURES = 8; // per address: wrong passwords for one account st
 const RECENTS_KEPT = 20;
 const FULL_MESSAGE = 'A2B is full right now. You will be let in when a spot opens.';
 const UNEXPECTED_MESSAGE = 'Something went wrong on our side. Please try again in a minute.';
-const SETTINGS_KEYS = { voice: 'boolean', speed_warning: 'boolean', units: ['metric', 'imperial'], theme: ['auto', 'day', 'night'], avoid_tolls: 'boolean', avoid_highways: 'boolean', avoid_ferries: 'boolean', alerts: 'boolean', traffic_probe: 'boolean', map_pois: 'boolean' };
+const SETTINGS_KEYS = { voice: 'boolean', speed_warning: 'boolean', units: ['metric', 'imperial'], theme: ['auto', 'day', 'night'], avoid_tolls: 'boolean', avoid_highways: 'boolean', avoid_ferries: 'boolean', alerts: 'boolean', traffic_probe: 'boolean', map_pois: 'boolean', night_vehicle_lights: 'boolean', weather: 'boolean', lang: ['auto', 'en', 'ms', 'zh', 'ta'] }; // lang: every code in public/i18n.js's LANGUAGES
 
 export default {
   async fetch(request, env) {
@@ -67,6 +69,7 @@ export default {
       env.DB.prepare('DELETE FROM probe_segments WHERE updated_at < ?').bind(now - PROBE_RETENTION_MS),
       env.DB.prepare('DELETE FROM probe_devices WHERE updated_at < ?').bind(now - PROBE_RETENTION_MS),
       env.DB.prepare('DELETE FROM probe_limits WHERE last_at < ?').bind(now - PROBE_RETENTION_MS),
+      env.DB.prepare('DELETE FROM shared_cache WHERE expires_at < ?').bind(now),
     ]);
     await refreshChargers(env, { now }).catch((e) => console.warn('chargers', e.message)); // weekly, per source
   },
@@ -369,6 +372,16 @@ async function route(request, env, url) {
     return json({ place: row }, existing ? 200 : 201);
   }
 
+  // Clear all places of one kind at once (used by "Clear" on recent history). Deleting one row per item was
+  // what made clearing a long history slow.
+  if (path === '/api/places' && method === 'DELETE') {
+    const u = needUser();
+    const kind = url.searchParams.get('kind');
+    if (kind !== 'saved' && kind !== 'recent') throw httpError('kind must be saved or recent.', 400);
+    await db.prepare('DELETE FROM places WHERE user_id = ? AND kind = ?').bind(u.id, kind).run();
+    return json({ ok: true });
+  }
+
   if (parts[1] === 'places' && parts[2] && method === 'PATCH') {
     const u = needUser();
     const body = await readJson(request);
@@ -418,6 +431,20 @@ async function route(request, env, url) {
     return json({ places }, 200, { 'cache-control': 'no-store' });
   }
 
+  // The weather at points along a route, each at the time the driver will pass it: pts=lng,lat,unix-seconds;...
+  if (path === '/api/weather' && method === 'GET') {
+    await needSpot();
+    const now = Date.now();
+    const points = String(url.searchParams.get('pts') ?? '')
+      .split(';')
+      .slice(0, WEATHER_POINTS)
+      .map((p) => p.split(',').map(Number))
+      .filter(([lng, lat, at]) => Math.abs(lat) <= 90 && Math.abs(lng) <= 180 && at * 1000 > now - 3600_000 && at * 1000 < now + 7 * 86400_000)
+      .map(([lng, lat, at]) => ({ lng, lat, at: at * 1000 }));
+    if (!points.length) throw httpError('pts is required: lng,lat,time;...', 400);
+    return json(await weatherAlong(env, points, { now }), 200, { 'cache-control': 'private, max-age=600' });
+  }
+
   if (path === '/api/parking' && method === 'GET') {
     await needSpot();
     const lat = num(url, 'lat'), lng = num(url, 'lng');
@@ -430,6 +457,12 @@ async function route(request, env, url) {
     const res = json({ parking: await parkingNear(env, [lng, lat]) }, 200, { 'cache-control': 'public, max-age=86400' });
     if (cache) await cache.put(key, res.clone());
     return res;
+  }
+
+  // This week's pump prices, for the fuel estimate on routes: src/lib/fuel.js.
+  if (path === '/api/fuel' && method === 'GET') {
+    await needSpot();
+    return json({ prices: await fuelPrices() }, 200, { 'cache-control': 'private, max-age=21600' });
   }
 
   // EV chargers (src/lib/chargers.js): all of them, a few hundred small rows, for the phone to search and draw. Only

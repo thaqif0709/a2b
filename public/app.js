@@ -1798,6 +1798,7 @@ function renderFrom() {
 }
 
 function renderTravel() {
+  $('travel-seg').querySelector('[data-travel=transit]').textContent = tr('Ride');
   for (const b of $('travel-seg').querySelectorAll('button')) b.classList.toggle('on', b.dataset.travel === travel);
   $('preview').classList.toggle('transit', travel === 'transit');
 }

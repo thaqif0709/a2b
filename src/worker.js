@@ -523,7 +523,7 @@ async function route(request, env, url) {
     const area = corridorBox([from, ...via, to]);
     const exclude = walk || body.avoid_closures === false ? [] : await reports.closuresNear(area);
     const opts = {
-      from, to, via, exclude,
+      from, to, via, exclude, optimize: body.optimize === true,
       avoid: body.avoid ?? {},
       units: body.units === 'imperial' ? 'imperial' : 'metric',
       lang: typeof body.lang === 'string' && /^[a-z]{2}(-[A-Z]{2})?$/.test(body.lang) ? body.lang : 'en-US',

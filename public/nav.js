@@ -271,3 +271,23 @@ export class Simulator {
     };
   }
 }
+
+// Remaining road metres and travel seconds to intermediate stops, entirely on the device.
+// Integrate the loaded maneuver times over the remaining shape, rather than dividing by GPS speed
+// (which becomes zero at lights). Reuse the navigator's cumulative distances when driving.
+export function stopEstimates(route, { along = 0, passed = new Set(), cum = route.cum ?? cumulative(route.coords) } = {}) {
+  const total = cum.at(-1) || 1;
+  return route.steps.flatMap((stop, index) => {
+    if (stop.type !== 'stop' || passed.has(index)) return [];
+    const target = cum[stop.begin];
+    let seconds = 0;
+    for (const step of route.steps.slice(0, index)) {
+      const start = cum[step.begin], end = cum[step.end];
+      if (end > start) seconds += (step.time ?? 0) * Math.max(0, Math.min(end, target) - Math.max(start, along)) / (end - start);
+      else if (start >= along && start <= target) seconds += step.time ?? 0;
+    }
+    const metres = Math.max(0, target - along);
+    seconds += Math.max(0, route.delay ?? 0) * metres / total;
+    return [{ metres, seconds: Math.max(0, seconds) }];
+  });
+}

@@ -179,3 +179,18 @@ test('exit numbers and long road codes are read digit by digit', () => {
   assert.equal(spokenCodes('In 300 meters, turn right.'), 'In 300 meters, turn right.');
   assert.equal(spokenCodes('Speed camera in 500 meters. The limit is 110.'), 'Speed camera in 500 meters. The limit is 110.');
 });
+
+test('stop estimates use remaining loaded road timings, not crow-flies distance or GPS speed', async () => {
+  const { stopEstimates } = await import('../public/nav.js');
+  const route = { coords: [], cum: [0, 1000, 3000, 4000], delay: 400, steps: [
+    { type: 'depart', begin: 0, end: 1, time: 100 },
+    { type: 'stop', begin: 1, end: 1, time: 0 },
+    { type: 'depart', begin: 1, end: 2, time: 400 },
+    { type: 'stop', begin: 2, end: 2, time: 0 },
+    { type: 'depart', begin: 2, end: 3, time: 100 },
+  ] };
+  assert.deepEqual(stopEstimates(route), [{ metres: 1000, seconds: 200 }, { metres: 3000, seconds: 800 }]);
+  assert.deepEqual(stopEstimates(route, { along: 500 }), [{ metres: 500, seconds: 100 }, { metres: 2500, seconds: 700 }]);
+  assert.deepEqual(stopEstimates(route, { along: 2000, passed: new Set([1]) }), [{ metres: 1000, seconds: 300 }]);
+  assert.deepEqual(stopEstimates(route, { along: 3500, passed: new Set([1]) }), [{ metres: 0, seconds: 0 }]);
+});

@@ -71,8 +71,9 @@ export default {
   'Change': 'Tukar',
   'Drive': 'Kereta',
   'Motorbike': 'Motosikal',
-  'Walk': 'Jalan kaki',
   'Train': 'Tren',
+  'Ride': 'Naik',
+  'Walk': 'Jalan kaki',
   'Leave later': 'Pergi nanti', // pairs with Pergi sekarang, and fits its button on one line
   'Go now': 'Pergi sekarang',
   'Start': 'Mula',

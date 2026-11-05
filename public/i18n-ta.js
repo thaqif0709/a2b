@@ -68,8 +68,9 @@ export default {
   'Change': 'மாற்று',
   'Drive': 'கார்',
   'Motorbike': 'மோட்டார்',
-  'Walk': 'நடை',
   'Train': 'ரயில்',
+  'Ride': 'பயணம்',
+  'Walk': 'நடை',
   'Leave later': 'பிறகு செல்', // pairs with இப்போது செல், and fits its button on one line
   'Go now': 'இப்போது செல்',
   'Start': 'தொடங்கு',

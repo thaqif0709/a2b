@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS probe_devices (
 CREATE INDEX IF NOT EXISTS probe_devices_live ON probe_devices (updated_at);
 CREATE TABLE IF NOT EXISTS probe_limits (device_hash TEXT PRIMARY KEY, last_at INTEGER NOT NULL, day TEXT NOT NULL, n INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS recovery_codes (user_id INTEGER PRIMARY KEY, code_hash TEXT NOT NULL, created_at INTEGER NOT NULL, used INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS recovery_attempts (attempt TEXT PRIMARY KEY, email TEXT NOT NULL, at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS recovery_attempts_email ON recovery_attempts (email, at);
 CREATE TABLE IF NOT EXISTS chargers (id TEXT PRIMARY KEY, source TEXT NOT NULL, name TEXT NOT NULL, lat REAL NOT NULL, lng REAL NOT NULL, details TEXT NOT NULL DEFAULT '', updated_at INTEGER NOT NULL);
 CREATE INDEX IF NOT EXISTS chargers_source ON chargers (source, updated_at);
 CREATE TABLE IF NOT EXISTS place_suggestions (

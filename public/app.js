@@ -204,6 +204,7 @@ boot();
 
 async function boot() {
   loadLocalSettings();
+  keepScreenOn();
   const langReady = useLang(state.settings.lang); // under the splash; the Welcome card waits for it
   applyTheme(true);
   const last = local.get('lastPos');
@@ -1325,7 +1326,7 @@ function wireUi() {
     if (e.key === 'Escape') closeTop();
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && (mode === 'drive' || mode === 'ride')) requestWakeLock();
+    if (document.visibilityState === 'visible') requestWakeLock();
     if (document.visibilityState === 'hidden') logFuel(); // the phone may close the page from here
   });
 }
@@ -2375,8 +2376,6 @@ function endRide(arrived) {
   $('ride-ui').classList.add('hidden');
   $('btn-recenter-ride').classList.add('hidden');
   document.body.classList.remove('riding');
-  wakeLock?.release?.().catch(() => {});
-  wakeLock = null;
   mode = 'browse';
   if (vehicleShown?.startsWith('train:')) setupVehicle();
   $('ride-off').classList.add('hidden');
@@ -3556,8 +3555,6 @@ async function endDrive(arrived) {
   onRoute = [];
   stops = [];
   renderStopMenu();
-  wakeLock?.release?.().catch(() => {});
-  wakeLock = null;
   $('alert').classList.add('hidden');
   $('offroute').classList.add('hidden');
   $('limit').classList.add('hidden');
@@ -3575,10 +3572,19 @@ async function endDrive(arrived) {
   updateCheckpoint(); // an update that came out during the trip
 }
 
+// The screen stays on whenever A2B is on screen, not only while driving: people glance at the map, plan a route or
+// wait at a stop, and the phone dimming mid-glance is annoying. The browser drops the lock when the page is hidden (or
+// on low battery), so it's asked for again when A2B comes back, and on the next tap for browsers that want one first.
 async function requestWakeLock() {
+  if ((wakeLock && !wakeLock.released) || document.visibilityState !== 'visible') return;
   try {
     wakeLock = await navigator.wakeLock?.request('screen');
   } catch {}
+}
+
+function keepScreenOn() {
+  requestWakeLock();
+  document.addEventListener('pointerdown', requestWakeLock, { passive: true });
 }
 
 // ================= Shared drive =================

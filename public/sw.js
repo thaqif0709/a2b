@@ -8,12 +8,12 @@
 // Two map caches: small long-lived files (map library, style, TileJSON, fonts, sprites) live in
 // MAPS and are never trimmed, so trimming and "Clear offline maps" can't evict the library or the
 // labels. Only versioned vector tiles live in TILES, which is trimmed to MAX_TILES.
-const CACHE = 'a2b-v49';
+const CACHE = 'a2b-v50';
 const PLACES = 'a2b-places-data-v1'; // persistent place-shard cache (public/places.js)
 const TILES = 'a2b-tiles-v1'; // versioned tiles only; kept across activates; cleared from Settings › Offline maps
 const MAPS = 'a2b-maps-v1'; // library, style, TileJSON, fonts, sprites; never trimmed
 const MAX_TILES = 2000; // bound phone storage; iOS can evict a PWA's whole storage when it gets large
-const SHELL = ['/', '/styles.css', '/app.js', '/core.js', '/panels.js', '/nav.js', '/motion.js', '/voice.js', '/vehicle3d.js', '/geo.js', '/icons.js', '/report-types.js', '/map-themes.js', '/places.js', '/text.js', '/sheet-drag.js', '/follow.js', '/presence.js', '/welcome.js', '/update.js', '/offline.js', '/weather.js', '/train-guide.js', '/signs.js', '/dead-reckoning.js', '/map-places.js', '/suggest.js', '/school-zones.js', '/faster-route.js', '/route-preview.js', '/address.js', '/probe.js', '/rest-stops.js', '/rest-stops.json', '/trip-cost.js', '/fuel-log.js', '/i18n.js', '/i18n-ms.js', '/i18n-zh.js', '/i18n-ta.js', '/icon.svg', '/manifest.webmanifest'];
+const SHELL = ['/', '/styles.css', '/app.js', '/core.js', '/panels.js', '/nav.js', '/motion.js', '/voice.js', '/vehicle3d.js', '/geo.js', '/icons.js', '/report-types.js', '/map-themes.js', '/places.js', '/text.js', '/sheet-drag.js', '/follow.js', '/presence.js', '/welcome.js', '/update.js', '/offline.js', '/weather.js', '/train-guide.js', '/signs.js', '/dead-reckoning.js', '/map-places.js', '/suggest.js', '/school-zones.js', '/faster-route.js', '/route-preview.js', '/address.js', '/probe.js', '/rest-stops.js', '/rest-stops.json', '/trip-cost.js', '/fuel-log.js', '/keep-awake.js', '/i18n.js', '/i18n-ms.js', '/i18n-zh.js', '/i18n-ta.js', '/icon.svg', '/manifest.webmanifest'];
 // Served from our own domain (public/vendor/), so a network that blocks or stalls a CDN can't stop the app.
 const MAPLIBRE = ['/vendor/maplibre-gl-4.7.1/maplibre-gl.js', '/vendor/maplibre-gl-4.7.1/maplibre-gl.css'];
 const VENDOR = [...MAPLIBRE, '/vendor/three-0.160.0/three.module.js']; // every library file the app loads; three.js on first use

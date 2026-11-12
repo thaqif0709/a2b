@@ -36,6 +36,7 @@ import { signPlaces } from './signs.js';
 import { mapPlace } from './map-places.js';
 import { initSuggest, openSuggest, closeSuggest, suggesting, syncDriverPlaces } from './suggest.js';
 import { weatherPoints, weatherQuery, describeTrip, wetAhead, spokenWeather, restReminder, drivesAtNight, REST_EVERY_S } from './weather.js';
+import { keepScreenOn, requestWakeLock } from './keep-awake.js';
 
 // Which map look to use for day or night (see map-themes.js). 'mapTheme' in local storage overrides it.
 function mapThemeId(t = themeNow) {
@@ -89,7 +90,6 @@ const alerted = new Map(); // report id -> 'ahead' | 'asked'
 let lastReroute = 0;
 let rerouting = false;
 let driveStarted = 0;
-let wakeLock = null;
 let share = null; // { token, url, last: { at, pos, eta } of the last update sent }
 let shareTimer = null; // phones send no GPS while standing still, so the heartbeat needs its own clock
 let recenterTimer = null;
@@ -1326,7 +1326,6 @@ function wireUi() {
     if (e.key === 'Escape') closeTop();
   });
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') requestWakeLock();
     if (document.visibilityState === 'hidden') logFuel(); // the phone may close the page from here
   });
 }
@@ -3570,21 +3569,6 @@ async function endDrive(arrived) {
     map.easeTo({ pitch: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, duration: 600 });
   }
   updateCheckpoint(); // an update that came out during the trip
-}
-
-// The screen stays on whenever A2B is on screen, not only while driving: people glance at the map, plan a route or
-// wait at a stop, and the phone dimming mid-glance is annoying. The browser drops the lock when the page is hidden (or
-// on low battery), so it's asked for again when A2B comes back, and on the next tap for browsers that want one first.
-async function requestWakeLock() {
-  if ((wakeLock && !wakeLock.released) || document.visibilityState !== 'visible') return;
-  try {
-    wakeLock = await navigator.wakeLock?.request('screen');
-  } catch {}
-}
-
-function keepScreenOn() {
-  requestWakeLock();
-  document.addEventListener('pointerdown', requestWakeLock, { passive: true });
 }
 
 // ================= Shared drive =================

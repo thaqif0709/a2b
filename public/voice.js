@@ -26,6 +26,21 @@ export function pickVoice() {
 if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
   speechSynthesis.getVoices();
   speechSynthesis.addEventListener?.('voiceschanged', () => speechSynthesis.getVoices());
+  // iPhones and iPads (Safari, and Chrome there, which is Safari underneath) only let a page talk once it has spoken
+  // during a tap. A drive that starts by itself after its countdown would otherwise stay silent the whole way, so
+  // the first tap anywhere says something silent to unlock the voice for the rest of the visit.
+  const unlock = () => {
+    try {
+      if (speechSynthesis.speaking || speechSynthesis.pending) return remove(); // this tap already spoke (Start)
+      const u = new SpeechSynthesisUtterance(' ');
+      u.volume = 0;
+      speechSynthesis.speak(u);
+    } catch {}
+    remove();
+  };
+  // Listening on the document, after the tap's own handlers, so a button that speaks goes first.
+  const remove = () => { for (const type of ['touchend', 'click']) document.removeEventListener(type, unlock); };
+  for (const type of ['touchend', 'click']) document.addEventListener(type, unlock, { passive: true });
 }
 
 // For as long as the phone is talking, other sound (radio, music, a video) shouldn't be stopped outright:
@@ -55,7 +70,9 @@ export function speak(text, { force = false } = {}) {
     const finish = () => { clearTimeout(timer); restoreMedia(); };
     u.onend = finish;
     u.onerror = finish;
-    speechSynthesis.cancel();
+    // Cancel only what's actually talking: on iPhones a cancel straight before speak can drop the new line too.
+    if (speechSynthesis.speaking || speechSynthesis.pending) speechSynthesis.cancel();
+    speechSynthesis.resume(); // iOS can leave speech paused after the app was in the background
     speechSynthesis.speak(u);
   } catch {}
 }

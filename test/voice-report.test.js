@@ -19,6 +19,14 @@ test('ignores speech with no report word, or no matching type', () => {
   assert.equal(matchReportPhrase('report the weather'), null);
 });
 
+// The phone listens continuously while driving, so "report" said by the radio or a passenger is common. The type
+// word has to follow "report", not just be somewhere in the sentence, or these would misfire as real reports.
+test('does not misfire on "report" used in an unrelated sentence', () => {
+  assert.equal(matchReportPhrase('traffic report coming up after this song'), null);
+  assert.equal(matchReportPhrase("the police said they'd report it"), null);
+  assert.equal(matchReportPhrase('crash course, then a full report'), null);
+});
+
 // Off by default, listens only while driving, and stops the moment the drive ends.
 test('the app only listens for reports while actually driving', async () => {
   const app = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');

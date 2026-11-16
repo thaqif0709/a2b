@@ -16,11 +16,17 @@ const SYNONYMS = {
 };
 
 // text: whatever the recognizer heard. Returns a report type key, or null if nothing matched.
+// The type word must come after "report", in a short window right after it, not just appear anywhere in the
+// sentence: with the phone listening continuously while driving, "report" said on the radio or by a passenger
+// is common, and "traffic report coming up" or "the police said they'd report it" would otherwise misfire.
+const AFTER_WINDOW = 40; // chars after "report": enough for "report road closed", not a whole sentence
 export function matchReportPhrase(text) {
   const heard = text.toLowerCase().replace(/[^a-z ]/g, ' ');
-  if (!/\breport\b/.test(heard)) return null;
+  const at = heard.indexOf('report');
+  if (at < 0) return null;
+  const after = heard.slice(at, at + AFTER_WINDOW);
   for (const [key, words] of Object.entries(SYNONYMS)) {
-    if (words.some((w) => heard.includes(w))) return key;
+    if (words.some((w) => after.includes(w))) return key;
   }
   return null;
 }

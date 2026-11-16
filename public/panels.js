@@ -357,6 +357,9 @@ export function openSettings() {
     <div class="set-group"><h3>Traffic</h3>
       ${toggleRow('traffic_probe', 'Share speeds for live traffic', 'Off by default. Helps everyone see slow traffic.')}
     </div>
+    <div class="set-group"><h3>Hands-free reporting</h3>
+      ${toggleRow('voice_report', 'Say "report police" to report', 'Listens only while driving. Needs microphone permission. Off by default.')}
+    </div>
     <div class="set-group"><h3>Display</h3>
       ${choiceRow('units', 'Units', [['metric', 'km'], ['imperial', 'miles']])}
       ${choiceRow('theme', 'Map', [['auto', 'Auto'], ['day', 'Day'], ['night', 'Night']])}
@@ -416,6 +419,7 @@ export function openSettings() {
       await saving;
       if (c.dataset.set === 'voice') ctx.refreshSound();
       if (c.dataset.set === 'map_pois') ctx.drawPois();
+      if (c.dataset.set === 'voice_report' && !c.checked) ctx.stopVoiceReport();
     };
   });
   body.querySelectorAll('[data-choice]').forEach((group) => {

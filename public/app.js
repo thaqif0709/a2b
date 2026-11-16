@@ -21,6 +21,7 @@ import { MAP_THEMES, BASE_STYLES, applyMapTheme } from './map-themes.js';
 import { initPanels, openMenu, openAuth, openSettings, renderAvatar, refreshMe } from './panels.js';
 import { startPresence, checkIn } from './presence.js';
 import { noteProbeFix, startProbeSender, discardProbeBuffer } from './probe.js';
+import { VoiceReporter } from './voice-report.js';
 import { welcome, hideSplash } from './welcome.js';
 import { useLang, tr } from './i18n.js';
 import { watchUpdates, updateCheckpoint } from './update.js';
@@ -64,6 +65,7 @@ const REROUTE_GAP_MS = 8000;
 
 let map;
 let carMarker, destMarker, dropMarker, stopMarker;
+const voiceReporter = new VoiceReporter({ onMatch: (key) => voiceReport(key), onError: (msg) => toast(msg) });
 const routeLabels = [];
 const reports = new Map(); // id -> report
 const reportMarkers = new Map(); // id -> maplibregl.Marker
@@ -256,7 +258,11 @@ async function boot() {
 
   carMarker = new maplibregl.Marker({ element: el('div', 'car', CAR), rotationAlignment: 'map', pitchAlignment: 'map' });
 
-  initPanels({ onUserChanged, applyTheme, openSearchFor, openPreview, refreshSound, setupVehicle, drawPois, setSimSpeed: (v) => sim && (sim.speedFactor = v) });
+  initPanels({
+    onUserChanged, applyTheme, openSearchFor, openPreview, refreshSound, setupVehicle, drawPois,
+    setSimSpeed: (v) => sim && (sim.speedFactor = v),
+    stopVoiceReport: () => voiceReporter.stop(),
+  });
   initSuggest({ map, openAuth, setBrowseHidden: (hidden) => $('browse-ui').classList.toggle('hidden', hidden) });
   syncDriverPlaces();
   wireUi();
@@ -2883,6 +2889,7 @@ function startDrive() {
   const route = routes[selected];
   if (!route) return;
   mode = 'drive';
+  if (state.settings.voice_report) voiceReporter.start();
   drawPois(); // off the map while driving
   trail = [];
   offTrail = [];
@@ -3525,6 +3532,7 @@ async function arrive() {
 }
 
 async function endDrive(arrived) {
+  voiceReporter.stop();
   stopSimulation();
   stopTunnelWatch();
   discardProbeBuffer(); // fixes buffered on this drive must not leak into a later batch
@@ -3989,21 +3997,34 @@ async function sendReport() {
   const btn = $('btn-report-send');
   btn.disabled = true;
   try {
-    const [lng, lat] = reportDraft.at;
-    const res = await api('/api/reports', {
-      method: 'POST',
-      body: { type: reportDraft.type, subtype: reportDraft.subtype, lat, lng, heading: reportDraft.heading, comment: $('report-comment').value },
-    });
+    await submitReport({ ...reportDraft, comment: $('report-comment').value });
     $('report-sheet').classList.add('hidden');
-    upsertReport(res.report);
-    computeOnRoute();
-    if (res.report) alerted.set(res.report.id, 'asked');
-    bumpPoints(res.points || 0);
-    toast(res.merged ? 'Thanks! You confirmed an existing report.' : `Report sent. Thanks! +${res.points} points`);
     reportDraft = null;
   } catch (e) {
     toast(e.message);
   } finally {
     btn.disabled = false;
+  }
+}
+
+// Shared by the report sheet and hands-free voice reporting (voice-report.js).
+async function submitReport({ type, subtype, at, heading, comment }) {
+  const [lng, lat] = at;
+  const res = await api('/api/reports', { method: 'POST', body: { type, subtype, lat, lng, heading, comment } });
+  upsertReport(res.report);
+  computeOnRoute();
+  if (res.report) alerted.set(res.report.id, 'asked');
+  bumpPoints(res.points || 0);
+  toast(res.merged ? 'Thanks! You confirmed an existing report.' : `Report sent. Thanks! +${res.points} points`);
+}
+
+// Hands-free: "report police" and similar while driving, no touching the phone.
+async function voiceReport(type) {
+  if (!canReportFrom(mode) || mode !== 'drive' || !state.user || !state.pos) return;
+  speak(`Reporting ${REPORT_TYPES[type].label.toLowerCase()}.`);
+  try {
+    await submitReport({ type, subtype: null, at: state.pos.lngLat, heading: state.pos.heading ?? null, comment: '' });
+  } catch (e) {
+    toast(e.message);
   }
 }

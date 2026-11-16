@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS reports (
 );
 CREATE INDEX IF NOT EXISTS reports_live ON reports (expires_at, lat, lng);
 CREATE INDEX IF NOT EXISTS reports_user ON reports (user_id, created_at);
-CREATE TABLE IF NOT EXISTS votes (report_id INTEGER NOT NULL, user_id INTEGER NOT NULL, vote TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (report_id, user_id, vote));
+CREATE TABLE IF NOT EXISTS votes (report_id INTEGER NOT NULL, user_id INTEGER NOT NULL, vote TEXT NOT NULL, created_at INTEGER NOT NULL, weight REAL NOT NULL DEFAULT 1, PRIMARY KEY (report_id, user_id, vote));
 CREATE TABLE IF NOT EXISTS places (
   id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, kind TEXT NOT NULL, name TEXT NOT NULL, address TEXT, lat REAL NOT NULL, lng REAL NOT NULL, used_at INTEGER NOT NULL
 );

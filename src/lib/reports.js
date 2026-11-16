@@ -121,10 +121,11 @@ export function reportsRepo(db) {
       // still and gone are one opinion per driver; switching replaces the old one.
       const opposite = vote === 'still' ? 'gone' : vote === 'gone' ? 'still' : null;
       const now = Date.now();
+      const weight = trustWeight(user.points);
       // Claim the vote first: concurrent taps from two devices can't both add to the count.
       const claimed = await db
-        .prepare('INSERT OR IGNORE INTO votes (report_id, user_id, vote, created_at) VALUES (?, ?, ?, ?)')
-        .bind(id, user.id, vote, now)
+        .prepare('INSERT OR IGNORE INTO votes (report_id, user_id, vote, created_at, weight) VALUES (?, ?, ?, ?, ?)')
+        .bind(id, user.id, vote, now, weight)
         .run();
       if (!claimed.meta.changes) {
         const fresh = await db.prepare('SELECT r.*, u.name AS reporter FROM reports r JOIN users u ON u.id = r.user_id WHERE r.id = ?').bind(id).first();
@@ -132,11 +133,14 @@ export function reportsRepo(db) {
       }
       // One atomic update moves the counters, so two votes at the same moment can't lose one between
       // reading and writing them. Lifetime and removal are derived from the fresh row afterwards.
-      let dropped = 0;
+      let dropped = 0, dropWeight = 0;
       if (opposite) {
+        // The weight the old vote actually added, not what it would be worth today: the voter may have
+        // earned points since, and switching an opinion must not quietly inflate or deflate the sums.
+        const old = await db.prepare('SELECT weight FROM votes WHERE report_id = ? AND user_id = ? AND vote = ?').bind(id, user.id, opposite).first();
+        dropWeight = old?.weight ?? 0;
         dropped = (await db.prepare('DELETE FROM votes WHERE report_id = ? AND user_id = ? AND vote = ?').bind(id, user.id, opposite).run()).meta.changes;
       }
-      const weight = trustWeight(user.points);
       await db
         .prepare(
           'UPDATE reports SET thanks = thanks + ?, still = MAX(0, still + ?), gone = MAX(0, gone + ?), ' +
@@ -146,8 +150,8 @@ export function reportsRepo(db) {
           vote === 'thanks' ? 1 : 0,
           (vote === 'still' ? 1 : 0) - (opposite === 'still' && dropped ? 1 : 0),
           (vote === 'gone' ? 1 : 0) - (opposite === 'gone' && dropped ? 1 : 0),
-          (vote === 'still' ? weight : 0) - (opposite === 'still' && dropped ? weight : 0),
-          (vote === 'gone' ? weight : 0) - (opposite === 'gone' && dropped ? weight : 0),
+          (vote === 'still' ? weight : 0) - (opposite === 'still' && dropped ? dropWeight : 0),
+          (vote === 'gone' ? weight : 0) - (opposite === 'gone' && dropped ? dropWeight : 0),
           id,
         )
         .run();

@@ -1070,6 +1070,28 @@ test('switching a vote replaces it instead of double counting', async () => {
   assert.deepEqual([v.body.report.still, v.body.report.gone], [0, 1], 'voting twice changes nothing');
 });
 
+// A switched vote must remove exactly the weight it added, even if the voter's trust changed in between —
+// otherwise earning points between two votes would quietly inflate or deflate a report's weighted sums.
+test('switching a vote removes the weight it actually added, not today\'s weight', async () => {
+  const reporter = client();
+  await reporter('POST', '/api/auth/signup', { email: 'trust-reporter@test.com', password: 'password19', name: 'Reporter' });
+  const report = (await reporter('POST', '/api/reports', { type: 'hazard', subtype: 'pothole', lat: 3.5, lng: 101.5 })).body.report;
+
+  const voter = client();
+  await voter('POST', '/api/auth/signup', { email: 'trust-switch@test.com', password: 'password19', name: 'Switcher' });
+  const id = (await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind('trust-switch@test.com').first()).id;
+
+  let v = await voter('POST', `/api/reports/${report.id}/vote`, { vote: 'still' });
+  let row = await env.DB.prepare('SELECT still_weight, gone_weight FROM reports WHERE id = ?').bind(report.id).first();
+  assert.equal(row.still_weight, 1, 'voted at 0 points: 1x');
+
+  await env.DB.prepare('UPDATE users SET points = 200 WHERE id = ?').bind(id).run();
+  v = await voter('POST', `/api/reports/${report.id}/vote`, { vote: 'gone' });
+  row = await env.DB.prepare('SELECT still_weight, gone_weight FROM reports WHERE id = ?').bind(report.id).first();
+  assert.equal(row.still_weight, 0, 'the old 1x vote is gone, not left behind or over-subtracted');
+  assert.equal(row.gone_weight, 2, 'the new vote counts at today\'s 2x, now at 200 points');
+});
+
 test('a forgotten password is recovered with the code shown at sign-up', async () => {
   const c = client();
   const signup = await c('POST', '/api/auth/signup', { email: 'loss@test.com', password: 'password16', name: 'Loss' });

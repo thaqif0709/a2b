@@ -13,15 +13,21 @@ const MERGE_WINDOW = 15 * MIN;
 const REPORT_COOLDOWN = 60_000; // one report a minute per driver: fast enough on the road, slow for a script
 const REPORT_RADIUS_M = 10_000; // a report should come from near it: within this of the driver's known position
 
-// Each "still there" adds a quarter of the type's life, but a report never lives more than 2 lifetimes from now.
-export function extendedExpiry(type, currentExpiry, now = Date.now(), types = REPORT_TYPES) {
+// Each "still there" adds a quarter of the type's life (more from a trusted driver), capped at 2 lifetimes from now.
+export function extendedExpiry(type, currentExpiry, now = Date.now(), types = REPORT_TYPES, weight = 1) {
   const life = types[type].life * MIN;
-  return Math.min(Math.max(currentExpiry, now) + life / 4, now + life * 2);
+  return Math.min(Math.max(currentExpiry, now) + (life / 4) * weight, now + life * 2);
 }
 
-// Removed when "not there" clearly outweighs "still there".
-export function shouldRemove({ still, gone }) {
-  return gone >= still + 2;
+// Removed when "not there" clearly outweighs "still there". weight: true to compare the trust-weighted sums
+// (road reports, since #21), false for the plain vote counts still used by train reports.
+export function shouldRemove({ still, gone, still_weight, gone_weight }, weighted = false) {
+  return weighted ? gone_weight >= still_weight + 2 : gone >= still + 2;
+}
+
+// A driver's votes count for more as they earn points: from 1x at 0 points up to 2x at 200+.
+export function trustWeight(points) {
+  return 1 + Math.min(Math.max(points, 0), 200) / 200;
 }
 
 export function publicReport(r, viewerId = null) {
@@ -130,19 +136,25 @@ export function reportsRepo(db) {
       if (opposite) {
         dropped = (await db.prepare('DELETE FROM votes WHERE report_id = ? AND user_id = ? AND vote = ?').bind(id, user.id, opposite).run()).meta.changes;
       }
+      const weight = trustWeight(user.points);
       await db
-        .prepare('UPDATE reports SET thanks = thanks + ?, still = MAX(0, still + ?), gone = MAX(0, gone + ?) WHERE id = ?')
+        .prepare(
+          'UPDATE reports SET thanks = thanks + ?, still = MAX(0, still + ?), gone = MAX(0, gone + ?), ' +
+            'still_weight = MAX(0, still_weight + ?), gone_weight = MAX(0, gone_weight + ?) WHERE id = ?',
+        )
         .bind(
           vote === 'thanks' ? 1 : 0,
           (vote === 'still' ? 1 : 0) - (opposite === 'still' && dropped ? 1 : 0),
           (vote === 'gone' ? 1 : 0) - (opposite === 'gone' && dropped ? 1 : 0),
+          (vote === 'still' ? weight : 0) - (opposite === 'still' && dropped ? weight : 0),
+          (vote === 'gone' ? weight : 0) - (opposite === 'gone' && dropped ? weight : 0),
           id,
         )
         .run();
       const counted = await db.prepare('SELECT r.*, u.name AS reporter FROM reports r JOIN users u ON u.id = r.user_id WHERE r.id = ?').bind(id).first();
       let expires_at = counted.expires_at, removed = counted.removed;
-      if (vote === 'still') expires_at = extendedExpiry(counted.type, counted.expires_at, now);
-      if (vote === 'gone' && (own || shouldRemove({ still: counted.still, gone: counted.gone }))) removed = 1;
+      if (vote === 'still') expires_at = extendedExpiry(counted.type, counted.expires_at, now, REPORT_TYPES, weight);
+      if (vote === 'gone' && (own || shouldRemove(counted, true))) removed = 1;
       if (expires_at !== counted.expires_at || removed !== counted.removed) {
         await db.prepare('UPDATE reports SET expires_at = ?, removed = ? WHERE id = ?').bind(expires_at, removed, id).run();
       }

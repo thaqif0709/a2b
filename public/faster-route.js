@@ -22,6 +22,9 @@ export const MIN_LEFT_S = 5 * 60;
 export const NEAR_STOP_M = 2000; // about to stop anyway
 export const MIN_SAVE_S = 5 * 60;
 export const MIN_SAVE_SHARE = 0.1;
+// Balik kampung mode: festive highway jams make a much smaller shortcut worth the detour.
+export const EAGER_MIN_SAVE_S = 2 * 60;
+export const EAGER_MIN_SAVE_SHARE = 0.05;
 export const MAX_OVERLAP = 0.7; // more shared road than this, and it's the same way with a different estimate
 export const OFFER_FOR_MS = 20_000;
 export const KEEP_FOR_MS = 10 * 60_000; // "Keep": don't offer that way again for a while
@@ -95,7 +98,7 @@ function toSegment(p, a, b) {
 
 // The new route worth offering instead of what's left of the current one, or null. `leftTime`: seconds the ETA says
 // are left; `rest`: the current route's coords from here on; `kept`: ways turned down lately, as { coords, until }.
-export function pickFaster(routes, { leftTime, rest, now = Date.now(), kept = [] }) {
+export function pickFaster(routes, { leftTime, rest, now = Date.now(), kept = [], eager = false }) {
   let best = null;
   for (const r of routes ?? []) {
     const time = routeTime(r);
@@ -103,16 +106,19 @@ export function pickFaster(routes, { leftTime, rest, now = Date.now(), kept = []
   }
   if (!best) return null;
   const saves = leftTime - best.time;
-  if (!worthOffering(best.time, leftTime)) return null;
+  if (!worthOffering(best.time, leftTime, eager)) return null;
   if (overlap(best.route.coords, rest) >= MAX_OVERLAP) return null;
   if (kept.some((k) => k.until > now && overlap(best.route.coords, k.coords) >= MAX_OVERLAP)) return null;
   return { route: best.route, saves: Math.round(saves) };
 }
 
 // Whether a route taking `time` seconds is enough quicker than the `leftTime` the ETA says to offer.
-export function worthOffering(time, leftTime) {
+// eager: balik kampung mode, offers a smaller save too (festive highway jams make any shortcut worth it).
+export function worthOffering(time, leftTime, eager = false) {
   const saves = leftTime - time;
-  return saves >= MIN_SAVE_S && saves >= leftTime * MIN_SAVE_SHARE;
+  const minS = eager ? EAGER_MIN_SAVE_S : MIN_SAVE_S;
+  const minShare = eager ? EAGER_MIN_SAVE_SHARE : MIN_SAVE_SHARE;
+  return saves >= minS && saves >= leftTime * minShare;
 }
 
 // A line with the points that change its shape by less than `tolM` metres dropped (Douglas-Peucker).

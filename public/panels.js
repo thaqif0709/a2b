@@ -381,6 +381,9 @@ export function openSettings() {
       <label class="set-row"><span>Save maps for drives<small>Keep the map along your route on this phone, for tunnels and dead spots</small></span><input type="checkbox" class="switch" id="s-offline" ${local.get('offlineMaps', true) ? 'checked' : ''}></label>
       <div class="set-row"><span>Saved on this phone<small id="s-offline-size">…</small></span><div class="choice"><button id="s-offline-clear">Clear</button></div></div>
     </div>
+    <div class="set-group"><h3>Emergency</h3>
+      <label class="set-row"><span>Emergency contact<small>Lets a crash report notify this number by text, with your location. Kept on this phone only.</small></span><input type="tel" class="field" id="s-emergency-contact" placeholder="e.g. 0123456789" value="${esc(local.get('emergencyContact', ''))}"></label>
+    </div>
     <div class="set-group"><h3>Places</h3>
       <button class="set-row" id="s-home"><span>Home<small>${esc(state.home?.address || state.home?.name || 'Not set')}</small></span></button>
       <button class="set-row" id="s-work"><span>Work<small>${esc(state.work?.address || state.work?.name || 'Not set')}</small></span></button>
@@ -434,6 +437,7 @@ export function openSettings() {
   };
   // Saved maps live on this device only (like the vehicle), so they bypass the synced settings.
   $('s-offline').onchange = (e) => local.set('offlineMaps', e.target.checked);
+  $('s-emergency-contact').onchange = (e) => local.set('emergencyContact', e.target.value.trim() || null);
   $('s-offline-clear').onclick = async () => {
     await clearOfflineTiles();
     toast('Saved maps cleared.');

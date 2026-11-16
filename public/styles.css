@@ -535,6 +535,7 @@ body.walking #speedo, body.walking #limit, body.walking #toll-chip, body.walking
 .car.as-3d { visibility: hidden; } /* the 3D model in the map stands in for it */
 .dest-pin svg { width: 36px; height: 46px; filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.3)); }
 .drop-pin svg { width: 32px; height: 42px; }
+.parked-pin svg { width: 32px; height: 42px; filter: drop-shadow(0 3px 3px rgba(0, 0, 0, 0.3)); cursor: pointer; }
 
 /* ---------- Drawer menu ---------- */
 .drawer {

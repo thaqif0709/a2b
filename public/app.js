@@ -12,7 +12,7 @@ import { sheetGesture, settle, rubberBand } from './sheet-drag.js';
 import { searchNearby, mergeResults, attribution as placesAttribution, typeQuery, placesOfType, placesOfTypesIn, TYPES, addTypeSource, withoutBaseDuplicates, SEARCH_CATEGORIES } from './places.js';
 import { addressQuery, addressToLookUp, withAddresses } from './address.js';
 import { start as startVehicle, DEFAULT_COLOR, vehicleFor } from './vehicle3d.js';
-import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PLACE_ICONS, CATEGORY_ICONS, soundIcon } from './icons.js';
+import { turnIcon, roundaboutIcon, laneIcon, CAR, DEST_PIN, DROP_PIN, PARKED_PIN, PLACE_ICONS, CATEGORY_ICONS, soundIcon } from './icons.js';
 import {
   $, state, api, local, toast, esc, timeAgo, speak, loadLocalSettings, saveSettings, loadPlaces, addPlace, removePlace, renamePlace,
   isSaved, setHomeWork, armBack, sideColumnEnd,
@@ -63,7 +63,7 @@ const TRIM_BEHIND_M = 6; // recolour up to a little behind the car, so the route
 const REROUTE_GAP_MS = 8000;
 
 let map;
-let carMarker, destMarker, dropMarker, stopMarker;
+let carMarker, destMarker, dropMarker, stopMarker, parkedMarker;
 const routeLabels = [];
 const reports = new Map(); // id -> report
 const reportMarkers = new Map(); // id -> maplibregl.Marker
@@ -255,6 +255,7 @@ async function boot() {
   setupLongPress();
 
   carMarker = new maplibregl.Marker({ element: el('div', 'car', CAR), rotationAlignment: 'map', pitchAlignment: 'map' });
+  renderParkedMarker();
 
   initPanels({ onUserChanged, applyTheme, openSearchFor, openPreview, refreshSound, setupVehicle, drawPois, setSimSpeed: (v) => sim && (sim.speedFactor = v) });
   initSuggest({ map, openAuth, setBrowseHidden: (hidden) => $('browse-ui').classList.toggle('hidden', hidden) });
@@ -1177,6 +1178,33 @@ async function showContextMenu(lngLat, point) {
 function hideContextMenu() {
   $('ctx').classList.add('hidden');
   if (mode !== 'preview') dropMarker?.remove();
+}
+
+// ================= Where I parked =================
+// Dropped automatically when a drive (not a walk) ends; tapping it previews a route straight back to the car.
+function saveParkedSpot() {
+  if (travel !== 'drive' && travel !== 'motorcycle') return;
+  if (!state.pos) return;
+  local.set('parkedAt', { lngLat: state.pos.lngLat, time: Date.now() });
+}
+
+function clearParkedSpot() {
+  local.set('parkedAt', null);
+  parkedMarker?.remove();
+  parkedMarker = null;
+}
+
+function renderParkedMarker() {
+  parkedMarker?.remove();
+  parkedMarker = null;
+  const parked = local.get('parkedAt');
+  if (!parked) return;
+  const node = el('div', 'parked-pin', PARKED_PIN);
+  node.onclick = (e) => {
+    e.stopPropagation();
+    openPreview({ name: 'Where you parked', lat: parked.lngLat.lat, lng: parked.lngLat.lng });
+  };
+  parkedMarker = new maplibregl.Marker({ element: node, anchor: 'bottom' }).setLngLat(parked.lngLat).addTo(map);
 }
 
 // ================= UI wiring =================
@@ -2774,6 +2802,7 @@ function backToBrowse() {
   $('btn-recenter').classList.add('following');
   map.easeTo({ pitch: 0, bearing: 0, padding: { top: 0, bottom: 0, left: 0, right: 0 }, ...(state.pos ? { center: state.pos.lngLat, zoom: 15.5 } : {}), duration: 700 });
   if (state.pos) carMarker.setLngLat(state.pos.lngLat).setRotation(state.pos.heading ?? 0);
+  renderParkedMarker();
 }
 
 // ================= Leave later =================
@@ -2883,6 +2912,7 @@ function startDrive() {
   const route = routes[selected];
   if (!route) return;
   mode = 'drive';
+  if (travel === 'drive' || travel === 'motorcycle') clearParkedSpot(); // driving the car again, so it's no longer parked there
   drawPois(); // off the map while driving
   trail = [];
   offTrail = [];
@@ -3525,6 +3555,7 @@ async function arrive() {
 }
 
 async function endDrive(arrived) {
+  if (mode === 'drive') saveParkedSpot();
   stopSimulation();
   stopTunnelWatch();
   discardProbeBuffer(); // fixes buffered on this drive must not leak into a later batch

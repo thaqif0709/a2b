@@ -84,6 +84,8 @@ export const DEST_PIN = `<svg viewBox="0 0 36 46"><path d="M18 44s15-15.4 15-26A
 
 export const DROP_PIN = `<svg viewBox="0 0 36 46"><path d="M18 44s15-15.4 15-26A15 15 0 0 0 3 18c0 10.6 15 26 15 26Z" fill="#a8306d" stroke="#fff" stroke-width="2.5"/><circle cx="18" cy="18" r="5.5" fill="#fff"/></svg>`;
 
+export const PARKED_PIN = `<svg viewBox="0 0 36 46"><path d="M18 44s15-15.4 15-26A15 15 0 0 0 3 18c0 10.6 15 26 15 26Z" fill="#3b5bdb" stroke="#fff" stroke-width="2.5"/><text x="18" y="23" text-anchor="middle" font-size="14" font-weight="800" font-family="system-ui, -apple-system, sans-serif" fill="#fff">P</text></svg>`;
+
 // The search screen's category buttons: a white icon on the kind's colour (the same colours as its pins on the map).
 const catSvg = (body) => `<svg viewBox="0 0 24 24" aria-hidden="true">${body}</svg>`;
 const catLetter = (l) => catSvg(`<text x="12" y="18.6" text-anchor="middle" font-size="19" font-weight="800" font-family="system-ui, -apple-system, sans-serif" fill="currentColor">${l}</text>`);

@@ -6,6 +6,14 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { matchReportPhrase } from '../public/voice-report.js';
 
+// Permissions-Policy blocks a feature at the browser level regardless of what the person taps "Allow" on, so the
+// microphone must actually be allowed here: `microphone=()` would make SpeechRecognition fail silently for
+// everyone, even with the setting on and the OS permission granted.
+test('the microphone is allowed by Permissions-Policy, or voice reporting could never work', async () => {
+  const headers = await readFile(new URL('../public/_headers', import.meta.url), 'utf8');
+  assert.match(headers, /Permissions-Policy:.*\bmicrophone=\(self\)/);
+});
+
 test('matches a report type from what was heard, in different phrasings', () => {
   assert.equal(matchReportPhrase('report police'), 'police');
   assert.equal(matchReportPhrase('Report cops ahead'), 'police');

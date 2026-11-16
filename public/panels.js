@@ -16,6 +16,7 @@ import { onlineLine } from './presence.js';
 import { tileCount, clearOfflineTiles, originUsage } from './offline.js';
 import { openReview, suggestionSummary, syncDriverPlaces } from './suggest.js';
 import { LANGUAGES, useLang, tr } from './i18n.js';
+import { askAI, DEFAULT_BASE_URL, DEFAULT_MODEL } from './ai-assist.js';
 
 let ctx; // callbacks from app.js
 let authMode = 'signup';
@@ -26,6 +27,7 @@ export function initPanels(callbacks) {
   ctx = callbacks;
   $('menu-backdrop').onclick = closeMenu;
   $('m-settings').onclick = () => (closeMenu(), openSettings());
+  $('m-ask-ai').onclick = () => (closeMenu(), openAskAI());
   $('m-places').onclick = () => (closeMenu(), openSavedPlaces());
   $('m-leaders').onclick = () => (closeMenu(), openLeaders());
   $('m-about').onclick = () => (closeMenu(), openAbout());
@@ -381,6 +383,12 @@ export function openSettings() {
       <label class="set-row"><span>Save maps for drives<small>Keep the map along your route on this phone, for tunnels and dead spots</small></span><input type="checkbox" class="switch" id="s-offline" ${local.get('offlineMaps', true) ? 'checked' : ''}></label>
       <div class="set-row"><span>Saved on this phone<small id="s-offline-size">…</small></span><div class="choice"><button id="s-offline-clear">Clear</button></div></div>
     </div>
+    <div class="set-group"><h3>Ask AI (optional)</h3>
+      <p class="hint" style="padding:4px 18px">Bring your own key for an OpenAI-compatible AI provider (OpenAI, Groq, OpenRouter, a local Ollama, and most others). Kept on this phone only: your question goes straight from here to that provider, never through A2B's server.</p>
+      <label class="set-row"><span>API key<small>Required to use Ask AI</small></span><input type="password" class="field" id="s-ai-key" placeholder="sk-..." value="${esc(local.get('aiKey', ''))}" autocomplete="off"></label>
+      <label class="set-row"><span>Base URL<small>Default: ${DEFAULT_BASE_URL}</small></span><input type="url" class="field" id="s-ai-base" placeholder="${DEFAULT_BASE_URL}" value="${esc(local.get('aiBaseUrl', ''))}"></label>
+      <label class="set-row"><span>Model<small>Default: ${DEFAULT_MODEL}</small></span><input type="text" class="field" id="s-ai-model" placeholder="${DEFAULT_MODEL}" value="${esc(local.get('aiModel', ''))}"></label>
+    </div>
     <div class="set-group"><h3>Places</h3>
       <button class="set-row" id="s-home"><span>Home<small>${esc(state.home?.address || state.home?.name || 'Not set')}</small></span></button>
       <button class="set-row" id="s-work"><span>Work<small>${esc(state.work?.address || state.work?.name || 'Not set')}</small></span></button>
@@ -434,6 +442,9 @@ export function openSettings() {
   };
   // Saved maps live on this device only (like the vehicle), so they bypass the synced settings.
   $('s-offline').onchange = (e) => local.set('offlineMaps', e.target.checked);
+  $('s-ai-key').onchange = (e) => local.set('aiKey', e.target.value.trim() || null);
+  $('s-ai-base').onchange = (e) => local.set('aiBaseUrl', e.target.value.trim() || null);
+  $('s-ai-model').onchange = (e) => local.set('aiModel', e.target.value.trim() || null);
   $('s-offline-clear').onclick = async () => {
     await clearOfflineTiles();
     toast('Saved maps cleared.');
@@ -523,6 +534,37 @@ export function openSettings() {
       }
     };
   }
+}
+
+// A short free-text question, answered by whatever AI provider the driver set up in Settings with their own key.
+function openAskAI() {
+  const body = openPanel('Ask AI', `
+    <div class="set-group">
+      <textarea id="ai-question" class="field" rows="3" style="height:auto" placeholder="Ask anything, e.g. where's good for mee near here that's still open late"></textarea>
+      <div class="sheet-actions"><button id="ai-send" class="btn primary wide">Ask</button></div>
+      <div id="ai-answer" class="hint" style="padding:10px 18px; white-space:pre-wrap"></div>
+    </div>`);
+  const send = async () => {
+    const question = body.querySelector('#ai-question').value;
+    const btn = body.querySelector('#ai-send');
+    const answer = body.querySelector('#ai-answer');
+    btn.disabled = true;
+    answer.textContent = '…';
+    try {
+      answer.textContent = await askAI({
+        baseUrl: local.get('aiBaseUrl'),
+        apiKey: local.get('aiKey'),
+        model: local.get('aiModel'),
+        question,
+        system: 'You are a brief, practical driving assistant for Malaysia. Keep answers short.',
+      });
+    } catch (e) {
+      answer.textContent = e.message;
+    } finally {
+      btn.disabled = false;
+    }
+  };
+  body.querySelector('#ai-send').onclick = send;
 }
 
 function homeWorkAction(which) {

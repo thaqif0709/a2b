@@ -114,6 +114,7 @@ export default {
 
   // ---------- index.html: menu, welcome, waiting screen, account ----------
   'Top drivers': 'Pemandu terbaik',
+  'Ask AI': 'Tanya AI',
   'Add to home screen': 'Tambah ke skrin utama',
   'Update A2B': 'Kemas kini A2B',
   'Refresh': 'Muat semula',

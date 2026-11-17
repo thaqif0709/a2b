@@ -22,6 +22,16 @@ export function pickVoice() {
   return voices.sort((a, b) => score(b) - score(a))[0] ?? null;
 }
 
+// Directions should play over the driver's music, not stop it. By default an iPhone gives a page that makes sound
+// the main audio, which pauses Spotify or Apple Music and leaves it paused. Safari's Audio Session API (iOS 17 and
+// later) lets a page say its sounds are short: 'transient' plays them on top of whatever else is playing.
+// Older iPhones and other browsers don't have it and keep their own behaviour.
+if (typeof navigator !== 'undefined' && navigator.audioSession) {
+  try {
+    navigator.audioSession.type = 'transient';
+  } catch {}
+}
+
 // Voice lists load late on some browsers; ask early so the first direction has them.
 if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
   speechSynthesis.getVoices();

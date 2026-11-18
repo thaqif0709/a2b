@@ -7,6 +7,8 @@ const ITERATIONS = 100_000; // the most Workers' WebCrypto allows for PBKDF2
 const SESSION_DAYS = 30; // a fresh sign-in lasts this long; drivers who keep using the app slide up to the cap
 const SESSION_MAX_DAYS = 60; // ...but never past this, however active they are
 const SESSION_TOUCH_MS = 3600_000; // the last-seen stamp is rewritten this often at most, to spare D1 writes
+export const RECOVERY_WINDOW_MS = 15 * 60_000;
+const RECOVERY_MAX_ATTEMPTS = 8; // per email, never per IP: the Pages proxy can share one address
 export const COOKIE = 'a2b_session';
 
 const enc = new TextEncoder();
@@ -68,7 +70,9 @@ export function readCookie(request, name = COOKIE) {
   const header = request.headers.get('cookie') || '';
   for (const part of header.split(';')) {
     const [k, ...v] = part.trim().split('=');
-    if (k === name) return decodeURIComponent(v.join('='));
+    if (k === name) {
+      try { return decodeURIComponent(v.join('=')); } catch { return null; }
+    }
   }
   return null;
 }
@@ -116,12 +120,42 @@ export async function createRecoveryCode(db, userId) {
   return code;
 }
 
-export async function consumeRecoveryCode(db, userId, code) {
-  const row = await db.prepare('SELECT * FROM recovery_codes WHERE user_id = ?').bind(userId).first();
-  if (!row || row.used) return false; // no expiry: a code from sign-up day still works in month three
-  if ((await sha256(String(code ?? ''))) !== row.code_hash) return false;
-  await db.prepare('UPDATE recovery_codes SET used = 1 WHERE user_id = ?').bind(userId).run();
-  return true;
+export async function recoverAccount(db, email, code, password, device = null) {
+  // Prepare every secret before claiming the code. No password hashing or separate session write may
+  // fail after the code is consumed. Only hashes enter D1; the replacement code is returned once.
+  const { hash, salt } = await hashPassword(password);
+  const token = randomHex(32), recovery = randomHex(8);
+  const tokenHash = await sha256(token), recoveryHash = await sha256(recovery);
+  const now = Date.now(), expires = now + SESSION_DAYS * 86400_000;
+  // D1 batch is transactional. A zero-row claim is NOT an error, so every later mutation is gated
+  // by this request's new recovery hash. A concurrent loser can neither reset the password nor
+  // delete/create sessions. Any SQL failure rolls the claim and all account changes back together.
+  const results = await db.batch([
+    db.prepare('DELETE FROM recovery_attempts WHERE email = ? AND at <= ?').bind(email, now - RECOVERY_WINDOW_MS),
+    db.prepare(`INSERT INTO recovery_attempts (attempt, email, at)
+      SELECT ?, ?, ? WHERE (SELECT COUNT(*) FROM recovery_attempts WHERE email = ? AND at > ?) < ?`)
+      .bind(tokenHash, email, now, email, now - RECOVERY_WINDOW_MS, RECOVERY_MAX_ATTEMPTS),
+    db.prepare(`UPDATE recovery_codes SET code_hash = ?, created_at = ?, used = 0
+      WHERE user_id = (SELECT id FROM users WHERE email = ? AND pass_hash != '') AND code_hash = ? AND used = 0
+      AND EXISTS (SELECT 1 FROM recovery_attempts WHERE attempt = ?)`)
+      .bind(recoveryHash, now, email, await sha256(String(code ?? '')), tokenHash),
+    db.prepare(`UPDATE users SET pass_hash = ?, pass_salt = ? WHERE email = ?
+      AND EXISTS (SELECT 1 FROM recovery_codes WHERE user_id = users.id AND code_hash = ?)`)
+      .bind(hash, salt, email, recoveryHash),
+    db.prepare(`DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE email = ?)
+      AND EXISTS (SELECT 1 FROM recovery_codes WHERE user_id = sessions.user_id AND code_hash = ?)`)
+      .bind(email, recoveryHash),
+    db.prepare(`INSERT INTO sessions (token_hash, user_id, device, created_at, last_seen, expires_at)
+      SELECT ?, id, ?, ?, ?, ? FROM users WHERE email = ?
+      AND EXISTS (SELECT 1 FROM recovery_codes WHERE user_id = users.id AND code_hash = ?)`)
+      .bind(tokenHash, device, now, now, expires, email, recoveryHash),
+    db.prepare('DELETE FROM login_failures WHERE email = ? AND EXISTS (SELECT 1 FROM sessions WHERE token_hash = ?)').bind(email, tokenHash),
+    db.prepare('DELETE FROM recovery_attempts WHERE email = ? AND EXISTS (SELECT 1 FROM sessions WHERE token_hash = ?)').bind(email, tokenHash),
+    db.prepare('SELECT users.* FROM users JOIN sessions ON sessions.user_id = users.id WHERE sessions.token_hash = ?').bind(tokenHash),
+  ]);
+  const user = results[8].results[0];
+  if (!user) return { status: results[1].meta.changes ? 'invalid' : 'limited' };
+  return { status: 'ok', user, token, expires, recovery };
 }
 
 export function sessionCookie(request, token, expires) {

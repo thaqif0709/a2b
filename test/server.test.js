@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import worker from '../src/worker.js';
 import { createD1 } from './d1-shim.js';
 import { hashPassword, verifyPassword, normalizeEmail } from '../src/lib/auth.js';
-import { extendedExpiry, shouldRemove } from '../src/lib/reports.js';
+import { extendedExpiry, shouldRemove, trustWeight } from '../src/lib/reports.js';
 import { buildRouteRequest, photonToPlace, lanes, searchPlaces, corridorBox, routeReportBox } from '../src/lib/providers.js';
 import { applyTraffic } from '../src/lib/traffic.js';
 import { camerasAlong } from '../src/lib/cameras.js';
@@ -207,6 +207,20 @@ test('report lifetimes and removal rules', () => {
   assert.ok(!shouldRemove({ still: 0, gone: 1 }));
   assert.ok(shouldRemove({ still: 0, gone: 2 }));
   assert.ok(!shouldRemove({ still: 2, gone: 3 }));
+});
+
+// Trust scores: a vote from a driver with more points counts for more (road reports only; train reports are unweighted).
+test('votes from trusted drivers count for more', () => {
+  const now = 1_000_000;
+  const life = REPORT_TYPES.police.life * 60_000;
+  assert.equal(trustWeight(0), 1, 'a brand new driver starts at 1x');
+  assert.equal(trustWeight(200), 2, 'capped at 2x from 200 points');
+  assert.equal(trustWeight(1000), 2, 'never more than the cap');
+  assert.equal(trustWeight(100), 1.5);
+  assert.equal(extendedExpiry('police', now + life, now, REPORT_TYPES, trustWeight(200)), now + life * 1.5, 'a trusted driver extends it further');
+  assert.ok(!shouldRemove({ still_weight: 0, gone_weight: 1.5 }, true), 'below the removal threshold');
+  assert.ok(shouldRemove({ still_weight: 0, gone_weight: 2 }, true), 'a trusted driver alone can tip it past the threshold');
+  assert.ok(shouldRemove({ still: 0, gone: 2 }), 'the plain, unweighted count is untouched for callers that still use it (train reports)');
 });
 
 test('route requests carry avoid options, heading and closures', () => {
@@ -1054,6 +1068,28 @@ test('switching a vote replaces it instead of double counting', async () => {
   assert.equal(v.body.removed, false, 'one gone does not remove it');
   v = await voter('POST', `/api/reports/${jam.id}/vote`, { vote: 'gone' });
   assert.deepEqual([v.body.report.still, v.body.report.gone], [0, 1], 'voting twice changes nothing');
+});
+
+// A switched vote must remove exactly the weight it added, even if the voter's trust changed in between —
+// otherwise earning points between two votes would quietly inflate or deflate a report's weighted sums.
+test('switching a vote removes the weight it actually added, not today\'s weight', async () => {
+  const reporter = client();
+  await reporter('POST', '/api/auth/signup', { email: 'trust-reporter@test.com', password: 'password19', name: 'Reporter' });
+  const report = (await reporter('POST', '/api/reports', { type: 'hazard', subtype: 'pothole', lat: 3.5, lng: 101.5 })).body.report;
+
+  const voter = client();
+  await voter('POST', '/api/auth/signup', { email: 'trust-switch@test.com', password: 'password19', name: 'Switcher' });
+  const id = (await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind('trust-switch@test.com').first()).id;
+
+  let v = await voter('POST', `/api/reports/${report.id}/vote`, { vote: 'still' });
+  let row = await env.DB.prepare('SELECT still_weight, gone_weight FROM reports WHERE id = ?').bind(report.id).first();
+  assert.equal(row.still_weight, 1, 'voted at 0 points: 1x');
+
+  await env.DB.prepare('UPDATE users SET points = 200 WHERE id = ?').bind(id).run();
+  v = await voter('POST', `/api/reports/${report.id}/vote`, { vote: 'gone' });
+  row = await env.DB.prepare('SELECT still_weight, gone_weight FROM reports WHERE id = ?').bind(report.id).first();
+  assert.equal(row.still_weight, 0, 'the old 1x vote is gone, not left behind or over-subtracted');
+  assert.equal(row.gone_weight, 2, 'the new vote counts at today\'s 2x, now at 200 points');
 });
 
 test('a forgotten password is recovered with the code shown at sign-up', async () => {

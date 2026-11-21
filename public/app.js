@@ -3246,7 +3246,7 @@ async function checkFaster({ force = false } = {}) {
     const check = checkBody(rest, live.remainingTime, encodePolyline);
     const rs = await requestRoutes(from, [dest.lng, dest.lat], heading, stops, { check });
     if (mode !== 'drive' || nav?.route !== route || !live) return; // rerouted or ended meanwhile
-    const pick = pickFaster(rs, { leftTime: live.remainingTime, rest, now: Date.now(), kept: faster.kept });
+    const pick = pickFaster(rs, { leftTime: live.remainingTime, rest, now: Date.now(), kept: faster.kept, eager: state.settings.balik_kampung });
     faster.quiet = pick ? 0 : faster.quiet + 1; // nothing found: wait longer before the next (checkGap)
     if (pick) showFaster(pick);
   } catch {

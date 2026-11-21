@@ -116,6 +116,15 @@ test('worth offering: at least 5 minutes and a tenth quicker', () => {
   assert.equal(worthOffering(6400, 7200), true);
 });
 
+// Balik kampung mode: a smaller save is worth it too, for festive highway jams.
+test('worth offering, eager (balik kampung mode): at least 2 minutes and a twentieth quicker', () => {
+  assert.equal(worthOffering(1560, 1800), false, '4 minutes: not enough normally');
+  assert.equal(worthOffering(1560, 1800, true), true, '...but is, eager');
+  assert.equal(worthOffering(1700, 1800, true), false, 'under 2 minutes: still not worth a detour even eager');
+  assert.equal(worthOffering(6800, 7200), false, '6:40 of 2 hours: under a tenth, so not worth it normally');
+  assert.equal(worthOffering(6800, 7200, true), true, '...but is, eager: over a twentieth and the 2-minute floor');
+});
+
 test('checks that find nothing wait longer for the next: 4, 6, 8, then every 10 minutes', () => {
   assert.deepEqual([0, 1, 2, 3, 4, 9].map((q) => checkGap(q) / MIN), [4, 4, 6, 8, 10, 10]);
   assert.equal(shouldCheck({ ...drive, quiet: 3, lastCheck: drive.now - 7 * MIN }), false, 'three found nothing: 8 minutes');

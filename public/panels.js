@@ -352,6 +352,7 @@ export function openSettings() {
       ${toggleRow('avoid_highways', 'Avoid highways')}
       ${toggleRow('avoid_ferries', 'Avoid ferries')}
       ${toggleRow('map_pois', 'Petrol, hospitals, clinics and shops on the map', 'Shown when zoomed in. Tap one, or a station or landmark, for routes there.')}
+      ${toggleRow('balik_kampung', 'Balik kampung mode', 'Offers an alternative route sooner on a long drive, for festive highway jams where any shortcut helps.')}
       <p class="hint" style="padding:4px 18px">Roads that other drivers report as closed are avoided automatically.</p>
     </div>
     <div class="set-group"><h3>Traffic</h3>

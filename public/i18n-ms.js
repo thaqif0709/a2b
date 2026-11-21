@@ -111,6 +111,8 @@ export default {
   'You have arrived': 'Anda sudah tiba',
   'Done': 'Selesai',
   'Send': 'Hantar',
+  'Call 999': 'Hubungi 999',
+  'Notify emergency contact': 'Maklumkan kenalan kecemasan',
 
   // ---------- index.html: menu, welcome, waiting screen, account ----------
   'Top drivers': 'Pemandu terbaik',

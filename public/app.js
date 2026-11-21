@@ -1182,6 +1182,13 @@ function hideContextMenu() {
 // ================= UI wiring =================
 function wireUi() {
   $('btn-where').onclick = () => openSearchFor(null);
+  $('btn-notify-contact').onclick = () => {
+    const contact = local.get('emergencyContact');
+    if (!contact) return;
+    const [lng, lat] = reportDraft?.at ?? state.pos?.lngLat ?? [];
+    const where = Number.isFinite(lat) ? ` https://maps.google.com/?q=${lat},${lng}` : '';
+    location.href = `sms:${contact}?body=${encodeURIComponent(`I may need help.${where}`)}`;
+  };
   $('btn-wrong-place').onclick = () => {
     if (!state.user) return openAuth('suggest');
     const place = dest;
@@ -3972,6 +3979,9 @@ function pickReportType(key) {
   $('report-grid').classList.add('hidden');
   $('report-sub').classList.remove('hidden');
   $('report-comment').value = '';
+  // A real emergency can't wait for the report to be sent: offer to call or text for help right away.
+  $('report-emergency').classList.toggle('hidden', key !== 'crash');
+  $('btn-notify-contact').classList.toggle('hidden', !local.get('emergencyContact'));
   const sub = $('report-sub-grid');
   sub.innerHTML = '';
   for (const [k, label] of Object.entries(t.subtypes)) {
